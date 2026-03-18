@@ -1,0 +1,2608 @@
+---
+title: "R Fundamentals"
+author: ""
+date: ""
+format:
+  beamer:
+    theme: Madrid
+    colortheme: beaver
+    fontsize: 8pt
+    aspectratio: 43
+    section-titles: true
+    toc: true
+    toc-depth: 2
+    navigation: empty
+    pdf-engine: xelatex
+    header-includes: |
+      \usepackage{booktabs}
+      \usepackage{dsfont}
+      \setbeamertemplate{caption}[numbered]{}
+      \setbeamertemplate{footline}[text line]{%
+        \parbox{\linewidth}{\vspace*{-8pt}\hfill\insertframenumber\,/\,\inserttotalframenumber~~~~~~~~~}}
+      \setbeamertemplate{navigation symbols}{}
+      \setbeamercolor{item projected}{fg=white}
+      \setbeamercolor{frametitle}{fg=black}
+      \setbeamercolor{block title}{fg=white}
+      \definecolor{foo}{rgb}{.2,.2,.7}
+      \AtBeginSection[]{
+        \begin{frame}
+        \vfill
+        \centering
+        \begin{beamercolorbox}[sep=8pt,center,shadow=true,rounded=true]{section page}
+          \usebeamerfont{title}{\color{foo}\insertsectionhead}\par
+        \end{beamercolorbox}
+        \vfill
+        \end{frame}
+      }
+      \AtBeginSubsection{}
+      \setbeamertemplate{headline}{}
+      \newcommand{\comm}[1]{\textcolor[rgb]{0.737,0.353,0.396}{{\tt #1}}}
+      \usepackage{fancyvrb}
+      \definecolor{errorred}{rgb}{0.80,0.10,0.10}
+      \definecolor{warnbrown}{rgb}{0.70,0.40,0.05}
+      \DefineVerbatimEnvironment{ErrorVerbatim}{Verbatim}{formatcom=\color{errorred},fontsize=\small}
+      \DefineVerbatimEnvironment{WarnVerbatim}{Verbatim}{formatcom=\color{warnbrown},fontsize=\small}
+      %% ── tighten spacing around code blocks and output ──
+      \setlength{\parskip}{0pt}
+      \setlength{\OuterFrameSep}{0pt}
+      \usepackage{etoolbox}
+      \makeatletter
+      \preto{\@verbatim}{\topsep=2pt \partopsep=0pt}
+      \makeatother
+      \AtBeginEnvironment{Shaded}{\vspace{0pt}}
+      \AfterEndEnvironment{Shaded}{\vspace{0pt}}
+      \AtBeginEnvironment{verbatim}{\vspace{0pt}}
+      \AfterEndEnvironment{verbatim}{\vspace{0pt}}
+execute:
+  echo: true
+  warning: false
+knitr:
+  opts_chunk:
+    comment: '#'
+    fig.align: 'center'
+---
+
+```{r}
+#| include: false
+knitr::knit_hooks$set(error = function(x, options) {
+  x <- gsub('\n$', '', x)
+  paste0('\n\n\\begin{ErrorVerbatim}\n', x, '\n\\end{ErrorVerbatim}\n\n')
+})
+knitr::knit_hooks$set(warning = function(x, options) {
+  x <- gsub('\n$', '', x)
+  paste0('\n\n\\begin{WarnVerbatim}\n', x, '\n\\end{WarnVerbatim}\n\n')
+})
+```
+
+# First Encounter
+
+### R as a Calculator
+
+- R as a calculator --- show the numerical result of $1 + 2\times\frac{3}{4} - 5 + 6 \sin\frac{\pi}{2} - \sqrt[8]{7}$
+
+```{r}
+1 + 2 * (3 / 4) - 5 + 6 * sin(pi / 2) - 7^(1/8)
+```
+
+\vfill
+
+- Print the content of the built-in dataset `Nile`
+
+```{r}
+Nile
+```
+
+---
+
+### A First Glance at Plots
+
+:::::: columns
+::: column
+- Histogram of `Nile`
+
+```{r, out.width="90%"}
+hist(Nile)
+```
+:::
+::: column
+- Time series plot of `Nile`
+
+```{r, out.width="90%"}
+plot(Nile)
+```
+:::
+::::::
+
+---
+
+### A First Glance at Vectors
+
+```{r}
+Nile[2]          # the 2nd item
+Nile[2:5]        # subsequence from 2nd to 5th
+x <- c(10, 20, -1, 3)   # create a vector with c()
+length(x); mean(x)
+```
+
+```{r}
+x > 5                # logical comparison
+sum(x > 5)           # count TRUEs
+```
+
+# Vectors
+
+## Atomic Vectors
+
+### Vector Types and Scalars
+
+- Flavors: **atomic** (all elements same type), **generic** (lists, elements can differ)
+- Primary atomic types: `logical`, `integer`, `double`, `character`; integer + double = numeric
+- Scalars are simply vectors of length 1
+
+```{r}
+v_logical   <- c(TRUE, FALSE)
+v_integer   <- c(1L, 6L, 10L)
+v_double    <- c(1, 2.5, 4.5)
+v_character <- c('these', 'are', 'characters')
+typeof(v_logical); typeof(v_integer); typeof(v_double); typeof(v_character)
+```
+
+```{r}
+# concatenation of atomic vectors yields flat atomic vectors
+(v <- c(c(1, 2), c(3, 4)))
+```
+
+---
+
+### `NA` and `NULL`
+
+- `NA` (Not Applicable): value **exists** but is **unknown**
+- `NULL`: value **does not exist**
+
+```{r}
+NA > 5; 20 * NA; !NA             # NA is infectious!
+NA ^ 0; NA | TRUE; NA & FALSE    # some exceptions
+```
+
+```{r}
+x <- c(NA, 5, NA, 10)
+x == NA          # WRONG way to test (always NA)
+is.na(x)         # CORRECT way to test
+```
+
+```{r}
+u <- NULL; length(u)   # 0
+v <- NA;   length(v)   # 1
+```
+
+---
+
+### Coercion Hierarchy
+
+- Automatic coercion: **character > double > integer > logical**
+
+```{r}
+typeof(c('a', 1))      # character wins
+c(1, FALSE)             # logical -> double
+c(TRUE, 1L)             # logical -> integer
+```
+
+```{r}
+# explicit coercion with as.*()
+x <- c(TRUE, FALSE, TRUE, TRUE); as.numeric(x)
+as.integer(c('1', '1.5', 'a'))   # 'a' -> NA with warning
+```
+
+---
+
+### Type Testing and Coercion Functions
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Testing & Coercion \\
+\midrule
+\comm{is.logical(x)} & \comm{as.logical(x)} \\
+\comm{is.integer(x)} & \comm{as.integer(x)} \\
+\comm{is.double(x)} & \comm{as.double(x)} \\
+\comm{is.numeric(x)} & \comm{as.numeric(x)} \\
+\comm{is.character(x)} & \comm{as.character(x)} \\
+\comm{is.na(x)}, \comm{is.null(x)} & --- \\
+\comm{is.vector(x)} & \comm{as.vector(x)} \\
+\comm{is.list(x)} & \comm{as.list(x)} \\
+\comm{is.data.frame(x)} & \comm{as.data.frame(x)} \\
+\comm{is.matrix(x)} & \comm{as.matrix(x)} \\
+\comm{is.factor(x)} & \comm{as.factor(x)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+```{r}
+x <- c(3, 5, 7, 8)
+is.integer(x); is.numeric(x)
+as.integer(5.7); as.integer(-5.7)
+```
+
+## Creating Vectors
+
+### Sequences --- `:` and `seq()`
+
+```{r}
+5:10; 5:1
+i <- 5; 1:i-1; 1:(i-1)   # note operator precedence!
+```
+
+```{r}
+seq(from = 11, to = 30, by = 3)
+seq(from = 1.1, to = 2, length = 10)
+```
+
+```{r}
+# seq_along and seq_len: safer alternatives for loops
+x <- c(9, 5, 17); seq_along(x)
+x <- NULL; seq_along(x)   # integer(0), not 1:0 !
+seq_len(5)
+```
+
+---
+
+### Repetition: `rep()`
+
+```{r}
+rep(3, 5)
+rep(c(10, 15, 3), 4)
+rep(c(10, 15, 3), each = 4)   # interleave with 'each'
+```
+
+```{r}
+rep(1:4, 1:4)                  # variable repetition counts
+rep(c('C', 'G', 'H'), c(4, 5, 2))
+```
+
+---
+
+### Other Generators: `sample()`, `sequence()`
+
+```{r}
+set.seed(42)
+sample(1:6, 10, replace = TRUE)     # dice rolls
+sample(letters[1:20], 5)            # no replacement
+```
+
+```{r}
+sequence(c(6, 7, 4), from = c(8, 1, 9), by = c(-1, 1, -2))
+```
+
+## Indexing and Selection
+
+### Numeric Indexing
+
+```{r}
+fib <- c(0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144)
+fib[1]; fib[5]; fib[2:5]; fib[c(2, 4, 8, 1)]
+```
+
+```{r}
+# 'minus' means 'exclude'; no mixing of positive/negative!
+fib[-3]; fib[-(5:9)]
+```
+
+```{r}
+# negative indexing to build new vectors
+x <- c(10, 20, -1, 3, 5, 6, 30, 9)
+(y <- x[-2])                  # remove 2nd element
+(z <- x[c(-2, -3, -6)])       # remove 2nd, 3rd, 6th
+(w <- c(x, y, z))             # combine vectors
+```
+
+---
+
+### Logical Indexing
+
+```{r}
+fib[fib < 10]                           # elements < 10
+fib[fib %% 2 == 0 | fib %% 3 == 0]     # multiples of 2 or 3
+fib[c(TRUE, FALSE)]                      # odd-indexed (recycling!)
+```
+
+```{r}
+v <- c(2, 8, 1, 7, -11, 6, 20, 3, 12, 35, 21, 3, 5, 7, -2)
+v[v > median(v)]                             # above median
+v[v < quantile(v, 0.05) | v > quantile(v, 0.95)]  # extreme 5%
+v[abs(v - mean(v)) > sd(v)]                  # beyond 1 SD
+```
+
+---
+
+### `which()`, `which.min()`, `which.max()`
+
+```{r}
+which(Nile > 1200)            # positions where TRUE
+Nile[Nile > 1200]             # the values themselves
+```
+
+```{r}
+x <- c(5, 3, 8, 1, 9, 2)
+which.min(x); which.max(x)   # index of first min/max
+```
+
+---
+
+### Removing `NA` from Vectors
+
+```{r}
+v <- c(21, 2, 3, NA, 5, NULL, NA, 32, 55)
+v[!is.na(v)]                  # NULL is already dropped by c()
+```
+
+```{r}
+na.omit(v)                    # alternative; returns with attr
+```
+
+## Vector Properties
+
+### Recycling Rule
+
+- In operations involving two vectors of different lengths, R **repeats** the shorter one:
+
+```{r}
+c(2, 4, 3) + c(6, 10, -1, 3, 5)
+```
+
+```{r}
+# useful applications
+x <- 1:5
+x + 10           # add a constant (scalar = length-1 vector)
+x * c(1, -1)     # alternate signs
+```
+
+---
+
+### `all()`, `any()`, and Vector Equality
+
+```{r}
+x <- 1:100; any(x > 200); all(x > 0)
+```
+
+```{r}
+# == is element-wise; don't use for whole-vector equality!
+x <- 1:3; y0 <- c(1, 2, 3); y1 <- c(1, 3, 4)
+x == y0; x == y1
+```
+
+---
+
+### `identical()` and `all.equal()`
+
+```{r}
+x <- 1:3; y0 <- c(1, 2, 3)
+identical(x, y0)          # FALSE: integer vs double!
+typeof(x); typeof(y0)
+```
+
+```{r}
+all.equal(x, y0)          # TRUE (with tolerance)
+all.equal(x, c(1, 3, 4)) # shows difference
+```
+
+---
+
+### Named Vectors
+
+```{r}
+# 3 ways to name a vector
+x <- c(a = 1, b = 2, c = 3)
+x <- 1:3; names(x) <- c('a', 'b', 'c')
+x <- setNames(1:3, c('a', 'b', 'c'))
+```
+
+```{r}
+# access by name
+x['b']; x[c('a', 'c')]
+```
+
+---
+
+### Attributes and `structure()`
+
+```{r}
+a <- 1:3; attr(a, 'x') <- 'ab'; attr(a, 'y') <- 4:6
+str(attributes(a))
+a <- structure(1:3, x = 'ab', y = 4:6)
+str(attributes(a))
+```
+
+---
+
+### Factors
+
+- Factors represent **categorical variables** with a fixed set of levels.
+
+:::::: columns
+::: column
+
+```{r}
+(x <- factor(c('a', 'b', 'b', 'a')))
+typeof(x); levels(x)
+```
+
+:::
+::: column
+
+```{r}
+# ordered factors
+(size <- factor(c('S','M','L','M','S'),
+    levels=c('S','M','L'), ordered=TRUE))
+size > 'S'
+```
+
+:::
+::::::
+
+---
+
+### Selecting Even/Odd Indexed Elements
+
+```{r}
+x <- 1:10
+x[x %% 2 == 0]                   # even values
+x[seq_along(x) %% 2 == 0]        # even-indexed elements
+x[c(FALSE, TRUE)]                 # same, using recycling
+```
+
+---
+
+### Appending and Inserting into Vectors
+
+```{r, eval=FALSE}
+v <- c(1, 2, 3); it <- c(6, 7, 8)
+c(v, it)                       # concatenate
+v[length(v) + 1] <- 42; v     # auto-extend (NAs fill gaps)
+```
+
+```{r}
+append(1:10, 99, after = 5)   # insert 99 after position 5
+append(1:10, 99, after = 0)   # insert at the beginning
+```
+
+# Operators
+
+### Operator Table
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Operators & Definition \\
+\midrule
+\comm{+ - * /} & plus, minus, times, divide\\
+\comm{\%/\% \%\% \textasciicircum} & integer quotient, modulo, power \\
+\comm{> >= < <=} & greater, greater-or-equal, less, less-or-equal\\
+\comm{== !=} & equals, not equals\\
+\comm{! \& |} & not, and (elementwise), or (elementwise)\\
+\comm{<- ->} & assignment\\
+\comm{\$} & list/data.frame element access\\
+\comm{:} & sequence creation\\
+\comm{\textasciitilde} & model formulae\\
+\midrule
+\comm{\%*\%} & matrix product \\
+\comm{\%in\%} & test matching \\
+\comm{\&\& ||} & short-circuit and, or (scalar only)\\
+\comm{::} & namespace access \\
+\comm{xor(a, b)} & elementwise exclusive OR \\
+\comm{<<-} & global assignment \\
+\comm{|>} & native pipe (R 4.1+) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+---
+
+### Operator Precedence (High to Low)
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Precedence & Operators \\
+\midrule
+1 (highest) & \comm{::}, \comm{:::} \\
+2 & \comm{\$}, \comm{@} \\
+3 & \comm{[}, \comm{[[} \\
+4 & \comm{\textasciicircum} (right-associative) \\
+5 & unary \comm{-}, \comm{+} \\
+6 & \comm{:} \\
+7 & \comm{\%any\%} (including \comm{\%*\%}, \comm{\%/\%}, \comm{\%\%}, \comm{\%in\%}) \\
+8 & \comm{*}, \comm{/} \\
+9 & \comm{+}, \comm{-} \\
+10 & \comm{<}, \comm{>}, \comm{<=}, \comm{>=}, \comm{==}, \comm{!=} \\
+11 & \comm{!} \\
+12 & \comm{\&}, \comm{\&\&} \\
+13 & \comm{|}, \comm{||} \\
+14 & \comm{|>} \\
+15 & \comm{\textasciitilde} \\
+16 (lowest) & \comm{<-}, \comm{<<-}, \comm{->}, \comm{->>} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+---
+
+### `%in%` and `match()`
+
+```{r}
+x <- c(1, 5, 3, 8, 10)
+x %in% c(3, 5, 7)      # which elements of x are in the set?
+```
+
+```{r}
+# match() returns the position of first match (NA if not found)
+match(c(3, 5, 99), x)
+```
+
+```{r}
+# practical: filter data frame rows by a set of values
+tg <- ToothGrowth
+tg[tg$dose %in% c(0.5, 2), ][1:6, ]
+```
+
+# Common Functions
+
+### Math Functions
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Function & Definition \\
+\midrule
+\comm{abs(x)} & absolute value \\
+\comm{floor(x)}, \comm{ceiling(x)}, \comm{trunc(x)} & rounding toward $-\infty$, $+\infty$, 0\\
+\comm{round(x, digits=0)} & round (banker's rounding)\\
+\comm{signif(x, digits=6)} & significant digits\\
+\comm{sqrt(x)}, \comm{exp(x)} & $\sqrt{x}$, $e^x$ \\
+\comm{log(x)}, \comm{log10(x)}, \comm{log2(x)} & natural, base-10, base-2 log\\
+\comm{factorial(x)}, \comm{choose(n, m)} & $x!$, $\binom{n}{m}$ \\
+\comm{sin, cos, tan, asin, acos, atan} & trig functions\\
+\comm{beta(a, b)}, \comm{gamma(x)} & special functions\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+---
+
+### Examples: Math Functions
+
+```{r}
+abs(-1); floor(5.7); ceiling(-5.7); trunc(-5.7)
+round(5.7); round(5.5); round(2.5)  # banker's rounding!
+signif(12345678, 4)
+```
+
+```{r}
+sin(pi / 2); cos(pi / 2)  # cos not exactly 0 (floating point)
+119 %/% 13; 119 %% 13
+```
+
+---
+
+### Statistical Functions
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Function & Definition \\
+\midrule
+\comm{max(x)}, \comm{min(x)}, \comm{range(x)} & max, min, c(min, max)\\
+\comm{sum(x)}, \comm{prod(x)} & sum, product\\
+\comm{mean(x)}, \comm{median(x)} & mean, median\\
+\comm{quantile(x, p)} & quantile at probability \comm{p}\\
+\comm{var(x)}, \comm{sd(x)} & sample variance, std deviation\\
+\comm{cor(x, y)}, \comm{cov(x, y)} & correlation, covariance\\
+\comm{sort(x)}, \comm{rev(x)} & sorted copy, reversed copy\\
+\comm{rank(x)}, \comm{order(x)} & ranks, permutation to sort\\
+\midrule
+\comm{cumsum}, \comm{cumprod}, \comm{cummax}, \comm{cummin} & cumulative operations\\
+\comm{diff(x)} & lagged differences\\
+\comm{pmax(x,y)}, \comm{pmin(x,y)} & parallel (elementwise) max/min\\
+\comm{table(x)} & frequency table\\
+\comm{colMeans}, \comm{colSums} & column means/sums\\
+\comm{rowMeans}, \comm{rowSums} & row means/sums\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+---
+
+### Floating Point Surprises
+
+```{r}
+0.1 + 0.2 == 0.3              # FALSE!
+all.equal(0.1 + 0.2, 0.3)     # TRUE (with tolerance)
+isTRUE(all.equal(0.1 + 0.2, 0.3))  # safe for if()
+```
+
+```{r}
+# trunc vs floor for negative numbers
+trunc(-3.7); floor(-3.7)     # toward 0 vs toward -Inf
+```
+
+# Data Frames
+
+## Basics
+
+### What Is a Data Frame?
+
+- A rectangular table: one row per observation, one column per variable.
+- **Technically**: a named list of equal-length vectors (we'll revisit this in Lists).
+
+```{r}
+tg <- ToothGrowth    # built-in data; used throughout
+head(tg, 4)
+```
+
+```{r}
+# Each column is a vector; use $ to extract
+tg$len[1:5]
+```
+
+---
+
+### Data Frame Inspection
+
+```{r}
+str(tg)
+```
+
+```{r}
+nrow(tg); ncol(tg); dim(tg); names(tg)
+```
+
+---
+
+### `summary()` --- Quick Statistics
+
+```{r}
+summary(tg)
+```
+
+---
+
+### Indexing: `[row, col]`
+
+```{r}
+tg[3, 1]              # row 3, column 1
+tg$len[3]             # equivalent via $
+(z <- tg[2:4, c(1, 3)])   # rows 2-4, columns 1 & 3
+```
+
+```{r}
+head(tg[, c(1, 3)], 3)   # all rows, columns 1 & 3
+head(tg[, -2], 3)         # all rows, remove column 2
+```
+
+---
+
+### Creating Data Frames
+
+:::::: columns
+::: column
+
+```{r}
+age <- c(55, 58, 45)
+name <- c('Alice', 'Bill', 'Cathy')
+(d <- data.frame(age, name))
+```
+
+- Vectors of different lengths are not allowed!
+
+```{r, error=TRUE}
+blood <- c('O', 'B', 'A', 'AB')
+data.frame(age, name, blood)
+```
+
+:::
+::: column
+
+```{r, eval=FALSE}
+# with custom column names
+data.frame(p1 = pred1, p2 = pred2)
+
+# from a named list of vectors
+l <- list(p1 = pred1, p2 = pred2)
+as.data.frame(l)
+```
+
+```{r, eval=FALSE}
+# from row data via rbind
+r1 <- data.frame(a=1, b=2, c="X")
+r2 <- data.frame(a=3, b=4, c="Y")
+rbind(r1, r2)
+```
+
+:::
+::::::
+
+## Extracting and Filtering
+
+### Row Filtering with Logical Conditions
+
+```{r}
+tg_vc <- tg[tg$supp == 'VC', ]
+tg_oj <- tg[tg$supp == 'OJ', ]
+mean(tg_vc$len); mean(tg_oj$len)
+```
+
+```{r}
+# AND condition
+tg[tg$supp == 'OJ' & tg$len < 8.8, ]
+```
+
+```{r}
+# OR condition
+head(tg[tg$len > 28 | tg$dose == 1.0, ], 6)
+```
+
+- Note the comma (`,`) and the use of `==`, not `=`!
+
+---
+
+### `subset()` --- Cleaner Filtering I
+
+```{r}
+# equivalent to tg[tg$supp == 'OJ' & tg$len > 20, ]
+subset(tg, supp == 'OJ' & len > 20)
+```
+
+---
+
+### `subset()` --- Cleaner Filtering II
+
+```{r}
+# select specific columns
+subset(tg, dose == 2, select = c(len, supp))
+```
+
+---
+
+### `with()` and `within()`
+
+```{r}
+# with() evaluates an expression in the data frame environment
+with(tg, mean(len[supp == 'VC']))
+```
+
+```{r}
+# within() modifies and returns the data frame
+tg2 <- within(tg, {
+  len_cm  <- len / 10
+  log_len <- log(len)
+})
+head(tg2, 3)
+```
+
+## Modifying Data Frames
+
+### Adding, Removing, Renaming Columns
+
+```{r}
+d <- data.frame(x = 1:3, y = c(10, 20, 30))
+d$z <- d$x + d$y              # add column with $
+d[['w']] <- c('a', 'b', 'c') # add column with [[]]
+d
+```
+
+```{r}
+d$z <- NULL                   # remove column
+names(d)[names(d) == 'w'] <- 'label'   # rename
+d
+```
+
+---
+
+### Sorting Data Frames
+
+```{r}
+d <- data.frame(name = c('Zara', 'Amy', 'Mike'),
+                score = c(88, 95, 72))
+d[order(d$score), ]                        # ascending
+d[order(d$score, decreasing = TRUE), ]     # descending
+```
+
+```{r}
+# sort by multiple columns
+d2 <- data.frame(g = c('A','B','A','B'), x = c(3,1,2,4))
+d2[order(d2$g, d2$x), ]
+```
+
+---
+
+### Handling NAs
+
+```{r}
+df <- data.frame(x = c(1, NA, 3, 4, 5), y = c(1, 2, NA, 4, 5))
+na.omit(df)                      # remove rows with any NA
+```
+
+```{r}
+complete.cases(df)                # logical: which rows complete?
+df[complete.cases(df), ]
+```
+
+```{r, eval=FALSE}
+df$x[is.na(df$x)] <- 0           # replace specific column NAs
+df[is.na(df)] <- 0               # replace all NAs
+```
+
+---
+
+### Combining Data Frames: `cbind`, `rbind`
+
+```{r}
+# column-bind (side by side) --- same number of rows
+df1 <- data.frame(a = c(1, 2)); df2 <- data.frame(b = c(7, 8))
+cbind(df1, df2)
+```
+
+```{r}
+# row-bind (stack) --- same column names
+df1 <- data.frame(x = c("a", "a"), y = c(5, 6))
+df2 <- data.frame(x = c("b", "b"), y = c(9, 10))
+rbind(df1, df2)
+```
+
+---
+
+### `merge()` --- Joining Data Frames
+
+```{r}
+customers <- data.frame(id = 1:3,
+                        name = c('Alice', 'Bob', 'Cathy'))
+orders <- data.frame(cust_id = c(2, 3, 3, 1),
+                     product = c('pen', 'book', 'ink', 'paper'))
+merge(customers, orders, by.x = 'id', by.y = 'cust_id')
+```
+
+---
+
+### `merge()` --- Left Join
+
+```{r}
+# left join: keep all rows in customers (NA for no match)
+merge(customers, orders, by.x='id', by.y='cust_id', all.x=TRUE)
+```
+
+---
+
+### `aggregate()` --- Group-wise Summaries
+
+```{r}
+# formula syntax: response ~ grouping (uses ~ operator)
+aggregate(len ~ supp, data = tg, FUN = mean)
+```
+
+```{r}
+aggregate(len ~ supp + dose, data = tg, FUN = mean)
+```
+
+---
+
+### `aggregate()` --- Custom Summary
+
+```{r}
+# custom summary function
+aggregate(len ~ supp, data = tg,
+          FUN = function(x) c(mean = mean(x), sd = sd(x)))
+```
+
+# Lists
+
+## List Basics
+
+### What Is a List?
+
+- A **generic vector**: elements can be of **different types and lengths**.
+
+```{r}
+vn <- c(1, 1.2, 2.3, 3.4, 4.5)
+vb <- c(TRUE, TRUE, FALSE)
+vc <- c('limestone', 'marl', 'oolite', 'CaCO3')
+```
+
+```{r, error=TRUE}
+data.frame(vn, vb, vc)   # ERROR: different lengths
+```
+
+---
+
+### Lists Hold Heterogeneous Data
+
+```{r}
+list(vn, vb, vc)          # lists handle different lengths
+```
+
+---
+
+### Creating Lists I
+
+```{r}
+# unnamed list
+l <- list(3.14, 'Moe', c(1, 3, 5, 2), mean)
+str(l)
+```
+
+```{r}
+# named list
+l <- list(max = 5, right = 0.6, mean = 20)
+l
+```
+
+---
+
+### Creating Lists II
+
+
+```{r}
+# incremental construction
+l <- list()
+l$left <- 0.1; l$right <- 0.52; l$mid <- 0.33
+l
+```
+
+---
+
+### `[[` vs `[` --- The Most Important Distinction
+
+:::::: columns
+::: column
+
+```{r}
+l <- list(a = 1:3, b = 'hello',
+          c = TRUE)
+l[[1]]     # the element itself
+l[1]       # a sub-list
+```
+
+```{r}
+class(l[[1]]); class(l[1])
+```
+
+:::
+::: column
+
+```{r}
+l$a   # same as l[['a']]
+l$b
+```
+
+\vfill
+
+**Analogy**: `[[` reaches into the box and pulls out the item; `[` selects boxes (still wrapped).
+
+:::
+::::::
+
+---
+
+### Modifying and Removing List Elements
+
+```{r}
+l <- list(x = 1, y = 2, z = 3)
+l$x <- 100; l[['y']] <- 200     # modify
+l$w <- 'new'                     # add new element
+l
+```
+
+```{r}
+# remove elements by assigning NULL
+l[c('x', 'w')] <- NULL; l
+```
+
+---
+
+### Concatenating and Nesting Lists
+
+```{r}
+l1 <- list(a = 1, b = 2); l2 <- list(c = 3, d = 4)
+c(l1, l2)
+```
+
+```{r}
+# lists can contain other lists
+nested <- list(
+  student = list(name = 'Alice', age = 20),
+  scores  = list(math = 95, english = 88))
+nested$student$name
+nested[['scores']][['math']]
+```
+
+---
+
+### `unlist()` --- Flatten a List
+
+```{r}
+iq <- list(100, 120, 140, 112, 105)
+mean(unlist(iq))       # must unlist before mean()
+```
+
+```{r}
+l <- list(a = 1:3, b = 4:5)
+unlist(l)                        # names preserved with prefix
+unlist(l, use.names = FALSE)     # drop names
+```
+
+---
+
+### `split()` --- Split a Vector into a List
+
+```{r}
+(mtl <- split(mtcars$mpg, mtcars$cyl))
+```
+
+```{r}
+mtl$`6`; mtl[[2]]   # access by name or position
+```
+
+## List--Data Frame Connection
+
+### A Data Frame Is a List I
+
+```{r}
+df <- data.frame(x = 1:3, y = c('a', 'b', 'c'))
+is.list(df); typeof(df)
+```
+
+```{r}
+df$x; df[['x']]     # extracts column vector (like [[)
+df['x']              # returns 1-column data.frame (like [)
+```
+
+---
+
+### A Data Frame Is a List II
+
+```{r}
+# split() a data frame -> list of data frames
+str(split(tg, tg$supp))
+```
+
+---
+
+### Conversions Between Data Structures
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{llll}
+\toprule
+From & To & How & Note\\
+\midrule
+vector & list & \comm{as.list(v)} & Don't use \comm{list(v)}!\\
+vector & matrix & \comm{matrix(v, n, m)} & \\
+vector & data.frame & \comm{as.data.frame(v)} & \\
+list & vector & \comm{unlist(l)} & Not \comm{as.vector}\\
+list & data.frame & \comm{as.data.frame(l)} & Equal-length only\\
+matrix & vector & \comm{as.vector(m)} & \\
+matrix & list & \comm{as.list(m)} & \\
+matrix & data.frame & \comm{as.data.frame(m)} & \\
+data.frame & list & \comm{as.list(df)} & Removes class attr\\
+data.frame & matrix & \comm{as.matrix(df)} & Coercion!\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+# Matrices
+
+### Creating Matrices
+
+```{r}
+v <- 1:6; matrix(v, nrow = 2, ncol = 3)
+```
+
+```{r, eval=FALSE}
+# from dim attribute
+x1 <- 1:6; dim(x1) <- c(2, 3); x1
+# 3d array
+y <- array(1:12, c(2, 3, 2))
+```
+
+```{r}
+# named rows and columns
+m <- matrix(c(1, .56, .38, .56, 1, .44, .38, .44, 1), 3, 3)
+colnames(m) <- rownames(m) <- c('AAPL', 'MSFT', 'GOOG')
+m; m['MSFT', 'GOOG']
+```
+
+---
+
+### Matrix Operations I
+
+```{r}
+A <- matrix(1:4, 2, 2); B <- matrix(5:8, 2, 2)
+A * B        # element-wise
+A %*% B      # matrix multiplication
+```
+
+```{r}
+t(A); det(A); solve(A)   # transpose, determinant, inverse
+```
+
+---
+
+### Matrix Operations II
+
+```{r}
+# row/column selection: drop=FALSE preserves matrix class
+A[1, ]; A[1, , drop = FALSE]
+A[, 2]; A[, 2, drop = FALSE]
+```
+
+---
+
+### Matrix Functions Summary
+
+```{r, eval=FALSE}
+nrow(m); ncol(m); dim(m)
+diag(m)                    # diagonal elements
+diag(3)                    # 3x3 identity matrix
+crossprod(A, B)            # t(A) %*% B (faster)
+tcrossprod(A, B)           # A %*% t(B)
+outer(1:3, 1:3, '+')      # outer product
+eigen(A)                   # eigenvalue decomposition
+svd(A)                     # SVD
+qr(A)                      # QR decomposition
+```
+
+# Programming
+
+## Functions
+
+### Defining Functions
+
+```{r, eval=FALSE}
+function_name <- function(arg1, arg2 = default_value, ...) {
+    # code
+    return(some_object)
+}
+```
+
+```{r}
+# functions can read global variables
+y_squared <- function() { return(y^2) }
+y <- 2; y_squared()
+```
+
+```{r}
+# but local assignment doesn't change globals
+add_to_y <- function(n) { y <- y + n }
+y <- 1; add_to_y(2); y      # y is still 1
+```
+
+```{r}
+# <<- modifies globals (use sparingly!)
+add_to_y_global <- function(n) { y <<- y + n }
+y <- 1; add_to_y_global(2); y   # y is now 3
+```
+
+---
+
+### `return()` and Implicit Return
+
+```{r}
+avg <- function(x) { return(sum(x) / length(x)) }
+avg(c(2, 3, 6))
+avg(c(TRUE, FALSE, TRUE))   # TRUE=1, FALSE=0
+```
+
+```{r}
+# implicit return: the last evaluated expression is returned
+avg_bad <- function(x) { r <- sum(x) / length(x) }
+avg_ok  <- function(x) { sum(x) / length(x) }
+avg_bad(1:10)   # silent! (assignment returns invisibly)
+avg_ok(1:10)    # returns result
+```
+
+---
+
+### Default Arguments and Named Arguments
+
+```{r}
+power_n <- function(x, n = 2) { return(x^n) }
+power_n(3)              # default n = 2
+power_n(3, 3)           # supplied n = 3
+power_n(x = 5, n = 2)  # named arguments
+power_n(n = 2, x = 5)  # order doesn't matter with names
+```
+
+---
+
+### Functions as Arguments and `...`
+
+```{r}
+apply_to_first2 <- function(x, func) {
+    func(x[1:2])
+}
+x <- c(1, 2, 3)
+apply_to_first2(x, sqrt); apply_to_first2(x, sum)
+```
+
+```{r}
+# ... passes extra arguments to the inner function
+apply_to_first2 <- function(x, func, ...) {
+    func(x[1:2], ...)
+}
+x <- c(NA, 2, 3)
+apply_to_first2(x, sum, na.rm = TRUE)
+```
+
+---
+
+### Anonymous Functions and `\(x)` Shorthand
+
+```{r}
+sapply(1:5, function(x) x^2 + 1)
+```
+
+```{r}
+# R 4.1+ shorthand: \(x) replaces function(x)
+sapply(1:5, \(x) x^2 + 1)
+```
+
+```{r}
+# useful in apply family
+l <- list(a = 1:5, b = 6:10)
+lapply(l, \(v) c(mean = mean(v), sd = sd(v)))
+```
+
+---
+
+### Closures: Functions Returning Functions
+
+```{r}
+power_factory <- function(n) {
+  function(x) x^n
+}
+square <- power_factory(2)
+cube   <- power_factory(3)
+square(5); cube(3)
+```
+
+```{r}
+# the enclosing environment is captured
+environment(square)$n; environment(cube)$n
+```
+
+---
+
+### Naming Conventions and Dot-Prefix
+
+```{r}
+# names starting with . are "hidden" (not shown by ls())
+e <- new.env()
+e$.internal <- function(x) x + 1
+e$public    <- function(x) x * 2
+ls(e)                        # .internal not shown
+ls(e, all.names = TRUE)      # now it's shown
+```
+
+\vfill
+
+- Convention: `.name` signals "internal/private" --- don't call directly
+- Many base R internals use this: `.Machine`, `.Platform`, `.GlobalEnv`
+
+---
+
+### `if (FALSE) { }` --- Code Block Toggle
+
+```{r, eval=FALSE}
+# a common idiom: wrap example/test code that shouldn't run
+if (FALSE) {
+  # these lines are "commented out" but remain valid R code
+  # change to if (TRUE) to run them
+  book(date = "2026/04/02", headless = FALSE)
+  cancel(order_id = "01901879")
+}
+```
+
+\vfill
+
+- Unlike `#` comments, the code inside is still checked by R's parser
+- Useful for storing runnable examples at the bottom of a script
+
+---
+
+### Local Helper Functions (Functions Inside Functions)
+
+```{r}
+search_with_retry <- function(query, max_tries = 3) {
+  # define a short-lived helper inside the function
+  is_valid <- function(result) {
+    !is.null(result) && length(result) > 0
+  }
+  for (i in seq_len(max_tries)) {
+    result <- tryCatch(grep(query, letters, value = TRUE),
+                       error = function(e) NULL)
+    if (is_valid(result)) return(result)
+    Sys.sleep(0.1)
+  }
+  NULL
+}
+search_with_retry("^[a-c]")
+```
+
+\vfill
+
+- Helper functions defined inside a function have access to all local variables (lexical scoping)
+- They don't pollute the global environment
+
+## Control Flow
+
+### `if` / `else`
+
+```{r}
+reciprocal <- function(x) {
+  if (is.na(x)) {
+    cat("Error! Division by NA.\n")
+  } else if (is.infinite(x)) {
+    cat("Error! Division by infinity.\n")
+  } else if (x == 0) {
+    cat("Error! Division by zero.\n")
+  } else {
+    1 / x
+  }
+}
+reciprocal(2); reciprocal(0); reciprocal(NA)
+```
+
+---
+
+### `ifelse()` --- Vectorized Conditional
+
+```{r}
+x <- c(-1, 2, -100, 20, 50)
+ifelse(x > 0, 'positive', 'negative')
+```
+
+```{r}
+# nested ifelse
+v <- c(20, 18, 45, 33, 25, 9, 17, 55, 69, 81, 44, 32)
+ifelse(v >= 20 & v < 40, 'young adult',
+ifelse(v >= 40 & v < 60, 'middle age', 'other'))
+```
+
+---
+
+### `switch()`
+
+```{r}
+day_type <- function(day) {
+  switch(day,
+    Monday=, Tuesday=, Wednesday=,
+    Thursday=, Friday= "Weekday",
+    Saturday=, Sunday= "Weekend",
+    "Unknown")
+}
+day_type("Monday"); day_type("Sunday"); day_type("Holiday")
+```
+
+---
+
+### `&&` vs `&` (Short-Circuit Evaluation)
+
+```{r}
+# first, ensure 'aa' does not exist from earlier chunks
+if (exists("aa")) rm(aa)
+```
+
+```{r}
+# && is short-circuited: stops at first FALSE
+if (exists("aa") && aa > 0) {
+    cat("aa exists and is positive.\n")
+} else {
+    cat("aa doesn't exist or is negative.\n")
+}
+```
+
+```{r, error=TRUE}
+# & evaluates BOTH sides -- error because aa doesn't exist!
+if (exists("aa") & aa > 0) {
+    cat("aa exists and is positive.\n")
+} else {
+    cat("aa doesn't exist or is negative.\n")
+}
+```
+
+- **Rule**: Use `&&` / `||` in `if` (scalar); use `&` / `|` for vectors.
+
+## Loops
+
+### `for` Loop
+
+```{r}
+# sum 1 to 10000
+ans <- 0
+for (i in 1:10000) { ans <- ans + i }
+ans
+```
+
+```{r}
+# sum of min(2^k, k^4) for k = 1..100
+ans <- 0
+for (k in 1:100) { ans <- ans + min(2^k, k^4) }
+ans
+```
+
+```{r}
+# vectorized equivalent (much faster)
+v <- 1:100; sum(pmin(2^v, v^4))
+```
+
+---
+
+### `while`, `repeat`, `break`, `next`
+
+```{r}
+# while: find smallest n such that sum(1:n) > 1000
+n <- 0; s <- 0
+while (s <= 1000) { n <- n + 1; s <- s + n }
+cat("n =", n, ", sum =", s, "\n")
+```
+
+```{r}
+# repeat + break
+n <- 1
+repeat { if (n^2 > 100) break; n <- n + 1 }
+cat("First n with n^2 > 100:", n, "\n")
+```
+
+```{r}
+# next: skip iterations
+for (i in 1:10) {
+  if (i %% 3 == 0) next    # skip multiples of 3
+  cat(i, '')
+}
+```
+
+---
+
+### Vectorization vs Loops: Speed Comparison
+
+```{r}
+my_sum <- function(x) {
+    ans <- 0
+    for (i in seq_along(x)) { ans <- ans + x[i] }
+    ans
+}
+v <- 1:1000000; system.time(my_sum(v)); system.time(sum(v))
+```
+
+\vfill
+
+```{r}
+# pre-allocate vs grow-in-loop vs vectorized
+n <- 1e5
+system.time({v <- c(); for (i in 1:n) v <- c(v, i^2)})
+system.time({v <- numeric(n); for (i in 1:n) v[i] <- i^2})
+system.time({v <- (1:n)^2})
+```
+
+## Pipe Operator
+
+### Native Pipe `|>` (R 4.1+)
+
+```{r}
+# without pipe: nested calls are hard to read
+round(mean(abs(rnorm(100))), 3)
+```
+
+```{r}
+# with pipe: read left to right
+set.seed(1)
+rnorm(100) |> abs() |> mean() |> round(3)
+```
+
+```{r}
+# pipe with data frame operations
+mtcars |> subset(cyl == 6) |> head(3)
+```
+
+```{r, eval=FALSE}
+# use _ as placeholder for non-first argument (R 4.2+)
+mtcars |> lm(mpg ~ wt, data = _) |> summary()
+```
+
+# The Apply Family
+
+### `apply()` --- Over Matrix / Data Frame Margins
+
+```{r}
+m <- matrix(1:12, nrow = 3); m
+apply(m, 1, sum)     # MARGIN=1: rows
+apply(m, 2, sum)     # MARGIN=2: columns
+```
+
+```{r}
+# also works on data frames (numeric columns)
+apply(mtcars[, 1:4], 2, mean)
+```
+
+---
+
+### `lapply()` and `sapply()`
+
+```{r}
+x <- list(a = 1:5, b = rnorm(10), c = c(TRUE, FALSE, TRUE))
+lapply(x, mean)      # always returns a list
+sapply(x, mean)      # simplifies to named vector
+```
+
+```{r}
+# sapply can be unpredictable; vapply is safer
+vapply(x, mean, numeric(1))
+```
+
+---
+
+### `tapply()` --- Apply by Groups
+
+```{r}
+# mean mpg by cylinder count
+tapply(mtcars$mpg, mtcars$cyl, mean)
+```
+
+```{r}
+# two-way grouping
+tapply(mtcars$mpg, list(mtcars$cyl, mtcars$am), mean)
+```
+
+---
+
+### `mapply()` and `Map()`
+
+```{r}
+# apply to corresponding elements of multiple vectors
+mapply(function(x, y) x + y, 1:5, 10:14)
+```
+
+```{r}
+mapply(rep, 1:3, 3:1)   # variable-length results
+```
+
+```{r}
+# Map: always returns a list (no simplification)
+Map('+', 1:3, 10:12)
+```
+
+---
+
+### `Reduce()` --- Sequential Accumulation
+
+```{r}
+Reduce('+', 1:5)                          # 15
+Reduce('+', 1:5, accumulate = TRUE)       # running total
+```
+
+```{r}
+# merge multiple data frames
+dfs <- list(data.frame(id=1:3, a=10:12),
+            data.frame(id=2:4, b=20:22),
+            data.frame(id=1:3, c=30:32))
+Reduce(\(x, y) merge(x, y, by='id', all=TRUE), dfs)
+```
+
+---
+
+### `Filter()`, `Find()`, `Position()`
+
+```{r}
+x <- list(1:3, "hello", 4:6, TRUE, NULL)
+Filter(is.numeric, x)          # keep numeric elements
+Find(is.character, x)          # first character element
+Position(is.character, x)      # its position
+```
+
+```{r}
+Filter(\(x) x %% 15 == 0, 1:50)   # multiples of 15
+```
+
+# String Operations
+
+### Basic String Functions
+
+```{r}
+nchar('hello world')
+toupper('hello'); tolower('HELLO')
+trimws('  hello  '); trimws('  hello  ', which = 'left')
+```
+
+```{r}
+substr('abcdefgh', 3, 5)
+startsWith('hello world', 'hello')
+endsWith('hello world', 'world')
+```
+
+```{r}
+chartr('abc', 'ABC', 'a big cat')
+```
+
+---
+
+### `paste()` and `paste0()`
+
+```{r}
+paste('a', 'b', 'c', sep = '-')
+paste0('item', 1:5)
+```
+
+```{r}
+(labels <- paste(c('a', 'b'), 1:6, sep = '-'))
+```
+
+```{r}
+# collapse: join multiple strings into one
+paste('item', 1:5, sep = '_', collapse = ', ')
+```
+
+---
+
+### `sprintf()` --- Formatted Strings
+
+```{r}
+# %d: integer; %.2f: 2 decimal places; %s: string
+sprintf('Name: %s, Age: %d, Score: %.2f', 'Alice', 25, 95.678)
+```
+
+```{r}
+sprintf('%05d', 42)         # zero-padded
+sprintf('%.2f%%', 12.345)   # percentage
+sprintf('%-10s|', 'left')   # left-align
+```
+
+---
+
+### `cat()` --- Print to Console
+
+```{r}
+v <- c(20, 30, 3 * pi)
+cat("The content of v is:", v, "...\n")
+```
+
+```{r}
+for (i in 50 * (0:2)) {
+  cat(sprintf('exp(sin(%3d)) = %.6f', i, exp(sin(i))), '\n')
+}
+```
+
+---
+
+### `strsplit()` --- Split Strings
+
+```{r}
+strsplit('a.b.c.d', split = '\\.')
+strsplit('hello world foo', split = ' ')
+strsplit(c('a-b', 'c-d-e'), split = '-')
+strsplit('hello', split = '')   # every character
+```
+
+---
+
+### `grep()`, `grepl()` --- Pattern Matching
+
+```{r}
+x <- c('apple', 'banana', 'cherry', 'apricot', 'blueberry')
+grep('an', x)                                  # indices
+grep('an', x, value = TRUE)                   # values
+grepl('an', x)                                  # logical
+grep('APPLE', x, ignore.case = TRUE, value = TRUE)
+```
+
+---
+
+### `sub()`, `gsub()` --- Pattern Replacement
+
+```{r}
+x <- 'Hello World Hello'
+sub('Hello', 'Hi', x)      # replace FIRST match
+gsub('Hello', 'Hi', x)     # replace ALL matches
+```
+
+```{r}
+gsub('[0-9]', '', 'abc123def456')      # remove all digits
+gsub(' +', ' ', 'too   many    spaces')  # compress spaces
+```
+
+---
+
+### `regexpr()`, `gregexpr()`, `regmatches()`
+
+```{r}
+x <- 'Phone: 02-1234-5678, Fax: 04-8765-4321'
+m <- gregexpr('[0-9]+-[0-9]+-[0-9]+', x)
+regmatches(x, m)    # extract all matches
+```
+
+```{r}
+m <- regexpr('[0-9]+-[0-9]+-[0-9]+', x)
+regmatches(x, m)    # extract first match only
+```
+
+# Regular Expressions
+
+### What Are Regular Expressions?
+
+- Patterns for matching text. Used in `grep`, `grepl`, `sub`, `gsub`, `regexpr`, `strsplit`, etc.
+- In R strings, backslash must be **doubled**: write `\\d` for the regex `\d`.
+
+---
+
+### Basic Metacharacters
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Pattern & Meaning \\
+\midrule
+\comm{.} & any single character (except newline) \\
+\comm{\textasciicircum} & start of string \\
+\comm{\$} & end of string \\
+\comm{*} & 0 or more of preceding \\
+\comm{+} & 1 or more of preceding \\
+\comm{?} & 0 or 1 of preceding \\
+\comm{\{n\}}, \comm{\{n,m\}} & exactly \comm{n}; between \comm{n} and \comm{m} \\
+\comm{|} & alternation (or) \\
+\comm{()} & grouping and capture \\
+\comm{[]} & character class \\
+\comm{\textbackslash} & escape next character \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+---
+
+### Character Classes
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Class & Meaning \\
+\midrule
+\comm{[abc]} & matches a, b, or c \\
+\comm{[\textasciicircum abc]} & matches anything except a, b, c \\
+\comm{[a-z]}, \comm{[A-Z]}, \comm{[0-9]} & ranges \\
+\comm{\textbackslash d} / \comm{\textbackslash D} & digit / non-digit \\
+\comm{\textbackslash w} / \comm{\textbackslash W} & word char / non-word char \\
+\comm{\textbackslash s} / \comm{\textbackslash S} & whitespace / non-whitespace \\
+\comm{\textbackslash b} & word boundary \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+```{r}
+x <- c('hello123', 'world', '456', 'test!', 'a1b2')
+grep('[0-9]', x, value = TRUE)       # contains a digit
+grep('^[0-9]+$', x, value = TRUE)    # all digits
+```
+
+---
+
+### Anchors and Quantifiers
+
+```{r}
+x <- c('cat', 'concatenate', 'scat', 'catalog')
+grep('^cat', x, value = TRUE)     # starts with 'cat'
+grep('cat$', x, value = TRUE)     # ends with 'cat'
+grep('^cat$', x, value = TRUE)    # exactly 'cat'
+```
+
+```{r}
+x <- c('a', 'ab', 'abb', 'abbb', 'ac')
+grep('ab*', x, value = TRUE)      # a + 0 or more b's
+grep('ab+', x, value = TRUE)      # a + 1 or more b's
+grep('ab?c', x, value = TRUE)     # a + optional b + c
+```
+
+---
+
+### Alternation and Groups
+
+```{r}
+x <- c('cat', 'dog', 'catfish', 'dogfish', 'bird')
+grep('cat|dog', x, value = TRUE)       # cat OR dog
+grep('^(cat|dog)$', x, value = TRUE)   # exactly cat or dog
+```
+
+```{r}
+# backreferences: match repeated patterns
+x <- c('abab', 'abcd', 'xyzxyz', 'aabb')
+grep('(..)\\1', x, value = TRUE)
+```
+
+---
+
+### Capture Groups and `sub()`
+
+```{r}
+# swap first and last name
+x <- c('John Smith', 'Jane Doe', 'Bob Lee')
+sub('(\\w+) (\\w+)', '\\2, \\1', x)
+```
+
+```{r}
+# extract parts of a date
+dates <- c('2024-01-15', '2023-12-31')
+sub('(\\d{4})-(\\d{2})-(\\d{2})', 'Year:\\1, Month:\\2', dates)
+```
+
+---
+
+### Greedy vs Lazy Matching
+
+```{r}
+x <- '<b>bold</b> and <i>italic</i>'
+# greedy: matches as much as possible
+regmatches(x, gregexpr('<.*>', x))
+```
+
+```{r}
+# lazy (non-greedy): add ? after quantifier
+regmatches(x, gregexpr('<.*?>', x))
+```
+
+---
+
+### Lookahead and Lookbehind (Perl)
+
+```{r}
+x <- c('$100', '200', '$300', '400')
+# lookbehind: extract digits preceded by $
+regmatches(x, gregexpr('(?<=\\$)\\d+', x, perl = TRUE))
+```
+
+```{r}
+# negative lookahead: files NOT ending in .txt
+x <- c('file.txt', 'image.png', 'doc.txt', 'photo.jpg')
+grep('\\.(?!txt)', x, value = TRUE, perl = TRUE)
+```
+
+---
+
+### POSIX Character Classes
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+Class & Meaning \\
+\midrule
+\comm{[:alpha:]} & alphabetic \\
+\comm{[:digit:]} & digits (0--9) \\
+\comm{[:alnum:]} & alphanumeric \\
+\comm{[:upper:]}, \comm{[:lower:]} & upper/lowercase \\
+\comm{[:space:]} & whitespace \\
+\comm{[:punct:]} & punctuation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+```{r}
+x <- c('Hello!', '123', 'abc', 'A1!')
+grep('[[:punct:]]', x, value = TRUE)
+grep('^[[:digit:]]+$', x, value = TRUE)
+```
+
+---
+
+### Practical Regex Examples
+
+```{r}
+# validate email (simplified)
+emails <- c('user@example.com', 'bad@@email',
+            'test@domain.org', 'no_at_sign')
+grep('^[\\w.]+@[\\w.]+\\.[a-z]{2,}$', emails,
+     value = TRUE, perl = TRUE)
+```
+
+```{r}
+# clean column names: replace non-alphanumeric with _
+col_names <- c('First Name', 'Last.Name', 'Age (years)')
+gsub('[^a-zA-Z0-9]', '_', col_names)
+```
+
+---
+
+### `regexec()` --- Full Capture Group Extraction
+
+```{r}
+x <- c('2024-01-15 14:30', '2023-12-31 09:00')
+pattern <- '(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2})'
+m <- regexec(pattern, x)
+regmatches(x, m)
+```
+
+# Graphics
+
+### Scatter Plots
+
+```{r, out.width="50%"}
+plot(cars$speed, cars$dist, xlab = 'Speed', ylab = 'Distance',
+     main = 'cars dataset', pch = 19, col = 'steelblue')
+abline(lm(dist ~ speed, data = cars), col = 'red', lwd = 2)
+```
+
+---
+
+### Essential Plot Parameters
+
+```{r, out.width="45%"}
+x <- seq(0, 2*pi, length.out = 100)
+plot(x, sin(x), type = 'l', col = 'blue', lwd = 2,
+     main = 'Trig Functions', xlab = 'x', ylab = 'y')
+lines(x, cos(x), col = 'red', lwd = 2, lty = 2)
+legend('topright', legend = c('sin', 'cos'),
+       col = c('blue', 'red'), lty = c(1, 2), lwd = 2)
+```
+
+---
+
+### Plot Types: `type` Argument
+
+```{r, out.width="60%", fig.height=4}
+par(mfrow = c(2, 3), mar = c(2,2,2,1))
+y <- c(3,1,4,1,5,9,2,6)
+for (tp in c('p','l','b','o','h','s')) {
+  plot(y, type = tp, main = paste("type =", tp))
+}
+```
+
+---
+
+### Multi-panel Plots with `par(mfrow)`
+
+```{r, out.width="55%", fig.height=4}
+par(mfrow = c(1, 3), mar = c(4,4,2,1))
+hist(rnorm(1000), main = 'Histogram', col = 'lightblue')
+boxplot(len ~ supp, data = tg, main = 'Boxplot',
+        col = c('orange', 'cyan'))
+barplot(table(mtcars$cyl), main = 'Barplot',
+        col = c('red', 'green', 'blue'))
+```
+
+---
+
+### Adding Elements to Plots
+
+```{r, out.width="45%"}
+plot(1:10, (1:10)^2, type = 'b', pch = 19)
+abline(h = 50, col = 'red', lty = 2)
+abline(v = 7, col = 'blue', lty = 3)
+text(5, 80, 'annotation', col = 'darkgreen', cex = 1.2)
+points(c(3, 6), c(9, 36), pch = 17, col = 'red', cex = 2)
+```
+
+---
+
+### Color by Factor
+
+```{r, out.width="50%"}
+plot(tg$dose, tg$len, col = as.factor(tg$supp),
+     pch = 19, xlab = 'Dose', ylab = 'Tooth Length',
+     main = 'ToothGrowth by Supplement')
+legend('bottomright', legend = levels(as.factor(tg$supp)),
+       col = 1:2, pch = 19)
+```
+
+---
+
+### Saving Plots to File
+
+```{r, eval=FALSE}
+# save to PNG (raster)
+png('my_plot.png', width = 800, height = 600)
+plot(1:10, main = 'My Plot')
+dev.off()
+
+# save to PDF (vector)
+pdf('my_plot.pdf', width = 8, height = 6)
+plot(1:10, main = 'My Plot')
+dev.off()
+```
+
+# Date and Time
+
+### Date Objects
+
+```{r}
+today <- Sys.Date(); today; class(today)
+```
+
+```{r}
+as.Date('2024-01-15')
+as.Date('15/01/2024', format = '%d/%m/%Y')
+as.Date('Jan 15, 2024', format = '%b %d, %Y')
+```
+
+```{r}
+today + 30
+as.Date('2024-12-31') - as.Date('2024-01-01')
+```
+
+---
+
+### Date Formatting
+
+```{r}
+d <- as.Date('2024-07-15')
+format(d, '%Y'); format(d, '%B'); format(d, '%A')
+format(d, '%d %b %Y')
+```
+
+```{r}
+weekdays(d); months(d); quarters(d)
+```
+
+---
+
+### Date-Time: `POSIXct` and `POSIXlt`
+
+```{r}
+now <- Sys.time(); now; class(now)
+as.POSIXct('2024-01-15 14:30:00', tz = 'Asia/Taipei')
+```
+
+```{r}
+# POSIXlt: list-based access to components
+lt <- as.POSIXlt(now)
+lt$hour; lt$min; lt$wday    # 0=Sunday
+```
+
+---
+
+### `difftime`, Sequences, and Format Codes
+
+```{r}
+d1 <- as.Date('2024-01-01'); d2 <- as.Date('2024-12-31')
+difftime(d2, d1, units = 'weeks')
+seq(as.Date('2024-01-01'), as.Date('2024-06-01'), by = 'month')
+```
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{llll}
+\toprule
+Code & Meaning & Code & Meaning \\
+\midrule
+\comm{\%Y} & 4-digit year & \comm{\%H} & hour (00--23) \\
+\comm{\%m} & month (01--12) & \comm{\%M} & minute (00--59) \\
+\comm{\%d} & day (01--31) & \comm{\%S} & second (00--59) \\
+\comm{\%B}/\comm{\%b} & month name/abbrev & \comm{\%A}/\comm{\%a} & weekday name/abbrev \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+---
+
+### `strftime()` and `strptime()`
+
+```{r}
+strftime(Sys.time(), '%Y-%m-%d %H:%M:%S %Z')
+```
+
+```{r}
+strptime('15-Jan-2024 14:30', format = '%d-%b-%Y %H:%M')
+```
+
+# File I/O
+
+### Reading Text Files
+
+```{r, eval=FALSE}
+df <- read.csv('data.csv')
+df <- read.csv('data.csv', header = TRUE, stringsAsFactors = FALSE)
+df <- read.delim('data.tsv')               # tab-separated
+df <- read.table('data.txt', header = TRUE, sep = '|')
+df <- read.csv('data.csv',
+               colClasses = c('character', 'numeric', 'factor'))
+```
+
+---
+
+### Writing Text Files
+
+```{r, eval=FALSE}
+write.csv(df, 'output.csv', row.names = FALSE)
+write.table(df, 'output.tsv', sep = '\t',
+            row.names = FALSE, quote = FALSE)
+```
+
+---
+
+### Reading and Writing R Objects
+
+```{r, eval=FALSE}
+# save multiple R objects (binary, preserves types)
+save(x, y, file = 'my_data.RData')
+load('my_data.RData')
+
+# save/load a single object
+saveRDS(df, 'my_df.rds')
+df <- readRDS('my_df.rds')
+```
+
+---
+
+### `readLines`, `writeLines`, `scan`
+
+```{r, eval=FALSE}
+lines <- readLines('file.txt')
+lines <- readLines('file.txt', n = 10)     # first 10 lines
+writeLines(c('line 1', 'line 2'), 'out.txt')
+nums  <- scan('numbers.txt')               # numeric
+words <- scan('words.txt', what = '')       # character
+```
+
+---
+
+### File System Functions
+
+```{r, eval=FALSE}
+getwd(); setwd('/path/to/dir')
+list.files(); list.files(pattern = '\\.csv$')
+file.exists('myfile.csv'); dir.exists('mydir')
+file.info('myfile.csv')
+file.copy('src.csv', 'dst.csv')
+file.rename('old.csv', 'new.csv')
+file.remove('temp.csv')
+dir.create('new_folder')
+```
+
+---
+
+### Binary I/O: `readBin`, `writeBin`, `rawToChar`
+
+```{r, eval=FALSE}
+# write raw bytes to a file (e.g., decoded image data)
+raw_data <- charToRaw("Hello, world!")
+writeBin(raw_data, 'hello.bin')
+
+# read raw bytes from a file
+dat <- readBin('hello.bin', what = 'raw', n = 100)
+rawToChar(dat)     # convert raw vector back to string
+```
+
+```{r}
+# practical: inspect raw type
+x <- charToRaw("ABC"); x; typeof(x)
+rawToChar(x)
+as.integer(x)     # see the byte values
+```
+
+---
+
+### `readline()` and `interactive()`
+
+```{r, eval=FALSE}
+# readline: read user input from the console
+name <- readline(prompt = "Enter your name: ")
+cat("Hello,", name, "\n")
+
+# read a number (readline always returns character!)
+n <- as.numeric(readline("Enter a number: "))
+```
+
+```{r, eval=FALSE}
+# interactive(): is R running in interactive mode?
+if (interactive()) {
+  cat("Running interactively (RStudio / console)\n")
+} else {
+  cat("Running in batch mode (Rscript)\n")
+}
+
+# common pattern: skip GUI elements in non-interactive mode
+if (interactive()) {
+  answer <- readline("Continue? [y/n] ")
+} else {
+  answer <- "y"     # auto-continue in scripts
+}
+```
+
+# Error Handling
+
+### `tryCatch()` --- Structured Error Handling
+
+```{r}
+# note: tryCatch catches the FIRST condition raised
+result <- tryCatch({
+  log('a')      # error: non-numeric argument
+}, warning = function(w) {
+  cat("Warning:", conditionMessage(w), "\n"); NA
+}, error = function(e) {
+  cat("Error:", conditionMessage(e), "\n"); NA
+}, finally = {
+  cat("(cleanup code runs always)\n")
+})
+result
+```
+
+---
+
+### `try()` --- Simple Error Handling
+
+```{r}
+result <- try(log('a'), silent = TRUE)
+inherits(result, 'try-error')
+```
+
+```{r}
+# useful in loops: skip failing inputs
+inputs <- list(1, 'a', 4, NULL, 9)
+results <- list()
+for (i in seq_along(inputs)) {
+  results[[i]] <- try(sqrt(inputs[[i]]), silent = TRUE)
+}
+Filter(\(r) !inherits(r, 'try-error'), results)
+```
+
+---
+
+### Common Error-Handling Idioms
+
+```{r}
+# silently ignore errors: return NULL on failure
+safe_parse <- function(x) {
+  tryCatch(as.numeric(x), warning = function(w) NULL,
+                          error   = function(e) NULL)
+}
+safe_parse("3.14"); safe_parse("abc"); safe_parse(NULL)
+```
+
+```{r}
+# wrap risky operations with a default value
+safe_log <- function(x, default = NA) {
+  tryCatch(log(x), error = function(e) default)
+}
+sapply(list(10, -1, 'a', NULL), safe_log)
+```
+
+---
+
+### `stop()`, `warning()`, `message()`
+
+```{r, error=TRUE}
+safe_div <- function(a, b) {
+  if (b == 0) stop("Division by zero!")
+  a / b
+}
+safe_div(10, 2); safe_div(10, 0)
+```
+
+```{r}
+check_val <- function(x) {
+  if (x < 0) warning("Negative value!")
+  sqrt(abs(x))
+}
+check_val(-4)
+```
+
+---
+
+### `stopifnot()` --- Assertions
+
+```{r, error=TRUE}
+my_mean <- function(x) {
+  stopifnot(is.numeric(x), length(x) > 0)
+  sum(x) / length(x)
+}
+my_mean(1:5)
+my_mean('hello')
+```
+
+# Useful Utilities
+
+### `do.call()`
+
+```{r}
+dfs <- list(
+  data.frame(x = 1:2, y = 3:4),
+  data.frame(x = 5:6, y = 7:8),
+  data.frame(x = 9:10, y = 11:12))
+do.call(rbind, dfs)
+```
+
+```{r}
+args <- list(1:10, na.rm = TRUE)
+do.call(mean, args)
+```
+
+---
+
+### `Vectorize()` --- Scalar to Vector
+
+```{r}
+f <- function(x, y) {
+  if (x > y) x - y else x + y
+}
+f_vec <- Vectorize(f)
+f_vec(1:3, 2)
+```
+
+---
+
+### `table()` and `prop.table()`
+
+```{r}
+x <- c('A','B','A','C','B','A','C','C','B','A')
+table(x)
+prop.table(table(x))
+```
+
+```{r}
+y <- c(1,1,2,1,2,2,1,2,1,2)
+addmargins(table(x, y))
+```
+
+---
+
+### `match.arg()` and `missing()`
+
+```{r}
+my_plot <- function(type = c('scatter', 'line', 'bar')) {
+  type <- match.arg(type)
+  cat("Plotting:", type, "\n")
+}
+my_plot()         # default: first option
+my_plot('l')      # partial matching
+```
+
+```{r}
+f <- function(x, y) {
+  cat("nargs:", nargs(), "\n")
+  if (missing(y)) cat("y is missing\n")
+}
+f(1); f(1, 2)
+```
+
+---
+
+### `invisible()` --- Silent Return
+
+```{r}
+# invisible: returns value without printing
+f <- function(x) invisible(x^2)
+f(5)                 # nothing printed
+y_val <- f(5); y_val # but value is captured
+```
+
+```{r}
+# common pattern: side-effect functions return invisible(NULL)
+my_print <- function(x) {
+  cat("Value:", x, "\n")
+  invisible(NULL)       # nothing meaningful to return
+}
+result <- my_print(42); is.null(result)
+```
+
+---
+
+### `on.exit()` --- Guaranteed Cleanup
+
+```{r, eval=FALSE}
+# on.exit: cleanup code that always runs (even on error)
+safe_read <- function(path) {
+  con <- file(path, 'r')
+  on.exit(close(con))       # guaranteed cleanup
+  readLines(con)
+}
+```
+
+```{r, eval=FALSE}
+# add = TRUE: stack multiple on.exit calls (don't overwrite)
+process <- function(path) {
+  tmp <- tempfile()
+  on.exit(unlink(tmp), add = TRUE)      # cleanup 1
+  con <- file(path, 'r')
+  on.exit(close(con), add = TRUE)       # cleanup 2
+  # ... both cleanup actions run when function exits
+}
+```
+
+---
+
+### Recursive Functions and `Recall()`
+
+```{r}
+my_factorial <- function(n) {
+  if (n <= 1) return(1)
+  n * Recall(n - 1)
+}
+my_factorial(5)
+```
+
+```{r}
+fib <- function(n) {
+  if (n <= 2) return(1)
+  Recall(n - 1) + Recall(n - 2)
+}
+sapply(1:10, fib)
+```
+
+---
+
+### `Encoding()` and `iconv()`
+
+```{r, eval=FALSE}
+Encoding(x)
+iconv(x, from = 'UTF-8', to = 'BIG5')
+iconv(x, from = 'BIG5', to = 'UTF-8')
+Sys.setlocale('LC_ALL', 'zh_TW.UTF-8')   # set locale
+```
+
+---
+
+### Benchmarking: `system.time()` and `proc.time()`
+
+```{r}
+system.time({
+  x <- matrix(rnorm(1e6), 1000, 1000)
+  y_mat <- crossprod(x)
+})
+```
+
+```{r}
+pt <- proc.time()
+x <- sum(1:1e7)
+proc.time() - pt
+```
+
+---
+
+### `system2()` --- Run External Commands
+
+```{r, eval=FALSE}
+# system2 is safer than system: separates command from args
+system2("echo", args = c("hello", "world"))
+
+# capture output as character vector
+out <- system2("date", stdout = TRUE)
+cat(out, "\n")
+
+# run in background (don't wait)
+system2("sleep", args = "5", wait = FALSE)
+
+# suppress all output
+system2("ls", stdout = NULL, stderr = NULL)
+```
+
+```{r, eval=FALSE}
+# cross-platform branching with .Platform$OS.type
+if (.Platform$OS.type == "windows") {
+  system2("taskkill", args = c("/F", "/IM", "myapp.exe"),
+          stdout = NULL, stderr = NULL)
+} else {
+  system2("pkill", args = "myapp",
+          stdout = NULL, stderr = NULL)
+}
+```
+
+# Advanced Topics
+
+### S3 Object System Basics
+
+```{r}
+person <- list(name = 'Alice', age = 30)
+class(person) <- 'Person'
+print.Person <- function(x, ...) {
+  cat(sprintf("Person: %s (age %d)\n", x$name, x$age))
+}
+person
+```
+
+---
+
+### Formula Objects
+
+```{r}
+f <- y ~ x1 + x2
+class(f); typeof(f); all.vars(f)
+```
+
+```{r, eval=FALSE}
+# common formula patterns
+y ~ x                 # simple regression
+y ~ x1 + x2           # multiple regression
+y ~ x1 * x2           # with interaction (= x1 + x2 + x1:x2)
+y ~ .                  # all other columns
+y ~ poly(x, 3)        # polynomial
+y ~ log(x)            # transformed
+```
+
+---
+
+### Linear Regression Example
+
+```{r, out.width="40%"}
+model <- lm(dist ~ speed, data = cars)
+model$coefficients
+plot(cars$speed, cars$dist, pch = 19)
+abline(model, col = 'red', lwd = 2)
+```
+
+---
+
+### Random Number Generation
+
+```{r}
+set.seed(42)
+runif(5); rnorm(5, mean = 0, sd = 1)
+```
+
+```{r}
+rbinom(10, size = 1, prob = 0.5)
+rpois(10, lambda = 3)
+rexp(5, rate = 1)
+```
+
+---
+
+### `options()` and `getOption()`
+
+```{r, eval=FALSE}
+options(digits = 15)           # more decimal places
+options(scipen = 999)          # avoid scientific notation
+getOption('digits')
+options(warn = 2)              # warnings as errors
+```
+
+---
+
+### Closure-Based Counter (Encapsulation Pattern)
+
+```{r}
+counter <- local({
+  n <- 0
+  list(
+    increment = function() { n <<- n + 1; n },
+    get = function() n,
+    reset = function() { n <<- 0 })
+})
+counter$increment(); counter$increment(); counter$get()
+counter$reset(); counter$get()
+```
+
+---
+
+### Help System
+
+```{r, eval=FALSE}
+?prod                            # help on a function
+example(cumsum)                  # run examples
+help.search('multivariate normal')
+help(mgcv::rmvn)                # package::function help
+```
+
+---
+
+### Package Management
+
+```{r, eval=FALSE}
+install.packages('dplyr')
+library(dplyr)
+require(dplyr)                  # returns TRUE/FALSE
+installed.packages()[, 'Package']
+update.packages()
+remove.packages('dplyr')
+```
+
+---
+
+### Useful One-Liners
+
+```{r, eval=FALSE}
+rm(list = ls())                 # clear workspace
+suppressWarnings(as.integer(c('1', 'a', '3')))
+sort(table(x), decreasing = TRUE)   # frequency count
+source('my_script.R')
+args <- commandArgs(trailingOnly = TRUE)
+```

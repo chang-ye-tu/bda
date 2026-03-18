@@ -1,0 +1,1293 @@
+---
+title: "以 R 語言控制瀏覽器：從網頁基礎到動態爬蟲"
+subtitle: "以台灣高鐵自動訂票系統為實作案例"
+author: "課程講義"
+date: today
+lang: zh-TW
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "目錄"
+    number-sections: true
+    code-fold: false
+    highlight-style: github
+    theme: cosmo
+    self-contained: true
+  pdf:
+    toc: true
+    number-sections: true
+    geometry: margin=2.5cm
+    CJKmainfont: "Source Han Serif TC"
+    monofont: "Source Code Pro"
+    fontsize: 11pt
+execute:
+  eval: false
+  echo: true
+---
+
+:::{.callout-note}
+## 關於本講義的截圖
+
+本講義中標示「📸 截圖位置」的地方，教師需自行前往高鐵訂票頁面截圖後存入 `img/` 資料夾，並取代對應的 `![](img/figXX.png)` 佔位符。附錄 D 列出所有需要截取的截圖清單。
+:::
+
+---
+
+# 為什麼要讓電腦幫你訂票
+
+## 早鳥票：便宜但需要搶
+
+台灣高鐵有一種「**早鳥優惠**」票價：出發日的 **28 天前**開放預售，特定班次與時段最低可達 **65 折**。台南↔台中的全票票價為 **650 元**，早鳥 65 折只需 **420 元**、8 折為 **520 元**，來回一趟最多可省 460 元。
+
+問題在於：早鳥票一開放就是熱門時段，搶手班次幾分鐘內售罄。開放預售的時間是**每天 00:00**。
+
+也就是說，如果你要搶 4 月 8 日（週三）的早鳥票，必須在 **3 月 11 日午夜 0 點整**開著電腦登入高鐵網站，手動選站、選日期、填驗證碼——半夜守著電腦，稍一失手就買不到。
+
+## 自動排程訂票的解法
+
+如果有一支程式能在**指定時間自動執行**，完成：
+
+1. 開啟 Chrome，前往高鐵訂票頁面
+2. 選出發站（台南）、到達站（台中）、出發日期（4 月 8 日）、班次（0818）
+3. 截取驗證碼圖片
+4. 辨識（或提示人工輸入）驗證碼
+5. 填寫旅客資料、勾選同意、送出
+
+那麼你只需要設好排程，**人不用守在電腦前**。
+
+`thsr.R` 就是這樣一支程式。`thsr_auto.R` 進一步加入排程邏輯：計算學期中每個教學週的出行日期，在搭車前 28 天的 00:00 自動呼叫 `book()` 函式。
+
+## 這份講義要教什麼
+
+要讀懂 `thsr.R` 的每一行程式碼，需要先理解四個問題：
+
+1. **網頁是什麼做的？**（HTML、DOM、CSS、JavaScript）
+2. **程式怎麼「看懂」一個網頁裡有哪些元素？**（CSS Selector + DevTools）
+3. **程式怎麼遠端控制瀏覽器？**（WebDriver 協定）
+4. **R 語言怎麼具體實作？**（`thsr.R` 逐段解析）
+
+本講義從第一個問題出發，一路講到第四個。
+
+---
+
+# 網頁是什麼做的
+
+## 網頁是一份文件
+
+電腦上有各種文件格式：Word 文件是 `.docx`、試算表是 `.xlsx`。**網頁**也是一種文件格式，副檔名是 `.html`，叫做 **HTML（HyperText Markup Language，超文本標記語言）**。
+
+和 Word 的差別是：HTML 是**純文字**，用「標籤（tag）」來描述文件的結構，而不是用工具列上的格式按鈕。
+
+例如，想讓一段文字變成粗體：
+
+- Word：選取文字，按工具列的 **B**
+- HTML：用 `<strong>` 標籤包住文字
+
+```html
+<strong>這段文字是粗體</strong>
+```
+
+每個標籤有**開始**（`<strong>`）和**結束**（`</strong>`，多一個 `/`），中間夾著內容。
+
+## 常見的 HTML 標籤
+
+以下是高鐵訂票頁面上會用到的標籤：
+
+```html
+<!-- 文字段落（<!-- --> 是 HTML 的注解，不會顯示） -->
+<p>請選擇出發站與到達站</p>
+
+<!-- 下拉選單：每個 <option> 是一個選項 -->
+<select>
+  <option value="11">台南</option>
+  <option value="7">台中</option>
+  <option value="2">台北</option>
+</select>
+
+<!-- 文字輸入框 -->
+<input type="text">
+
+<!-- 按鈕 -->
+<button>開始查詢</button>
+
+<!-- 圖片 -->
+<img src="captcha.png">
+
+<!-- 通用容器，本身沒有特殊意義，用來把相關元素分組 -->
+<div>
+  <p>段落一</p>
+  <p>段落二</p>
+</div>
+```
+
+標籤可以層層嵌套，形成樹狀結構，就像資料夾可以放在資料夾裡。
+
+## 屬性：給標籤貼名牌
+
+HTML 標籤可以帶**屬性（attribute）**，格式是 `屬性名="值"`，寫在開始標籤裡：
+
+```html
+<input type="text" id="toTimeInputField" value="2026/04/08">
+```
+
+這個 `<input>` 有三個屬性：
+
+- `type="text"` → 這是文字輸入框（而不是密碼框、單選框等）
+- `id="toTimeInputField"` → **唯一識別名稱**，像身分證號碼，整個頁面中每個 id 只能用一次
+- `value="2026/04/08"` → 輸入框裡的目前值
+
+另一個重要屬性是 `name`，常用在表單欄位：
+
+```html
+<select name="selectStartStation">
+  <option value="11">台南</option>
+</select>
+```
+
+`id` 和 `name` 是我們等下**找到**特定元素的關鍵。
+
+## DOM：瀏覽器把 HTML 變成一棵樹
+
+瀏覽器讀到 HTML 文字後，不是直接「顯示文字」，而是在記憶體裡建立一棵**樹狀結構**，叫做 **DOM（Document Object Model，文件物件模型）**。每個 HTML 標籤變成樹上的一個**節點（node）**。
+
+以下面這段 HTML 為例：
+
+```html
+<form id="BookingS1Form">
+  <select name="selectStartStation">
+    <option value="11">台南</option>
+    <option value="7">台中</option>
+  </select>
+  <button id="SubmitButton">開始查詢</button>
+</form>
+```
+
+瀏覽器建立的 DOM 樹：
+
+```
+form  (id="BookingS1Form")
+├── select  (name="selectStartStation")
+│   ├── option  (value="11")  → 文字: "台南"
+│   └── option  (value="7")   → 文字: "台中"
+└── button  (id="SubmitButton")  → 文字: "開始查詢"
+```
+
+**DOM 是「活的」**：程式可以隨時修改這棵樹，瀏覽器畫面立即更新。新增元素、改變文字、讓某個區塊消失——全部透過修改 DOM 完成。這就是現代互動網頁的基礎。
+
+## CSS Selector：精確定位 DOM 裡的元素
+
+**CSS（Cascading Style Sheets）**原本是用來設定網頁外觀（顏色、字型、排版）的語言。它裡面有一套叫做 **CSS Selector** 的語法，用來描述「我要找哪個元素」。這套語法後來被 JavaScript 和爬蟲工具廣泛採用。
+
+最常用的幾種：
+
+| 寫法 | 意思 | 範例 |
+|---|---|---|
+| `#xxx` | 找 `id="xxx"` 的元素（`#` = id） | `#SubmitButton` |
+| `.xxx` | 找 `class` 含 `xxx` 的元素（`.` = class） | `.btn-edit` |
+| `標籤名` | 找所有此標籤 | `button`、`a`、`input` |
+| `[name='xxx']` | 找 `name` 屬性等於 `xxx` | `[name='agree']` |
+| `[attr*='xxx']` | 找屬性值**包含** `xxx` | `[href*='Cancel']` |
+| `標籤[attr='xxx']` | 標籤加屬性限制 | `input[type='radio']` |
+
+`thsr.R` 裡到處都是這些 Selector：
+
+```r
+wait_for(sess, "#BookingS1Form")                       # id="BookingS1Form"
+wait_click(sess, "#SubmitButton")                      # id="SubmitButton"
+js_select(sess, "[name='selectStartStation']", "11")   # name="selectStartStation"
+wait_click(sess, ".btn-edit")                          # class 含 "btn-edit"
+```
+
+## JavaScript：讓網頁動起來
+
+**JavaScript** 是唯一能在瀏覽器裡直接執行的程式語言，它能讀取和修改 DOM，讓使用者動作觸發程式邏輯。
+
+幾個我們會用到的 JavaScript 操作：
+
+```js
+// 用 CSS Selector 找到 DOM 裡的一個元素
+var el = document.querySelector("#SubmitButton");
+
+// 確認元素是否存在（回傳 true 或 false）
+document.querySelector("#idNumber") !== null;
+
+// 讀取輸入框的目前值
+document.querySelector("#toTimeInputField").value;
+
+// 設定輸入框的值
+document.querySelector("#toTimeInputField").value = "2026/04/08";
+
+// 點擊按鈕
+document.querySelector("#SubmitButton").click();
+```
+
+## 事件：使用者動作的通知機制
+
+使用者在網頁上的每個動作，瀏覽器都會產生對應的**事件（Event）**：
+
+| 使用者動作 | 事件名稱 |
+|---|---|
+| 點擊元素 | `click` |
+| 在輸入框打字 | `input` |
+| 改變下拉選單選項 | `change` |
+
+網頁程式靠**事件監聽器**來響應這些事件：
+
+```js
+document.querySelector("[name='selectStartStation']")
+  .addEventListener("change", function() {
+    // 當使用者改變出發站時，自動更新到達站選項
+  });
+```
+
+**一個關鍵問題**：如果是「程式」改變了 `<select>` 的值，瀏覽器**不會**自動觸發 `change` 事件——因為沒有使用者操作。但高鐵網站的 JavaScript 靠 `change` 事件來更新連動欄位，所以我們必須**手動模擬**：
+
+```js
+var el = document.querySelector("[name='selectStartStation']");
+el.value = "11";                                          // 改值
+el.dispatchEvent(new Event("change", {bubbles: true}));   // 手動觸發 change 事件
+```
+
+`{bubbles: true}` 讓這個事件向上傳遞（冒泡）給父元素，整個頁面的監聽器都能收到。
+
+這就是 `thsr.R` 中 `js_select()` 函式的核心邏輯，你等一下在 DevTools 的 Console 面板就可以自己驗證這件事。
+
+---
+
+# 用 DevTools 看進網頁內部
+
+在寫程式之前，需要學會**瀏覽器開發者工具（DevTools）**。它讓你能看到網頁的 DOM 結構，找到元素的 id 和 name，也能直接在瀏覽器裡執行 JavaScript 測試。
+
+## 開啟 DevTools
+
+:::{.callout-tip}
+## ▶ 請現在操作
+
+1. 打開 Chrome，前往高鐵訂票頁面：  
+   `https://irs.thsrc.com.tw/IMINT/?locale=tw`
+2. 按 **F12**（Windows / Linux），或 **Cmd + Option + I**（Mac）
+3. DevTools 面板出現在視窗右側或下方
+
+你會看到頂端有幾個分頁：**Elements**、**Console**、**Sources**、**Network** 等。我們主要用 **Elements** 和 **Console**。
+:::
+
+📸 截圖位置：DevTools 整體畫面，標示 Elements 和 Console 分頁位置。
+
+![圖 2.1：DevTools 開啟後的整體畫面](img/fig2_1_devtools_overview.png)
+
+## Elements 面板：查看 DOM 結構
+
+**Elements 面板**顯示目前 DOM 樹的完整內容。每一行是一個 HTML 節點，可以展開/收合。點擊某個節點，頁面上對應的元素會被高亮顯示。
+
+### 用「右鍵 → 檢查」找到任何元素的 Selector
+
+這是最常用的技巧：**想知道某個元素的 id 或 name，就右鍵點擊它，選「檢查」**。
+
+:::{.callout-tip}
+## ▶ 找出「出發站」下拉選單的 name 屬性
+
+1. 在高鐵訂票頁面，**右鍵點擊**「出發站」的下拉選單
+2. 選擇「**檢查（Inspect）**」
+3. DevTools 的 Elements 面板自動跳到這個元素並高亮
+
+你應該在 Elements 面板看到：
+
+```html
+<select name="selectStartStation" id="selectStartStation" ...>
+  <option value="">請選擇</option>
+  <option value="1">南港</option>
+  <option value="2">台北</option>
+  ...
+  <option value="11">台南</option>
+  <option value="12">左營</option>
+</select>
+```
+
+→ `name` 屬性是 `selectStartStation`，CSS Selector 是 `[name='selectStartStation']`  
+→ 台南的 `value` 是 `"11"`，台中是 `"7"`
+
+這就是 `thsr.R` 中這兩行的由來：
+
+```r
+js_select(sess, "[name='selectStartStation']",       "11")  # 出發：台南
+js_select(sess, "[name='selectDestinationStation']", "7")   # 到達：台中
+```
+:::
+
+📸 截圖位置：右鍵選單出現後、Elements 面板高亮 `<select>` 節點，顯示 `name="selectStartStation"`。
+
+![圖 2.2：右鍵點擊「出發站」→ 檢查，Elements 面板跳到對應節點](img/fig2_2_inspect_select.png)
+
+:::{.callout-tip}
+## ▶ 找出「開始查詢」按鈕的 id
+
+1. 右鍵點擊頁面底部橘色的「**開始查詢**」按鈕
+2. 選「**檢查**」
+
+你應該看到：
+
+```html
+<input type="submit" id="SubmitButton" value="開始查詢" ...>
+```
+
+→ CSS Selector：`#SubmitButton`  
+→ 對應程式碼：`wait_click(sess, "#SubmitButton")`
+:::
+
+:::{.callout-tip}
+## ▶ 找出 Cookie 同意按鈕的 id
+
+頁面第一次載入時有 Cookie 同意視窗，有一個「**我同意**」按鈕。
+
+1. 右鍵點擊「我同意」
+2. 選「**檢查**」
+
+你應該看到：
+
+```html
+<a id="cookieAccpetBtn" ...>我同意</a>
+```
+
+**注意**：`id` 裡的 `Accpet` 是原始碼的**拼字錯誤**（應為 `Accept`），但我們必須照原樣使用 `#cookieAccpetBtn`。
+:::
+
+### 用 Elements 搜尋找難以點擊的元素
+
+有些元素很小或被其他元素遮住，不容易右鍵點擊。可以在 Elements 面板裡搜尋：
+
+:::{.callout-tip}
+## ▶ 找出驗證碼圖片的 id
+
+1. 在 Elements 面板按 **Ctrl + F**（Mac: **Cmd + F**）
+2. 搜尋 `passCode`
+3. 面板高亮顯示符合的節點
+
+你應該找到：
+
+```html
+<img id="BookingS1Form_homeCaptcha_passCode" src="..." ...>
+```
+
+→ CSS Selector：`#BookingS1Form_homeCaptcha_passCode`  
+→ 對應程式碼：`element_screenshot(sess, "#BookingS1Form_homeCaptcha_passCode", "captcha.png")`
+
+這個 id 很長，但它是頁面原始碼裡就有的，不是我們編造的。
+:::
+
+📸 截圖位置：Elements 搜尋 `passCode` 後，高亮顯示驗證碼 `<img>` 節點。
+
+![圖 2.3：Elements 面板搜尋 passCode，找到驗證碼圖片節點](img/fig2_3_search_passCode.png)
+
+## Console 面板：在瀏覽器裡直接執行 JavaScript
+
+**Console 面板**就像 R 的 Console——直接輸入 JavaScript，按 Enter 執行，立即看到結果。
+
+:::{.callout-tip}
+## ▶ 在 Console 測試 querySelector 和事件
+
+1. 切換到 **Console** 分頁
+2. 點擊下方有 `>` 的輸入列
+3. 逐行輸入以下指令，每行按 Enter，觀察結果
+
+```js
+// 確認按鈕是否存在
+document.querySelector("#SubmitButton") !== null
+// 你應該看到：true
+
+// 讀取目前出發站的值（未選時是空字串）
+document.querySelector("[name='selectStartStation']").value
+// 你應該看到：""
+
+// 直接設定值（不觸發 change 事件）
+document.querySelector("[name='selectStartStation']").value = "11"
+// 觀察下拉選單變成「台南」，但頁面其他連動欄位沒有變化
+
+// 加上手動觸發 change 事件
+var el = document.querySelector("[name='selectStartStation']");
+el.value = "11";
+el.dispatchEvent(new Event("change", {bubbles: true}));
+// 觀察：這次頁面的連動欄位也跟著更新了
+```
+
+**這個實驗驗證了**：光改 `value` 不夠，必須手動觸發 `change` 事件。這就是 `js_select()` 裡要多一行 `dispatchEvent` 的原因。
+:::
+
+📸 截圖位置：Console 面板中執行 `document.querySelector("#SubmitButton") !== null`，顯示回傳值 `true`，頁面對應元素被高亮。
+
+![圖 2.4：Console 面板執行 querySelector，回傳 true 並高亮對應元素](img/fig2_4_console_query.png)
+
+:::{.callout-tip}
+## ▶ 在 Console 取得驗證碼圖片的位置
+
+```js
+// getBoundingClientRect() 回傳元素相對於畫面左上角的位置和大小
+document.querySelector("#BookingS1Form_homeCaptcha_passCode")
+  .getBoundingClientRect()
+// 你應該看到：DOMRect { x: ..., y: ..., width: ..., height: ... }
+```
+
+這就是 `element_screenshot()` 函式的第一步：先問瀏覽器「這個驗證碼圖片在畫面上的哪個位置？」，再把全頁截圖裁切成只含驗證碼的部分。
+:::
+
+---
+
+# HTTP：程式如何和網路伺服器溝通
+
+## 請求與回應
+
+你在 Chrome 輸入 URL 按 Enter，背後發生了：
+
+```
+你的電腦                                    高鐵伺服器
+    │                                           │
+    │  GET /IMINT/?locale=tw  HTTP/1.1          │
+    │ ──────────────────────────────────────►  │
+    │                                           │
+    │  HTTP/1.1 200 OK                          │
+    │  Content-Type: text/html                  │
+    │  <html>...(完整 HTML)...</html>           │
+    │ ◄──────────────────────────────────────   │
+```
+
+這就是 **HTTP（HyperText Transfer Protocol）**：客戶端發出**請求（Request）**，伺服器回傳**回應（Response）**。
+
+兩種最常用的方法：
+
+- **GET**：「給我這個頁面。」資料附在 URL 後面。
+- **POST**：「我要送這些資料給你。」資料放在請求的 body 裡，常用於提交表單。
+
+## 在 R 語言發送 HTTP 請求
+
+```r
+library(httr)
+
+# GET 請求
+res  <- GET("https://irs.thsrc.com.tw/IMINT/?locale=tw")
+html <- rawToChar(res$content)  # 把回應的位元組轉成字串
+
+# POST 請求（送出表單資料）
+res <- POST("https://example.com/login",
+            body = list(username = "alice", password = "1234"),
+            encode = "form")
+```
+
+## 為什麼靜態 HTTP 請求對高鐵訂票不夠
+
+靜態爬蟲的做法：用 HTTP GET 拿到 HTML，再解析裡面的資料（R 的 `rvest` 套件就是這樣）。
+
+高鐵訂票頁面用靜態爬蟲**取得 HTML 是可行的**，但問題在於**互動**：
+
+1. **下拉選單連動**：選出發站後，到達站選項會連動更新——這靠 JavaScript 的 `change` 事件，HTTP 請求模擬不了。
+2. **驗證碼**：驗證碼圖片必須由瀏覽器渲染後才能截取，HTTP 只能拿到 URL。
+3. **多步驟有狀態操作**：從選站到訂票成功需要多個頁面跳轉，每一步依賴前一步的結果。
+
+解決方案：**啟動一個真實的 Chrome 瀏覽器，讓 R 程式遠端控制它執行完整的互動流程**。
+
+---
+
+# WebDriver：程式控制瀏覽器的標準方式
+
+## ChromeDriver 是什麼
+
+Google 官方提供了一個叫做 **ChromeDriver** 的小程式，它能：
+
+- 在你電腦上開一個 **HTTP 伺服器**（預設監聽 port 4444）
+- 接受外部程式（R、Python 等）用 HTTP 送來的指令
+- 把這些指令翻譯後傳給 Chrome 執行
+
+```
+你的 R 程式
+    │  HTTP 請求（JSON 格式）
+    │  "請打開這個網址"
+    │  "請執行這段 JavaScript"
+    │  "請給我截圖"
+    ▼
+ChromeDriver（在你電腦上，port 4444）
+    │  Chrome DevTools Protocol
+    ▼
+Chrome 瀏覽器（顯示視窗，或背景無頭執行）
+```
+
+你的 R 只需要會發 HTTP 請求——和 `httr::GET()` 做的事完全一樣，只是對象是 ChromeDriver 而不是網路伺服器。
+
+## W3C WebDriver：統一規範
+
+不只 Chrome，Firefox、Safari、Edge 也有各自的 Driver。為了讓一套程式能控制不同瀏覽器，W3C 制定了統一規範：**W3C WebDriver 協定**，定義了一套標準的 HTTP API。
+
+## Session：一個受程式控制的瀏覽器視窗
+
+每個被控制的瀏覽器實例叫做一個 **Session（工作階段）**，有唯一的 Session ID。所有後續指令都要帶著這個 ID：
+
+```
+POST  /session                        → 開啟一個 Chrome 視窗
+                                      ← 回傳 { sessionId: "7db27c7e..." }
+
+POST  /session/7db27c7e.../url        → 前往某個網址
+POST  /session/7db27c7e.../execute/sync  → 在瀏覽器執行 JavaScript
+GET   /session/7db27c7e.../screenshot → 取全頁截圖（base64 格式）
+DELETE /session/7db27c7e...           → 關閉視窗
+```
+
+`thsr.R` 的所有 `wd_` 函式，就是把這些 HTTP 請求包裝成好用的 R 函式。
+
+## 為什麼不用 RSelenium
+
+**Selenium** 是最著名的瀏覽器自動化工具，R 有 `RSelenium` 套件。但我們不用它，原因很具體。
+
+WebDriver 協定有新舊兩個版本：
+
+| | 舊版（JSON Wire Protocol） | 新版（W3C WebDriver，現行標準） |
+|---|---|---|
+| 建立 Session 的 JSON 格式 | `{"desiredCapabilities": {...}}` | `{"capabilities": {"alwaysMatch": {...}}}` |
+| ChromeDriver 支援狀況 | 版本 ≤ 114（2023 年起停更） | 版本 115+ |
+| RSelenium 預設使用 | ✓ 舊版格式 | ✗ |
+
+我們的 ChromeDriver 是 145 版，**只接受新版格式**。RSelenium 送出舊版格式，ChromeDriver 直接拒絕，Session ID 回傳 `NA`，整個程式無法運作。
+
+解法：用 `httr` 直接對 ChromeDriver 發 HTTP 請求，**完全按照 W3C 新版格式自己手寫**。這樣更透明——每一步都是清晰可見的 HTTP 請求。
+
+---
+
+# `thsr.R` 逐段解析
+
+現在你已經有了所有必要的背景知識。讓我們一段一段讀 `thsr.R`。
+
+## 套件與設定值
+
+```r
+library(httr)       # 發送 HTTP 請求（與 ChromeDriver 通訊）
+library(jsonlite)   # R 物件 ↔ JSON 字串（WebDriver 用 JSON 傳資料）
+library(magick)     # 圖片處理（截圖裁切、在 RStudio Viewer 顯示驗證碼）
+library(base64enc)  # Base64 解碼（截圖以 base64 字串傳輸，需解碼才能存圖）
+```
+
+```r
+PID        <- "D121350349"  # 身分證號
+MOBILE     <- "0922825743"  # 手機
+MEMBER_PID <- "D121350349"  # TGo 會員號碼
+SEAT       <- "1"           # 座位偏好：0=不限  1=靠窗  2=靠走道
+
+NUM_TRIALS   <- 10   # 驗證碼最多嘗試次數
+WAIT_TIMEOUT <- 20   # 等待元素出現的時間上限（秒）
+POLL_FREQ    <- 0.4  # 輪詢間隔（秒）
+
+train_id  <- "0818"; start_sta <- "11"; dest_sta <- "7"  # 台南→台中
+```
+
+車站代碼從 DevTools 的 Elements 面板查 `<option value>` 可得，完整對照表見附錄 B。
+
+## 和 ChromeDriver 通訊的基礎函式
+
+### `.wd_base()`：組出 Session URL 前綴
+
+```r
+.wd_base <- function(sess) {
+  sprintf("http://localhost:%d/session/%s", sess$port, sess$id)
+}
+```
+
+所有 WebDriver 操作的 URL 都以 `http://localhost:4444/session/{sessionId}` 開頭。`sess` 是一個 R list，裡面有 `id`（Session ID 字串）和 `port`（整數 4444）。
+
+`sprintf` 是 R 的格式化字串函式，`%d` 代入整數，`%s` 代入字串。
+
+### `wd_cmd()`：通用 HTTP 命令
+
+```r
+wd_cmd <- function(sess, method, path, body = NULL) {
+  url    <- paste0(.wd_base(sess), path)
+  res    <- if (method == "GET")    GET(url)
+       else if (method == "POST")   POST(url, body = body, encode = "json")
+       else if (method == "DELETE") DELETE(url)
+  parsed <- fromJSON(rawToChar(res$content))
+  parsed$value
+}
+```
+
+ChromeDriver 所有回應都是這個 JSON 格式：`{ "value": <實際資料> }`
+
+- `res$content`：原始位元組（raw vector）
+- `rawToChar()`：把位元組轉成字串
+- `fromJSON()`：把 JSON 字串解析成 R list
+- `$value`：取出實際資料
+
+### `start_driver()`：啟動 ChromeDriver 並建立 Session
+
+```r
+start_driver <- function(headless = TRUE, port = 4444L) {
+```
+
+`headless = TRUE`：背景執行，不顯示視窗（適合排程）。  
+`headless = FALSE`：顯示 Chrome 視窗（課堂示範）。
+
+```r
+  # 清除可能殘存的舊 chromedriver 行程
+  system2("pkill", args = "chromedriver", wait = TRUE, stdout = NULL, stderr = NULL)
+  Sys.sleep(0.5)
+```
+
+`system2()` 在作業系統層執行外部指令，等同於在 Terminal 輸入指令。`pkill chromedriver` 強制結束所有名叫 chromedriver 的行程。
+
+```r
+  # 在背景啟動 chromedriver，監聽 port 4444
+  system2("chromedriver", args = sprintf("--port=%d", port),
+          wait = FALSE, stdout = NULL, stderr = NULL)
+  Sys.sleep(2)
+```
+
+`wait = FALSE`：不等 chromedriver 結束就繼續往下執行。這是必要的，因為 chromedriver 是持續運行的伺服器，不會自行結束；若設 `wait = TRUE`，R 會永遠卡在這一行。`Sys.sleep(2)` 給 chromedriver 2 秒準備好接受連線。
+
+```r
+  # 以 W3C 格式建立 Session
+  chrome_args <- c(
+    "--no-sandbox",                                   # Linux 必要：停用安全沙盒
+    "--disable-dev-shm-usage",                        # 避免記憶體空間不足崩潰
+    "--window-size=1920,1080",                        # 設定虛擬視窗大小
+    "--disable-blink-features=AutomationControlled",  # 降低被網站偵測為機器人的機率
+    if (headless) "--headless=new"                    # 無頭模式（不顯示視窗）
+  )
+
+  body <- list(
+    capabilities = list(
+      alwaysMatch = list(
+        browserName          = "chrome",
+        "goog:chromeOptions" = list(args = as.list(chrome_args))
+      )
+    )
+  )
+
+  res  <- POST(sprintf("http://localhost:%d/session", port),
+               body = body, encode = "json")
+  val  <- fromJSON(rawToChar(res$content))
+  sess <- list(id = val$value$sessionId, port = port)
+  if (is.null(sess$id) || is.na(sess$id))
+    stop("WebDriver session 建立失敗")
+  message(sprintf("Session 建立成功：%s", sess$id))
+  sess
+}
+```
+
+`body` 這個 R list 被 `encode = "json"` 轉換成如下 JSON 送給 ChromeDriver：
+
+```json
+{
+  "capabilities": {
+    "alwaysMatch": {
+      "browserName": "chrome",
+      "goog:chromeOptions": {
+        "args": ["--no-sandbox", "--headless=new", ...]
+      }
+    }
+  }
+}
+```
+
+這是 W3C 新版格式。`goog:` 前綴表示這是 Google 定義的非標準擴充欄位。
+
+### `stop_driver()`：關閉瀏覽器
+
+```r
+stop_driver <- function(sess) {
+  tryCatch(DELETE(sprintf("http://localhost:%d/session/%s",
+                          sess$port, sess$id)),
+           error = function(e) NULL)
+  system2("pkill", args = "chromedriver",
+          wait = FALSE, stdout = NULL, stderr = NULL)
+  invisible(NULL)
+}
+```
+
+`DELETE /session/{id}` 是 WebDriver 標準的關閉方式。`tryCatch` 確保即使 Chrome 已崩潰，關閉動作也不會讓程式出錯。`pkill` 作為保險確保行程完全結束。
+
+### `wd_navigate()`：前往網址
+
+```r
+wd_navigate <- function(sess, url) {
+  wd_cmd(sess, "POST", "/url", list(url = url))
+  invisible(NULL)
+}
+```
+
+對應的 HTTP 請求：
+
+```
+POST http://localhost:4444/session/7db27c7e.../url
+{ "url": "https://irs.thsrc.com.tw/IMINT/?locale=tw" }
+```
+
+### `wd_js()`：在 Chrome 裡執行 JavaScript
+
+這是整個程式**最核心**的函式。幾乎所有 DOM 操作都透過它完成。
+
+```r
+wd_js <- function(sess, script, args = list()) {
+  body_json <- sprintf('{"script":%s,"args":%s}',
+                       toJSON(script, auto_unbox = TRUE),
+                       toJSON(args))
+  url <- paste0(.wd_base(sess), "/execute/sync")
+  res <- POST(url, body = body_json,
+              add_headers("Content-Type" = "application/json"))
+  fromJSON(rawToChar(res$content))$value
+}
+```
+
+**為什麼要手動組 JSON 字串，不讓 `httr` 自動處理？**
+
+這是一個微妙的 R 陷阱：
+
+```r
+library(jsonlite)
+toJSON(list())         # → "{}"   ← JSON 物件（object）
+toJSON(character(0))   # → "[]"   ← JSON 陣列（array）
+```
+
+WebDriver 規範要求 `args` 欄位必須是 JSON **陣列** `[]`，但 `list()` 序列化後是物件 `{}`。若用 `encode = "json"` 讓 httr 處理，ChromeDriver 會報錯：
+
+```
+"invalid argument: 'args' must be a list"
+```
+
+解法：用 `toJSON(args)` 單獨序列化 args（空 list 在這裡輸出 `[]`），再用 `sprintf` 手動拼成完整 JSON 字串。
+
+**`return` 是必要的**：
+
+```r
+# ✅ 有 return → R 收到 TRUE 或 FALSE
+wd_js(sess, 'return document.querySelector("#idNumber") !== null;')
+
+# ❌ 沒有 return → R 收到 NULL
+wd_js(sess, 'document.querySelector("#idNumber") !== null;')
+```
+
+`/execute/sync` 只回傳 JavaScript 明確 `return` 的值。
+
+## DOM 操作工具函式
+
+### `wait_for()`：輪詢等待某元素出現
+
+```r
+wait_for <- function(sess, css, timeout = WAIT_TIMEOUT, poll = POLL_FREQ) {
+  deadline <- Sys.time() + timeout
+  script   <- sprintf("return document.querySelector(%s) !== null;",
+                      js_str(css))
+  repeat {
+    found <- tryCatch(isTRUE(wd_js(sess, script)), error = function(e) FALSE)
+    if (found) return(invisible(TRUE))
+    if (Sys.time() > deadline) stop(sprintf("等待逾時：%s", css))
+    Sys.sleep(poll)
+  }
+}
+```
+
+這是動態爬蟲最重要的模式：**輪詢等待**。頁面的動作需要時間（伺服器回應、JavaScript 執行），不能假設「現在就有」。
+
+```
+t=0.0s: querySelector("#idNumber") !== null → false（頁面還在載入）
+t=0.4s: 再問                               → false
+t=0.8s: 再問                               → false
+t=2.4s: 再問                               → true ✓ 繼續執行
+```
+
+`js_str(css)` 把 CSS Selector 字串加上引號，讓它能安全地插入 JavaScript 程式碼：
+
+```r
+js_str("#SubmitButton")
+# → '"#SubmitButton"'  ← 含引號，插入 JS 後是合法的字串值
+```
+
+### `wait_click()`：等元素出現後點擊
+
+```r
+wait_click <- function(sess, css, timeout = WAIT_TIMEOUT) {
+  wait_for(sess, css, timeout)
+  wd_js(sess, sprintf("document.querySelector(%s).click();", js_str(css)))
+  invisible(NULL)
+}
+```
+
+先等元素出現（`wait_for`），再用 JS 的 `.click()` 點它。用 JS 而不是 WebDriver 的 Element Click 端點，是因為只需一次 HTTP 請求，更簡潔。
+
+### `fill()`：在輸入框填入文字
+
+```r
+fill <- function(sess, css, text) {
+  wait_for(sess, css)
+  wd_js(sess, sprintf('
+    (function() {
+      var el = document.querySelector(%s);
+      el.focus();
+      el.value = "";
+      el.value = %s;
+      el.dispatchEvent(new Event("input",  {bubbles: true}));
+      el.dispatchEvent(new Event("change", {bubbles: true}));
+    })();
+  ', js_str(css), js_str(text)))
+  invisible(NULL)
+}
+```
+
+**`(function() { ... })()`** 是 JavaScript 的「立即執行函式（IIFE）」，建立獨立作用域，避免 `var el` 汙染全域命名空間。
+
+**為什麼先設 `""` 再設真正的值？** 確保 React、Vue 等前端框架的變更偵測機制正確觸發。
+
+**為什麼同時觸發 `input` 和 `change`？** 不同網站可能監聽不同事件，兩個都觸發確保相容。
+
+### `js_select()`：選擇下拉選單
+
+```r
+js_select <- function(sess, css, value) {
+  wait_for(sess, css)
+  wd_js(sess, sprintf('
+    (function() {
+      var el = document.querySelector(%s);
+      el.value = %s;
+      el.dispatchEvent(new Event("change", {bubbles: true}));
+    })();
+  ', js_str(css), js_str(value)))
+  invisible(NULL)
+}
+```
+
+這就是你在 Console 面板手動測試過的那段 JavaScript——設定 `value` 並觸發 `change` 事件。
+
+### `element_screenshot()`：截取單一元素的圖片
+
+```r
+element_screenshot <- function(sess, css, filename = "captcha.png") {
+  wait_for(sess, css)
+
+  # 步驟 1：用 JS 問「這個元素在畫面上的哪裡？」
+  rect <- wd_js(sess, sprintf('
+    var r = document.querySelector(%s).getBoundingClientRect();
+    return {x: r.left, y: r.top, width: r.width, height: r.height};
+  ', js_str(css)))
+
+  # 步驟 2：叫 ChromeDriver 截一張全頁圖（base64 格式）
+  raw <- wd_cmd(sess, "GET", "/screenshot")
+
+  # 步驟 3：解碼 base64 → 讀入 magick → 按 rect 裁切 → 存檔
+  img <- image_read(base64decode(raw))
+  img <- image_crop(img, sprintf("%dx%d+%d+%d",
+           round(rect$width), round(rect$height),
+           round(rect$x),     round(rect$y)))
+  image_write(img, filename)
+  invisible(filename)
+}
+```
+
+**`getBoundingClientRect()`**：你在 Console 測試過的 Web 標準 API，回傳元素相對於畫面左上角的位置與大小。
+
+**Base64**：截圖是二進位的 PNG 圖片，JSON 只能傳文字。Base64 把任意二進位資料編碼成純文字（只用英數字和幾個符號）。`base64decode()` 把它還原成二進位，`magick` 才能讀取。
+
+**magick 裁切語法** `"寬x高+X偏移+Y偏移"`：
+
+```r
+image_crop(img, "100x40+950+600")
+# 從座標 (950, 600) 開始，裁出寬 100、高 40 的區域
+```
+
+### `ocr_captcha()`：顯示驗證碼並等待輸入
+
+```r
+ocr_captcha <- function(filename = "captcha.png", manual = FALSE) {
+  if (manual) {
+    if (interactive()) {
+      # 在 RStudio Viewer 面板顯示放大 4 倍的驗證碼圖片
+      tryCatch(
+        print(image_scale(image_read(filename), "400")),
+        error = function(e) NULL
+      )
+    }
+    cat(sprintf("\n[驗證碼] 請查看圖片 %s，輸入後按 Enter: ", filename))
+    code <- trimws(readline())
+    return(gsub("[^a-zA-Z0-9]", "", code))
+  }
+  # manual = FALSE：預留給未來自動辨識（如 ddddocr）
+  ""
+}
+```
+
+`interactive()`：判斷是否在 RStudio Console 這種互動環境。若用 `Rscript` 排程執行，回傳 `FALSE`，不嘗試顯示圖片。
+
+`readline()`：暫停等使用者輸入後按 Enter。
+
+`gsub("[^a-zA-Z0-9]", "", code)`：去除所有非英數字符（`[^...]` 是「不在這個集合裡的字符」）。
+
+## 訂票主函式：`book()`
+
+```r
+book <- function(date, headless = FALSE, manual = FALSE) {
+  sess <- start_driver(headless)
+  on.exit(stop_driver(sess), add = TRUE)
+```
+
+**`on.exit(..., add = TRUE)`**：登記「不管函式正常結束還是中途出錯，一定要執行 `stop_driver(sess)`」。這確保 Chrome 不因程式出錯而殘留在記憶體中。
+
+```r
+  wd_navigate(sess, THSR_BOOK_URL)
+  wait_for(sess, "#BookingS1Form", timeout = 30)
+  tryCatch(
+    wait_click(sess, "#cookieAccpetBtn", timeout = 5),
+    error = function(e) NULL
+  )
+```
+
+**為什麼先等 `#BookingS1Form` 再點 Cookie 按鈕？**
+
+Cookie 同意視窗（Modal）視覺上蓋住頁面，但 `#BookingS1Form` 已存在 DOM 中（只是被遮住）。先等表單出現確認頁面載入完成，再嘗試關閉 Modal。
+
+Cookie 按鈕用 `tryCatch` 包住是因為：第一次造訪按鈕存在，5 秒內點擊；之後造訪 Cookie 已接受，按鈕不出現，超時後靜默略過。
+
+```r
+  # 成功進入旅客資料頁的判斷：出現 id="idNumber" 的輸入欄（只在第二頁有）
+  reached <- function()
+    tryCatch(isTRUE(wd_js(sess,
+      'return document.querySelector("#idNumber") !== null;')),
+      error = function(e) FALSE)
+
+  trials <- 0L
+  while (!reached() && trials < NUM_TRIALS) {
+    trials <- trials + 1L
+    message(sprintf("  驗證碼 #%d", trials))
+    tryCatch({
+      js_select(sess, "#BookingS1Form_seatCon_seatRadioGroup", SEAT)
+      js_select(sess, "[name='selectStartStation']",           start_sta)
+      js_select(sess, "[name='selectDestinationStation']",     dest_sta)
+      wd_js(sess, sprintf('
+        var el = document.querySelector("#toTimeInputField");
+        el.value = %s;
+        el.dispatchEvent(new Event("change", {bubbles: true}));
+      ', js_str(date)))
+      wait_click(sess, "input[data-target='search-by-trainNo']")
+      fill(sess, "[name='toTrainIDInputField']", train_id)
+      element_screenshot(sess, "#BookingS1Form_homeCaptcha_passCode",
+                         "captcha.png")
+      code <- ocr_captcha("captcha.png", manual = manual)
+      message(sprintf("    OCR: '%s'\n", code))
+      fill(sess, "[name='homeCaptcha:securityCode']", code)
+      Sys.sleep(0.5)
+      wait_click(sess, "#SubmitButton")
+      tryCatch(
+        wait_for(sess, "#idNumber", timeout = 8),
+        error = function(e) {
+          message("    未通過，重試...")
+          wd_navigate(sess, THSR_BOOK_URL)
+          wait_for(sess, "#BookingS1Form", timeout = 30)
+          tryCatch(wait_click(sess, "#cookieAccpetBtn", timeout = 5),
+                   error = function(e2) NULL)
+        }
+      )
+    }, error = function(e)
+      message(sprintf("    例外: %s", conditionMessage(e))))
+  }
+```
+
+:::{.callout-tip}
+## ▶ 確認「車次查詢」radio 的 Selector
+
+`input[data-target='search-by-trainNo']` 是從哪裡來的？
+
+1. 在訂票頁面右鍵點擊「**車次**」旁的圓形選項（radio button）
+2. 選「**檢查**」
+3. Elements 面板應顯示類似：
+
+```html
+<input type="radio" data-target="search-by-trainNo" ...>
+```
+
+`data-target` 是 HTML5 的**自訂資料屬性**（以 `data-` 開頭），存放開發者自定義的資訊。CSS Selector `[data-target='search-by-trainNo']` 靠這個屬性定位。
+:::
+
+```r
+  if (!reached()) {
+    message(sprintf("訂票失敗：%d 次皆未成功", NUM_TRIALS))
+    page_screenshot(sess, "thsr_fail.png")
+    return(FALSE)
+  }
+
+  message("  通過！填寫旅客資料...")
+  fill(sess, "#idNumber",    PID)
+  fill(sess, "#mobilePhone", MOBILE)
+  tryCatch(
+    fill(sess, paste0("#BookingS3Form_TicketPassengerInfoInputPanel_",
+      "passengerDataView_0_passengerDataView2_passengerDataIdNumber"), PID),
+    error = function(e) message("  不須輸入乘客資訊"))
+  tryCatch({
+    wait_click(sess, "#memberSystemRadio1", timeout = 3)
+    fill(sess, "#msNumber", MEMBER_PID)
+  }, error = function(e) NULL)
+  wait_click(sess, "[name='agree']")
+  wait_click(sess, "#isSubmit")
+  tryCatch({
+    wait_for(sess, "[name='SubmitButton']", timeout = 8)
+    wait_click(sess, "[name='SubmitButton']")
+  }, error = function(e) NULL)
+  Sys.sleep(2)
+  page_screenshot(sess, sprintf("thsr_ok_%s.png", gsub("/", "", date)))
+  message("訂票成功！截圖已存。")
+  TRUE
+}
+```
+
+## 取消訂位：`cancel()`
+
+```r
+cancel <- function(order_id, headless = FALSE, manual = FALSE) {
+  sess <- start_driver(headless)
+  on.exit(stop_driver(sess), add = TRUE)
+
+  wd_navigate(sess, THSR_CANCEL_URL)
+  wait_for(sess, "#rocId", timeout = 30)
+
+  reached <- function()
+    tryCatch(isTRUE(wd_js(sess,
+      'return document.querySelector(".btn-edit") !== null;')),
+      error = function(e) FALSE)
+
+  trials <- 0L
+  while (!reached() && trials < NUM_TRIALS) {
+    trials <- trials + 1L
+    message(sprintf("  驗證碼 #%d", trials))
+    fill(sess, "#rocId",   PID)
+    fill(sess, "#orderId", order_id)
+    element_screenshot(sess, "#HistoryForm_divCaptcha_passCode", "captcha.png")
+    code <- ocr_captcha("captcha.png", manual = manual)
+    message(sprintf("    OCR: '%s'\n", code))
+    fill(sess, "#securityCode", code)
+    Sys.sleep(0.5)
+    wait_click(sess, "[name='SubmitButton']")
+    tryCatch(wait_for(sess, ".btn-edit", timeout = 5),
+             error = function(e) message("    未通過"))
+  }
+
+  tryCatch({
+    wait_for(sess, "div.uk-modal.uk-open", timeout = 3)
+    wd_js(sess, '
+      var btn = document.querySelector(
+        "div.uk-modal.uk-open input.uk-modal-close");
+      if (btn) btn.click();
+    ')
+    Sys.sleep(1)
+  }, error = function(e) message("  無查詢彈窗，略過"))
+
+  wait_click(sess, ".btn-edit")
+  wait_for(sess, 'a[href*="Cancel"], a', timeout = 10)
+  Sys.sleep(0.5)
+```
+
+這裡用 JavaScript 搜尋文字為「取消訂位」的連結（`<a>` 標籤），因為這個連結沒有穩定的 id：
+
+```r
+  wd_js(sess, '
+    (function() {
+      var links = Array.from(document.querySelectorAll("a"));
+      var target = links.find(function(a) {
+        return a.textContent.trim() === "\u53d6\u6d88\u8a02\u4f4d";
+      });
+      if (target) { target.click(); return true; }
+      return false;
+    })();
+  ')
+```
+
+**`"\u53d6\u6d88\u8a02\u4f4d"` 是什麼？**  
+這是「取消訂位」四個中文字的 Unicode Escape 寫法，`\uXXXX` 是字元的 Unicode 碼點。用這種寫法是因為：當 R 用 `sprintf` 把字串插入 JavaScript 時，中文字可能因編碼轉換出問題；Unicode Escape 是純 ASCII，完全迴避這個風險。
+
+```r
+  Sys.sleep(0.5)
+  wait_click(sess, "[name='agree']")
+  wait_click(sess, "[name='SubmitButton']")
+  Sys.sleep(3)
+  message(sprintf("訂位 %s 取消完成", order_id))
+  invisible(TRUE)
+}
+```
+
+---
+
+# 執行方式
+
+## 環境準備（一次性）
+
+### 確認 Chrome 版本
+
+:::{.callout-tip}
+## ▶ 查看你的 Chrome 版本
+
+1. 打開 Chrome，在網址列輸入 `chrome://version`，按 Enter
+2. 第一行顯示完整版本號，例如 `145.0.7632.159`
+
+ChromeDriver 的版本必須和 Chrome 的**主版本號**一致（例如都是 145）。
+:::
+
+### 安裝 ChromeDriver
+
+ChromeDriver 的版本必須與 Chrome **主版本號**一致（例如 Chrome 145 → ChromeDriver 145）。
+
+#### Windows 11（課堂 demo 環境）
+
+ChromeDriver 不需要系統安裝，下載後放到個人資料夾即可。
+
+```
+1. 前往：
+   https://googlechromelabs.github.io/chrome-for-testing/
+2. 找到與你的 Chrome 版本一致的 win64 版 chromedriver
+3. 下載並解壓縮，例如放到：
+   C:\Users\YourName\chromedriver\chromedriver.exe
+4. 開啟 thsr.R，修改這一行：
+   CHROMEDRIVER_PATH <- "C:/Users/YourName/chromedriver/chromedriver.exe"
+```
+
+:::{.callout-warning}
+## Windows 路徑的斜線方向
+
+R 字串中路徑分隔符請用 `/`（正斜線）或 `\\`（雙反斜線），不要用單一 `\`：
+
+```r
+# ✅ 正確
+CHROMEDRIVER_PATH <- "C:/Users/YourName/chromedriver/chromedriver.exe"
+CHROMEDRIVER_PATH <- "C:\\Users\\YourName\\chromedriver\\chromedriver.exe"
+
+# ❌ 錯誤（\ 在 R 字串中是跳脫字元）
+CHROMEDRIVER_PATH <- "C:\Users\YourName\chromedriver\chromedriver.exe"
+```
+:::
+
+#### Linux/macOS
+
+```bash
+CHROME_VER="145.0.7632.159"
+wget "https://storage.googleapis.com/chrome-for-testing-public/\
+  ${CHROME_VER}/linux64/chromedriver-linux64.zip"
+unzip chromedriver-linux64.zip
+sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
+sudo chmod +x /usr/local/bin/chromedriver
+chromedriver --version
+# Linux/macOS 安裝到 /usr/local/bin/ 後，CHROMEDRIVER_PATH 保持 "chromedriver" 即可
+```
+
+### 安裝 R 套件
+
+```r
+install.packages(c("httr", "jsonlite", "magick", "base64enc"))
+```
+
+## 訂票（課堂示範模式）
+
+```r
+source("thsr.R")
+
+# headless = FALSE：顯示 Chrome 視窗（學生可以看到自動操作過程）
+# manual = TRUE：每次驗證碼需要手動輸入
+book(date = "2026/04/08", headless = FALSE, manual = TRUE)
+```
+
+執行後：
+
+1. Chrome 視窗開啟，自動填寫出發站、到達站、日期、車次
+2. 截取驗證碼存成 `captcha.png`，顯示在 RStudio Viewer（放大版）
+3. Console 顯示：`[驗證碼] 請查看圖片 captcha.png，輸入後按 Enter:`
+4. 輸入驗證碼後按 Enter，程式繼續完成訂票
+5. 成功後截圖存為 `thsr_ok_20260408.png`
+
+## 取消訂位
+
+```r
+# 訂位代號在訂票成功的截圖或確認簡訊中可以找到（8 碼英數字）
+cancel(order_id = "01901879", headless = FALSE, manual = TRUE)
+```
+
+## 逐步探索（學習用）
+
+```r
+source("thsr.R")
+
+# 手動一步一步執行，搭配 DevTools 觀察每個操作的效果
+sess <- start_driver(headless = FALSE)  # 開啟 Chrome 視窗
+
+wd_navigate(sess, THSR_BOOK_URL)
+
+# 等同於在 DevTools Console 執行 JavaScript
+wd_js(sess, 'return document.title;')
+# → [1] "台灣高鐵網路訂票"
+
+wd_js(sess, 'return document.querySelector("#BookingS1Form") !== null;')
+# → [1] TRUE
+
+# 選台南出發
+js_select(sess, "[name='selectStartStation']", "11")
+# 觀察：Chrome 視窗的下拉選單變成「台南」
+
+page_screenshot(sess, "current_page.png")  # 截圖存檔
+
+stop_driver(sess)  # 關閉
+```
+
+---
+
+# 附錄
+
+## A. 高鐵頁面關鍵 CSS Selector
+
+| CSS Selector | 對應元素 | 如何用 DevTools 找到 |
+|---|---|---|
+| `#cookieAccpetBtn` | Cookie「我同意」按鈕 | 右鍵「我同意」→ 檢查 |
+| `#BookingS1Form` | 訂票主表單 | Elements 搜尋 `BookingS1Form` |
+| `[name='selectStartStation']` | 出發站下拉 | 右鍵「出發站」→ 檢查 |
+| `[name='selectDestinationStation']` | 到達站下拉 | 右鍵「到達站」→ 檢查 |
+| `#toTimeInputField` | 出發日期欄 | 右鍵日期欄 → 檢查 |
+| `input[data-target='search-by-trainNo']` | 「車次查詢」radio | 右鍵「車次」→ 檢查 |
+| `[name='toTrainIDInputField']` | 車次號碼輸入欄 | 切換車次查詢後右鍵 |
+| `#BookingS1Form_homeCaptcha_passCode` | 驗證碼圖片 | Elements 搜尋 `passCode` |
+| `[name='homeCaptcha:securityCode']` | 驗證碼輸入欄 | 右鍵驗證碼輸入框 |
+| `#SubmitButton` | 「開始查詢」按鈕 | 右鍵橘色按鈕 → 檢查 |
+| `#idNumber` | 旅客身分證號（第二頁）| 通過驗證碼後右鍵 |
+| `#mobilePhone` | 旅客手機號碼 | 同上 |
+| `[name='agree']` | 同意條款 checkbox | 右鍵「了解並同意」→ 檢查 |
+| `#isSubmit` | 「完成訂位」按鈕 | 右鍵 → 檢查 |
+
+## B. 車站代碼
+
+| 代碼 | 車站 | 代碼 | 車站 |
+|---|---|---|---|
+| 1 | 南港 | 7 | 台中 |
+| 2 | 台北 | 8 | 彰化 |
+| 3 | 板橋 | 9 | 雲林 |
+| 4 | 桃園 | 10 | 嘉義 |
+| 5 | 新竹 | 11 | 台南 |
+| 6 | 苗栗 | 12 | 左營 |
+
+## C. Console 面板快速測試
+
+在高鐵訂票頁面的 Console 面板直接輸入，確認 Selector 是否正確：
+
+```js
+// 確認元素是否存在
+document.querySelector("#SubmitButton") !== null
+
+// 讀取出發站目前值
+document.querySelector("[name='selectStartStation']").value
+
+// 手動選台南 + 觸發事件（模擬 js_select 行為）
+var el = document.querySelector("[name='selectStartStation']");
+el.value = "11";
+el.dispatchEvent(new Event("change", {bubbles: true}));
+
+// 取驗證碼圖片的位置（模擬 element_screenshot 第一步）
+document.querySelector("#BookingS1Form_homeCaptcha_passCode")
+  .getBoundingClientRect()
+
+// 列出頁面所有有 id 的元素
+Array.from(document.querySelectorAll("[id]"))
+  .map(function(el){ return el.tagName + "#" + el.id; })
+  .filter(function(s){ return s.length > 2; })
+```
+
+## D. 講義需要補充的截圖清單
+
+| 檔案路徑 | 截圖內容 | 建議尺寸 |
+|---|---|---|
+| `img/fig2_1_devtools_overview.png` | DevTools 整體，標示 Elements 和 Console 分頁 | 全螢幕 |
+| `img/fig2_2_inspect_select.png` | 右鍵選單 + Elements 高亮 `<select name="selectStartStation">` | 半螢幕 |
+| `img/fig2_3_search_passCode.png` | Elements 搜尋列輸入 `passCode`，高亮驗證碼節點 | 半螢幕 |
+| `img/fig2_4_console_query.png` | Console 執行 `querySelector`，顯示 `true` 並高亮按鈕 | 半螢幕 |
