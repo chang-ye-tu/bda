@@ -1,36 +1,82 @@
-# -*- coding: utf-8 -*-
-# encoding: UTF-8
 ## ============================================================
 ## 台灣高鐵訂票 / 取消訂位
-## 後端: httr + W3C WebDriver（直接與 chromedriver 通訊，不依賴 RSelenium）
+## 後端: httr + W3C WebDriver（直接與 chromedriver 通訊）
 ##
-## ── Windows 前置作業 ──────────────────────────────────────────
-##   1. 確認 Chrome 版本：chrome://version
-##   2. 下載對應 chromedriver（以 145 版為例）：
-##      https://storage.googleapis.com/chrome-for-testing-public/
-##             145.0.7632.159/win64/chromedriver-win64.zip
-##   3. 解壓縮，把 chromedriver.exe 放到任意資料夾（例如 ~/chromedriver/）
-##   4. 修改下方 CHROMEDRIVER_PATH 為該路徑
-##
-## ── Linux/macOS 前置作業 ─────────────────────────────────────
-##   wget "https://storage.googleapis.com/chrome-for-testing-public/\
-##         145.0.7632.159/linux64/chromedriver-linux64.zip"
-##   unzip chromedriver-linux64.zip
-##   sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
-##   sudo chmod +x /usr/local/bin/chromedriver
-##   # 此時 CHROMEDRIVER_PATH 設 "chromedriver" 即可（在 PATH 裡）
-##
-## ── 安裝 R 套件 ──────────────────────────────────────────────
-##   install.packages(c("httr", "jsonlite", "magick", "base64enc"))
+## ── 前置作業 ────────────────────────────────────────────────
+##   R 套件與 chromedriver 皆會在首次執行時自動安裝，無須手動處理。
 ## ============================================================
+
+## ── 套件自動安裝 ────────────────────────────────────────────
+local({
+  pkgs <- c("httr", "jsonlite", "magick", "base64enc")
+  missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(missing)) {
+    message(sprintf("安裝缺少的套件：%s", paste(missing, collapse = ", ")))
+    install.packages(missing, quiet = TRUE)
+    still <- missing[!vapply(missing, requireNamespace, logical(1), quietly = TRUE)]
+    if (length(still))
+      stop(sprintf("以下套件安裝失敗，程式無法執行：%s", paste(still, collapse = ", ")))
+  }
+})
 library(httr); library(jsonlite); library(magick); library(base64enc)
 
-## ── chromedriver 路徑設定 ────────────────────────────────────────────────────
-## Windows：填入 chromedriver.exe 的完整路徑（可用 / 或 \\ 作為路徑分隔符）
-##   CHROMEDRIVER_PATH <- "C:/Users/YourName/chromedriver/chromedriver.exe"
-## Linux/macOS：若已安裝到 /usr/local/bin/，直接用指令名稱即可
-##   CHROMEDRIVER_PATH <- "chromedriver"
-CHROMEDRIVER_PATH <- "chromedriver"   # ← 請依實際環境修改
+## 設定目前工作目錄為本程式所在處
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+
+## ── chromedriver 自動下載 / 路徑設定 ───────────────────────────────────────────
+ensure_chromedriver <- function(path = "./chromedriver") {
+  # Windows 下補上 .exe
+  exe <- if (.Platform$OS.type == "windows" && !grepl("\\.exe$", path))
+    paste0(path, ".exe") else path
+  if (file.exists(exe)) { message("chromedriver 已存在"); return(invisible(exe)) }
+
+  message("chromedriver 不存在，自動下載中...")
+
+  # ── 偵測平台 ──────────────────────────────────────────────
+  sysname <- Sys.info()[["sysname"]]
+  machine <- Sys.info()[["machine"]]
+  platform <- if (sysname == "Windows") {
+    if (.Machine$sizeof.pointer == 8L) "win64" else "win32"
+  } else if (sysname == "Darwin") {
+    if (grepl("arm|aarch", machine, ignore.case = TRUE)) "mac-arm64" else "mac-x64"
+  } else {
+    "linux64"
+  }
+  message(sprintf("  平台: %s", platform))
+
+  # ── 查詢 Stable channel 最新版本 ──────────────────────────
+  api_url <- paste0("https://googlechromelabs.github.io/",
+                    "chrome-for-testing/last-known-good-versions-with-downloads.json")
+  info  <- fromJSON(content(GET(api_url), "text", encoding = "UTF-8"))
+  stable <- info$channels$Stable
+  message(sprintf("  Stable 版本: %s", stable$version))
+
+  urls <- stable$downloads$chromedriver
+  dl   <- urls[urls$platform == platform, "url"]
+  if (length(dl) == 0L) stop(sprintf("找不到平台 %s 的下載連結", platform))
+  message(sprintf("  下載: %s", dl))
+
+  # ── 下載並解壓縮 ──────────────────────────────────────────
+  zip_file <- tempfile(fileext = ".zip")
+  download.file(dl, zip_file, mode = "wb", quiet = TRUE)
+  tmp_dir  <- tempfile()
+  unzip(zip_file, exdir = tmp_dir)
+
+  # zip 內結構: chromedriver-<platform>/chromedriver[.exe]
+  found <- list.files(tmp_dir, pattern = "^chromedriver(\\.exe)?$",
+                      recursive = TRUE, full.names = TRUE)
+  if (length(found) == 0L) stop("解壓縮後找不到 chromedriver 執行檔")
+  file.copy(found[1], exe, overwrite = TRUE)
+
+  # Linux/macOS 加上執行權限
+  if (.Platform$OS.type != "windows") Sys.chmod(exe, "755")
+
+  unlink(zip_file); unlink(tmp_dir, recursive = TRUE)
+  message(sprintf("  已安裝至 %s", normalizePath(exe)))
+  invisible(exe)
+}
+
+CHROMEDRIVER_PATH <- ensure_chromedriver()
 
 PID        <- "D121350349"
 MOBILE     <- "0922825743"
@@ -213,10 +259,34 @@ click_link_text <- function(sess, text, timeout = WAIT_TIMEOUT) {
 
 element_screenshot <- function(sess, css, filename = "captcha.png") {
   wait_for(sess, css)
-  rect <- wd_js(sess, sprintf('
-    var r = document.querySelector(%s).getBoundingClientRect();
-    return {x: r.left, y: r.top, width: r.width, height: r.height};
+
+  # ── 等待圖片實際載入完成（對 <img> 元素而言）──────────────────
+  wd_js(sess, sprintf('
+    (function() {
+      var el = document.querySelector(%s);
+      if (el && el.tagName === "IMG" && !el.complete) {
+        return new Promise(function(resolve) {
+          el.addEventListener("load",  function() { resolve(true); });
+          el.addEventListener("error", function() { resolve(false); });
+          setTimeout(function() { resolve(false); }, 5000);
+        });
+      }
+      return true;
+    })();
   ', js_str(css)))
+  Sys.sleep(0.3)
+
+  # ── 取得 BoundingClientRect 並乘以 devicePixelRatio ─────────
+  rect <- wd_js(sess, sprintf('
+    var dpr = window.devicePixelRatio || 1;
+    var r   = document.querySelector(%s).getBoundingClientRect();
+    return {x: r.left * dpr, y: r.top * dpr,
+            width: r.width * dpr, height: r.height * dpr, dpr: dpr};
+  ', js_str(css)))
+  message(sprintf("    [截圖] DPR=%.1f  rect: %dx%d+%d+%d",
+          rect$dpr, round(rect$width), round(rect$height),
+          round(rect$x), round(rect$y)))
+
   raw  <- wd_cmd(sess, "GET", "/screenshot")
   img  <- image_read(base64decode(raw))
   img  <- image_crop(img, sprintf("%dx%d+%d+%d",
@@ -251,7 +321,7 @@ ocr_captcha <- function(filename = "captcha.png", manual = FALSE) {
 # 訂票
 # ============================================================
 
-book <- function(date, headless = FALSE, manual = FALSE) {
+book <- function(date, headless = FALSE, manual = TRUE) {
   sess <- start_driver(headless)
   on.exit(stop_driver(sess), add = TRUE)
 
@@ -332,7 +402,7 @@ book <- function(date, headless = FALSE, manual = FALSE) {
 # 取消訂位
 # ============================================================
 
-cancel <- function(order_id, headless = FALSE, manual = FALSE) {
+cancel <- function(order_id, headless = FALSE, manual = TRUE) {
   sess <- start_driver(headless)
   on.exit(stop_driver(sess), add = TRUE)
 
@@ -359,6 +429,14 @@ cancel <- function(order_id, headless = FALSE, manual = FALSE) {
     tryCatch(wait_for(sess, ".btn-edit", timeout = 5),
              error = function(e) message("    未通過"))
   }
+
+  if (!reached()) {
+    message(sprintf("取消失敗：%d 次皆未成功", NUM_TRIALS))
+    page_screenshot(sess, "thsr_cancel_fail.png")
+    return(FALSE)
+  }
+
+  message("  通過！開始取消訂位...")
 
   tryCatch({
     wait_for(sess, "div.uk-modal.uk-open", timeout = 3)
@@ -396,7 +474,7 @@ cancel <- function(order_id, headless = FALSE, manual = FALSE) {
 # ============================================================
 # 範例
 # ============================================================
-if (FALSE) {
-  book(date = "2026/04/02", headless = FALSE)
-  cancel(order_id = "01901879", headless = FALSE)
+if (TRUE) {
+  book(date = "2026/04/13")
+  #cancel(order_id = "01901879")
 }

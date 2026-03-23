@@ -22,7 +22,7 @@ changytu @ o365.fcu.edu.tw
 <!--
 - [Wickham, H., 2022. ggplot2: Elegant Graphics for Data Analysis. 3rd ed., Springer Nature, Cham.](https://ggplot2-book.org/)
 - [Hyndman, R. J., Athanasopoulos, G., 2021. Forecasting: Principles and Practice. 3rd ed., OTexts, Melbourne, Australia.](https://otexts.com/fpp3/)
-- [Thulin, M., 2024. Modern Statistics with R: From Wrangling and Exploring Data to Inference and Predictive Modelling. 2nd ed., Chapman & Hall/CRC, Boca Raton, FL.](http://www.modernstatisticswithr.com/)
+- [Thulin, M., 2024. Modern Statistics with R: From Wrangling and Exploring Data to Inference and Predictive Modelling. 2nd ed., Chapman & Hall/CRC, Boca Raton, FL.]( http://www.modernstatisticswithr.com/ )
 
 | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note01.pdf">01</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note02.pdf">02</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note03.pdf">03</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note04.pdf">04</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note05.pdf">05</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note06.pdf">06</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note07.pdf">07</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note08.pdf">08</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note09.pdf">09</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note10.pdf">10</a>&nbsp; | &nbsp;<a href="https://github.com/chang-ye-tu/bda/blob/master/note/note11.pdf">11</a>&nbsp; 
 -->
