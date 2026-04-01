@@ -24,6 +24,65 @@ library(httr); library(jsonlite); library(magick); library(base64enc)
 setwd(dirname(rstudioapi::getSourceEditorContext()$path))
 
 ## ── chromedriver 自動下載 / 路徑設定 ───────────────────────────────────────────
+
+detect_chrome_version <- function() {
+  sysname <- Sys.info()[["sysname"]]
+  ver <- NULL
+
+  if (sysname == "Windows") {
+    # 方法 1: 從登錄檔讀取
+    for (hive in c("HKLM", "HKCU")) {
+      out <- tryCatch(
+        system2("reg", args = c("query",
+          paste0(hive, "\\SOFTWARE\\Google\\Chrome\\BLBeacon"),
+          "/v", "version"), stdout = TRUE, stderr = NULL),
+        error = function(e) NULL)
+      if (!is.null(out)) {
+        m <- regmatches(out, regexpr("[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+", out))
+        if (length(m)) { ver <- m[1]; break }
+      }
+    }
+    # 方法 2: 直接抓 chrome.exe 的檔案版本
+    if (is.null(ver)) {
+      for (dir in c(Sys.getenv("ProgramFiles"), Sys.getenv("ProgramFiles(x86)"),
+                    file.path(Sys.getenv("LOCALAPPDATA"), "Google", "Chrome", "Application"))) {
+        chrome_exe <- file.path(dir, "Google", "Chrome", "Application", "chrome.exe")
+        if (file.exists(chrome_exe)) {
+          out <- tryCatch(
+            system2("powershell", args = c("-Command", sprintf(
+              "(Get-Item '%s').VersionInfo.ProductVersion", chrome_exe)),
+              stdout = TRUE, stderr = NULL),
+            error = function(e) NULL)
+          if (!is.null(out)) {
+            m <- regmatches(out, regexpr("[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+", out))
+            if (length(m)) { ver <- m[1]; break }
+          }
+        }
+      }
+    }
+  } else if (sysname == "Darwin") {
+    out <- tryCatch(
+      system2("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+              args = "--version", stdout = TRUE, stderr = NULL),
+      error = function(e) NULL)
+    if (!is.null(out)) {
+      m <- regmatches(out, regexpr("[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+", out))
+      if (length(m)) ver <- m[1]
+    }
+  } else {
+    for (cmd in c("google-chrome", "google-chrome-stable", "chromium-browser", "chromium")) {
+      out <- tryCatch(
+        system2(cmd, args = "--version", stdout = TRUE, stderr = NULL),
+        error = function(e) NULL)
+      if (!is.null(out)) {
+        m <- regmatches(out, regexpr("[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+", out))
+        if (length(m)) { ver <- m[1]; break }
+      }
+    }
+  }
+  ver
+}
+
 ensure_chromedriver <- function(path = "./chromedriver") {
   # Windows 下補上 .exe
   exe <- if (.Platform$OS.type == "windows" && !grepl("\\.exe$", path))
@@ -44,15 +103,44 @@ ensure_chromedriver <- function(path = "./chromedriver") {
   }
   message(sprintf("  平台: %s", platform))
 
-  # ── 查詢 Stable channel 最新版本 ──────────────────────────
-  api_url <- paste0("https://googlechromelabs.github.io/",
-                    "chrome-for-testing/last-known-good-versions-with-downloads.json")
-  info  <- fromJSON(content(GET(api_url), "text", encoding = "UTF-8"))
-  stable <- info$channels$Stable
-  message(sprintf("  Stable 版本: %s", stable$version))
+  # ── 偵測本機 Chrome 版本 ──────────────────────────────────
+  chrome_ver <- detect_chrome_version()
+  if (!is.null(chrome_ver)) {
+    major <- sub("\\..*", "", chrome_ver)
+    message(sprintf("  Chrome 版本: %s（主版本 %s）", chrome_ver, major))
+  } else {
+    message("  無法偵測 Chrome 版本，將下載最新 Stable 版 chromedriver")
+  }
 
-  urls <- stable$downloads$chromedriver
-  dl   <- urls[urls$platform == platform, "url"]
+  # ── 查詢對應版本的 chromedriver 下載連結 ──────────────────
+  if (!is.null(chrome_ver)) {
+    # 用 per-milestone API 取得該主版本最新的 chromedriver
+    api_url <- paste0("https://googlechromelabs.github.io/",
+                      "chrome-for-testing/latest-versions-per-milestone-with-downloads.json")
+    info <- fromJSON(content(GET(api_url), "text", encoding = "UTF-8"))
+    milestone <- info$milestones[[major]]
+    if (!is.null(milestone)) {
+      message(sprintf("  chromedriver 版本: %s", milestone$version))
+      urls <- milestone$downloads$chromedriver
+      dl   <- urls[urls$platform == platform, "url"]
+    } else {
+      message(sprintf("  主版本 %s 無對應 chromedriver，退回最新 Stable", major))
+      dl <- character(0)
+    }
+  } else {
+    dl <- character(0)
+  }
+
+  # 退回機制：找不到對應版本就下載最新 Stable
+  if (length(dl) == 0L) {
+    api_url <- paste0("https://googlechromelabs.github.io/",
+                      "chrome-for-testing/last-known-good-versions-with-downloads.json")
+    info   <- fromJSON(content(GET(api_url), "text", encoding = "UTF-8"))
+    stable <- info$channels$Stable
+    message(sprintf("  Stable 版本: %s", stable$version))
+    urls <- stable$downloads$chromedriver
+    dl   <- urls[urls$platform == platform, "url"]
+  }
   if (length(dl) == 0L) stop(sprintf("找不到平台 %s 的下載連結", platform))
   message(sprintf("  下載: %s", dl))
 
@@ -78,7 +166,7 @@ ensure_chromedriver <- function(path = "./chromedriver") {
 
 CHROMEDRIVER_PATH <- ensure_chromedriver()
 
-PID        <- "E111999888"  # 身份證號
+PID        <- "E111999888"  # 身份證字號
 MOBILE     <- "0912345678"  # 手機號碼
 MEMBER_PID <- "E111999888"  # TGo 會員號碼
 SEAT       <- "1"
@@ -475,6 +563,6 @@ cancel <- function(order_id, headless = FALSE, manual = TRUE) {
 # 範例
 # ============================================================
 if (TRUE) {
-  book(date = "2026/04/13")
+  book(date = "2026/04/28")
   #cancel(order_id = "01901879")
 }

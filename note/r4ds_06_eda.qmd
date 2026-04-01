@@ -1,0 +1,357 @@
+---
+title: "R4DS 06 -- Exploratory Data Analysis"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(tidyverse)
+```
+
+# Introduction
+
+## What is EDA?
+
+> "Far better an approximate answer to the right question, which is often vague, than an exact answer to the wrong question." --- John Tukey
+
+EDA is an **iterative cycle**:
+
+1. Generate **questions** about your data
+2. **Visualize**, transform, and model to search for answers
+3. **Refine** your questions based on what you learn
+
+\medskip
+
+Two universal questions:
+
+- What type of **variation** occurs within my variables?
+- What type of **covariation** occurs between my variables?
+
+# Variation
+
+## Visualizing Distributions
+
+```{r}
+#| fig.height: 2.5
+ggplot(diamonds, aes(x = carat)) +
+  geom_histogram(binwidth = 0.5)
+```
+
+Right-skewed: most diamonds are small. Peaks at round values (0.5, 1, 1.5, 2).
+
+## Zoom In: Smaller Binwidth
+
+```{r}
+#| fig.height: 2.5
+smaller <- diamonds |> filter(carat < 3)
+
+ggplot(smaller, aes(x = carat)) +
+  geom_histogram(binwidth = 0.01)
+```
+
+Spikes at whole/half carats --- rounding by sellers. More diamonds just above each round number.
+
+## Questions to Ask
+
+When exploring a distribution, look for:
+
+- **Typical values:** Which are most common? Why?
+- **Rare values:** Which are rare? Does that match expectations?
+- **Unusual patterns:** Clusters, spikes, gaps?
+- **Subgroups:** Do clusters suggest distinct populations?
+
+\medskip
+
+Follow-up: How are observations within clusters similar? How do clusters differ?
+
+## Unusual Values (Outliers)
+
+```{r}
+#| fig.height: 2
+#| layout-ncol: 2
+#| fig-width: 4
+ggplot(diamonds, aes(x = y)) +
+  geom_histogram(binwidth = 0.5)
+
+ggplot(diamonds, aes(x = y)) +
+  geom_histogram(binwidth = 0.5) +
+  coord_cartesian(ylim = c(0, 50))
+```
+
+\comm{coord\_cartesian()} zooms without dropping data. Reveals outliers at 0, ~30, ~60 mm.
+
+## Identifying Outliers
+
+```{r}
+#| output.lines: 8
+diamonds |>
+  filter(y < 3 | y > 20) |>
+  select(price, x, y, z) |>
+  arrange(y)
+```
+
+Width of 0 mm = data entry error. 32 mm and 59 mm = implausible for these prices.
+
+## Exercises (Variation)
+
+1. Explore the distribution of \comm{x}, \comm{y}, and \comm{z} in \comm{diamonds}. What do you learn?
+2. Explore the distribution of \comm{price}. Anything unusual? (Hint: try many binwidths.)
+3. How many diamonds are 0.99 carat? How many are 1 carat? Why the difference?
+4. Compare \comm{coord\_cartesian()} vs. \comm{xlim()}/\comm{ylim()} when zooming on a histogram.
+
+## Solutions (Variation) --- 1--2
+
+1.
+
+```{r}
+#| fig.height: 1.5
+#| warning: false
+ggplot(diamonds, aes(x = x)) +
+  geom_histogram(binwidth = 0.1) +
+  coord_cartesian(xlim = c(3, 11))
+```
+
+\comm{x} and \comm{y} are similar (length/width); \comm{z} is smaller (depth). All have outliers near 0 and at high extremes.
+
+## Solutions (Variation) --- 2--4
+
+2. No diamonds priced around \$1,500 --- a gap in the distribution. Visible with small binwidth.
+
+3.
+
+```{r}
+#| output.lines: 4
+diamonds |> filter(carat == 0.99) |> nrow()
+diamonds |> filter(carat == 1) |> nrow()
+```
+
+23 vs. 1,558 --- sellers round up to 1 carat (higher perceived value).
+
+4. \comm{coord\_cartesian()} zooms visually; \comm{xlim()}/\comm{ylim()} **drops data** outside the range (changes bin counts).
+
+# Handling Unusual Values
+
+## Replace, Don't Drop
+
+```{r}
+#| eval: false
+# BAD: drops entire row
+diamonds2 <- diamonds |> filter(between(y, 3, 20))
+
+# GOOD: replace outliers with NA
+diamonds2 <- diamonds |>
+  mutate(y = if_else(y < 3 | y > 20, NA, y))
+```
+
+Don't drop rows --- one bad value doesn't invalidate the whole observation. Use \comm{if\_else()} to recode outliers as \comm{NA}.
+
+## Working with Missing Values
+
+```{r}
+#| fig.height: 2.2
+#| warning: false
+#| message: false
+nycflights13::flights |>
+  mutate(
+    cancelled = is.na(dep_time),
+    sched_hour = sched_dep_time %/% 100,
+    sched_min = sched_dep_time %% 100,
+    sched_dep_time = sched_hour + sched_min / 60
+  ) |>
+  ggplot(aes(x = sched_dep_time)) +
+  geom_freqpoly(aes(color = cancelled), binwidth = 1/4)
+```
+
+## Exercises (Missing Values)
+
+1. What happens to missing values in a histogram? In a bar chart? Why the difference?
+2. What does \comm{na.rm = TRUE} do in \comm{mean()} and \comm{sum()}?
+
+## Solutions (Missing Values)
+
+1. Histograms **silently drop** NAs (with a warning). Bar charts show NAs as a separate category. Histograms need numeric bins; NAs have no position. Bar charts treat NAs as another level.
+
+2. \comm{na.rm = TRUE} removes NAs before computing. Without it, \comm{mean()} and \comm{sum()} return \comm{NA} if any input is missing.
+
+# Covariation
+
+## Categorical + Numerical: Frequency Polygon
+
+```{r}
+#| fig.height: 2.5
+ggplot(diamonds, aes(x = price, y = after_stat(density))) +
+  geom_freqpoly(aes(color = cut), binwidth = 500,
+                linewidth = 0.75)
+```
+
+\comm{after\_stat(density)} standardizes area to 1. Surprise: Fair diamonds appear most expensive!
+
+## Categorical + Numerical: Boxplot
+
+```{r}
+#| fig.height: 2.5
+ggplot(diamonds, aes(x = cut, y = price)) +
+  geom_boxplot()
+```
+
+Confirms: lower quality $\to$ higher median price. (Confounded by carat --- explained later.)
+
+## Reordering with `fct_reorder()`
+
+```{r}
+#| fig.height: 2.5
+ggplot(mpg, aes(x = hwy,
+       y = fct_reorder(class, hwy, median))) +
+  geom_boxplot()
+```
+
+\comm{fct\_reorder(class, hwy, median)} sorts categories by median \comm{hwy}. Swap axes for long labels.
+
+## Exercises (Categorical + Numerical)
+
+1. Improve the cancelled vs. non-cancelled flights visualization.
+2. Which variable best predicts diamond price? How is it correlated with \comm{cut}? Why does this make lower-quality diamonds more expensive?
+3. Try \comm{coord\_flip()} vs. swapping \comm{x}/\comm{y}.
+4. Compare: \comm{geom\_violin()}, faceted \comm{geom\_histogram()}, colored \comm{geom\_freqpoly()}, colored \comm{geom\_density()}.
+
+## Solutions (Cat. + Num.) --- 1--2
+
+1. Use density or facet with \comm{scales = "free\_y"} to handle the count imbalance.
+
+2. **Carat** predicts price best. Larger (lower-cut) diamonds tend to weigh more. When controlling for carat, better cut $\to$ higher price. Simpson's paradox: the confounding variable (carat) reverses the apparent relationship.
+
+## Solutions (Cat. + Num.) --- 3--4
+
+3. Same result visually. Swapping \comm{x}/\comm{y} is more explicit; \comm{coord\_flip()} is convenient for modifying existing code.
+
+4. \comm{geom\_violin()}: shows full shape, compact. \comm{geom\_histogram()}: familiar, but faceting uses more space. \comm{geom\_freqpoly()}: good for overlaying, hard to read with many groups. \comm{geom\_density()}: smooth, but can hide features.
+
+## Two Categorical Variables
+
+```{r}
+#| fig.height: 2.5
+ggplot(diamonds, aes(x = cut, y = color)) +
+  geom_count()
+```
+
+Point size $\propto$ count. Alternative: \comm{geom\_tile()} with \comm{fill = n}.
+
+## Heatmap with `geom_tile()`
+
+```{r}
+#| fig.height: 2.5
+diamonds |>
+  count(color, cut) |>
+  ggplot(aes(x = color, y = cut)) +
+  geom_tile(aes(fill = n))
+```
+
+## Exercises (Two Categorical)
+
+1. Rescale the count data to show distribution of \comm{cut} within \comm{color} (or vice versa).
+2. Map \comm{color} to \comm{x} and \comm{cut} to \comm{fill} in a segmented bar chart. What insight?
+3. Use \comm{geom\_tile()} with dplyr to show average departure delay by destination and month. What makes it hard to read?
+
+## Solutions (Two Categorical)
+
+1. Compute proportions within groups:
+
+```{r}
+#| eval: false
+diamonds |>
+  count(color, cut) |>
+  group_by(color) |>
+  mutate(prop = n / sum(n)) |>
+  ggplot(aes(x = color, y = cut, fill = prop)) +
+  geom_tile()
+```
+
+2. Shows color composition per cut level. Compute with \comm{count(cut, color)}.
+
+3. Too many destinations --- hard to read. Filter to busy destinations, or reorder by delay. Missing combos also create gaps.
+
+## Two Numerical Variables
+
+```{r}
+#| fig.height: 2
+#| layout-ncol: 2
+#| fig-width: 4
+#| warning: false
+ggplot(smaller, aes(x = carat, y = price)) +
+  geom_point(alpha = 1/100)
+
+ggplot(smaller, aes(x = carat, y = price)) +
+  geom_bin2d()
+```
+
+Left: \comm{alpha} reveals density. Right: \comm{geom\_bin2d()} bins into rectangles, colors by count.
+
+## Binned Boxplots
+
+```{r}
+#| fig.height: 2.5
+ggplot(smaller, aes(x = carat, y = price)) +
+  geom_boxplot(aes(group = cut_width(carat, 0.1)))
+```
+
+\comm{cut\_width(carat, 0.1)} bins carat into 0.1-wide groups. Shows how price varies across carat ranges.
+
+## Exercises (Two Numerical)
+
+1. \comm{cut\_width()} vs. \comm{cut\_number()}: what to consider for frequency polygons?
+2. Visualize distribution of \comm{carat} partitioned by \comm{price}.
+3. How does price distribution of very large vs. small diamonds compare?
+4. Combine techniques to visualize \comm{cut}, \comm{carat}, and \comm{price} together.
+
+## Solutions (Two Numerical)
+
+1. \comm{cut\_width()} creates equal-width bins (some may have few points). \comm{cut\_number()} creates equal-count bins (widths vary). For frequency polygons, \comm{cut\_number()} ensures each line has enough data.
+
+2. `ggplot(diamonds, aes(x = price, y = carat)) + geom_boxplot(aes(group = cut_width(price, 2000)))`
+
+3. Very large diamonds have high price variance. Fewer observations $\to$ less price competition $\to$ wider spread.
+
+4. Example: `ggplot(diamonds, aes(x = carat, y = price, color = cut)) + geom_point(alpha = 0.1)` or facet by \comm{cut}.
+
+# Patterns and Models
+
+## Confounding: Cut vs. Price
+
+Why are Fair diamonds more expensive? **Carat confounds the relationship.**
+
+```{r}
+#| fig.height: 2.5
+ggplot(diamonds, aes(x = cut, y = carat)) +
+  geom_boxplot()
+```
+
+Fair diamonds tend to be larger $\to$ higher carat $\to$ higher price.
+
+## Removing Confounding with a Model
+
+```{r}
+#| fig.height: 2.2
+#| message: false
+mod <- lm(log(price) ~ log(carat), data = diamonds)
+diamonds2 <- diamonds |>
+  mutate(resid = exp(residuals(mod)))
+
+ggplot(diamonds2, aes(x = cut, y = resid)) +
+  geom_boxplot()
+```
+
+After removing carat effect: better cut $\to$ higher price (as expected).
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **EDA** is iterative: question $\to$ visualize $\to$ refine
+- **Variation:** histograms, binwidth matters, look for clusters and outliers
+- **Outliers:** use \comm{coord\_cartesian()} to zoom; replace with \comm{NA}, don't drop rows
+- **Covariation (cat. + num.):** boxplots, \comm{geom\_freqpoly()}, \comm{fct\_reorder()}
+- **Covariation (cat. + cat.):** \comm{geom\_count()}, \comm{geom\_tile()}
+- **Covariation (num. + num.):** scatterplot + alpha, \comm{geom\_bin2d()}, binned boxplots
+- **Confounding:** models remove strong effects to reveal subtler relationships
+- Always ask: "Could this be misleading?"
+-->

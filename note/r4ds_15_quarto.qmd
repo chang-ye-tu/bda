@@ -1,0 +1,402 @@
+---
+title: "R4DS 15 -- Quarto"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(tidyverse)
+```
+
+# Quarto Basics
+
+## What is Quarto?
+
+**Quarto** is a unified authoring framework for data science:
+
+- Combine **code**, **results**, and **prose** in one document
+- Supports R, Python, Julia, and Observable JS
+- A command-line tool (not an R package)
+
+\medskip
+
+Three uses:
+
+1. **Communicate** to decision-makers (hide code, show results)
+2. **Collaborate** with other data scientists (show code + reasoning)
+3. **Environment** for doing data science (notebook for yourself)
+
+\medskip
+
+Pipeline: `.qmd` $\to$ **knitr** (executes R) $\to$ `.md` $\to$ **Pandoc** (converts) $\to$ output
+
+## Document Structure
+
+A `.qmd` file has three types of content:
+
+**1. YAML header** (between `---`):
+
+```yaml
+title: "Diamond Sizes"
+author: "Jane Doe"
+date: today
+format: html
+```
+
+**2. Code chunks** (between `` ``` ``):
+
+```{r}
+#| eval: false
+smaller <- diamonds |> filter(carat <= 2.5)
+```
+
+**3. Text** with Markdown formatting: `**bold**`, `*italic*`, `` `code` ``, `# Heading`, `- bullet`, `[link](url)`.
+
+## Code Chunks and Labels
+
+Insert chunks with:
+
+- **Keyboard:** Ctrl+Alt+I (Mac: Cmd+Option+I)
+- **Button:** Insert $\to$ Code Chunk
+- **Manual:** type `` ```{r} `` and `` ``` ``
+
+\medskip
+
+**Labels** identify chunks for navigation and cross-references:
+
+```{r}
+#| eval: false
+#| label: simple-addition
+1 + 1
+```
+
+Label rules: one word or words connected by **dashes**. Avoid `.`, `_`, and spaces. Figures must start with `fig-`, tables with `tbl-`.
+
+## Chunk Options
+
+Key options (set with `#|` inside chunks):
+
+| Option | Effect |
+|--------|--------|
+| `eval: false` | Show code, don't run it |
+| `include: false` | Run code, hide everything |
+| `echo: false` | Run code, hide the code |
+| `results: hide` | Run code, hide text output |
+| `fig-show: hide` | Run code, hide plots |
+| `message: false` | Suppress messages |
+| `warning: false` | Suppress warnings |
+
+## Global Options and Inline Code
+
+**Global options** apply to all chunks via YAML:
+
+```yaml
+title: "My Report"
+execute:
+  echo: false
+  warning: false
+```
+
+Override per-chunk with `#| echo: true`.
+
+\medskip
+
+**Inline code** embeds R results in text:
+
+```markdown
+We have data about `r nrow(diamonds)` diamonds.
+```
+
+Useful helper for readable numbers:
+
+```{r}
+#| output.lines: 3
+comma <- function(x) format(x, digits = 2,
+                            big.mark = ",")
+comma(3452345)
+```
+
+## Exercises (Basics)
+
+1. Create a new `.qmd` file. Render to HTML, PDF, and Word. How do the outputs differ?
+2. Create a brief CV in Quarto: your name as title, headings for education and employment, bulleted lists, bold years.
+3. Set `echo: false` globally. Write a report on diamond sizes for a non-R audience.
+4. Use `scales::label_comma()` for readable inline numbers. Compute the percentage of diamonds $> 2.5$ carats.
+
+## Solutions (Basics)
+
+1. HTML is interactive (scrollable). PDF is fixed-layout (good for print). Word is editable. The `.qmd` input is identical --- only `format:` changes.
+
+2. Use `**2020**` for bold years in a bulleted list under `## Education` and `## Employment`.
+
+3. Set in YAML: `execute: echo: false`. Use `ggplot()` for visualizations, `knitr::kable()` for tables.
+
+4.
+
+```{r}
+#| eval: false
+# Inline: `r scales::label_comma()(nrow(diamonds))`
+# Percentage:
+pct <- round(sum(diamonds$carat > 2.5) /
+  nrow(diamonds) * 100, 1)
+# Inline: `r pct`% are larger than 2.5 carats
+```
+
+# Figures, Tables, and Caching
+
+## Figure Sizing
+
+Control with chunk options:
+
+| Option | Effect |
+|--------|--------|
+| `fig-width` | Width in inches (default 7) |
+| `fig-height` | Height in inches |
+| `fig-asp` | Aspect ratio (height/width) |
+| `out-width` | Scaling in output (e.g., `"70%"`) |
+| `layout-ncol` | Multi-figure layout |
+
+\medskip
+
+**Recommendations:**
+
+- Set `fig-width` between 4--8 inches
+- Use `fig-asp: 0.618` (golden ratio) for aesthetics
+- `out-width: "70%"` for a good default size in documents
+- Cross-reference figures with `fig-` label prefix + `fig-cap`
+
+## Tables with `knitr::kable()`
+
+Default prints are basic. Use \comm{knitr::kable()} for polished tables:
+
+```{r}
+knitr::kable(mtcars[1:4, 1:4])
+```
+
+Cross-reference with `tbl-` label prefix and `tbl-cap`:
+
+```{r}
+#| eval: false
+#| label: tbl-example
+#| tbl-cap: "First 5 cars"
+knitr::kable(mtcars[1:5, ])
+```
+
+Other packages: \comm{gt}, \comm{kableExtra}, \comm{huxtable}, \comm{flextable}.
+
+## Caching
+
+Expensive computations can be cached:
+
+```{r}
+#| eval: false
+#| label: raw-data
+#| cache: true
+rawdata <- read_csv("a_very_large_file.csv")
+```
+
+Track dependencies with \comm{dependson}:
+
+```{r}
+#| eval: false
+#| label: processed-data
+#| cache: true
+#| dependson: "raw-data"
+processed <- rawdata |>
+  filter(!is.na(important_var))
+```
+
+Invalidate when source file changes:
+
+```yaml
+cache.extra: !expr file.mtime("large_file.csv")
+```
+
+Or enable document-wide: `execute: cache: true` in YAML.
+
+## Exercises (Figures/Tables/Caching)
+
+1. Try each figure option one at a time: `fig-width: 10`, `fig-height: 3`, `out-width: "100%"`, `out-width: "20%"`. How does each change the output?
+
+2. Display \comm{diamonds[1:5, ]} with \comm{knitr::kable()}. Add a `tbl-` label and `tbl-cap`. Cross-reference it in text.
+
+3. Set up cached chunks: `d` depends on `c` and `b`, both depend on `a`. Print \comm{lubridate::now()} in each. Verify caching behavior.
+
+## Solutions (Figures/Tables/Caching)
+
+1. `fig-width: 10`: wider figure, elements appear smaller. `fig-height: 3`: short, wide figure. `out-width: "100%"`: fills page width. `out-width: "20%"`: tiny figure.
+
+2.
+
+```{r}
+#| eval: false
+#| label: tbl-diamonds
+#| tbl-cap: "First 5 diamonds"
+knitr::kable(diamonds[1:5, ])
+```
+
+Reference in text: `@tbl-diamonds`.
+
+3. Use `dependson: "a"` for b and c, `dependson: c("b", "c")` for d. Only `a` re-runs when its code changes; downstream chunks cascade.
+
+# Configuration
+
+## Self-Contained Documents and Parameters
+
+**Self-contained HTML** embeds all images, CSS, JS:
+
+```yaml
+format:
+  html:
+    embed-resources: true
+```
+
+\medskip
+
+**Parameters** make documents reusable:
+
+```yaml
+params:
+  start: !expr lubridate::ymd("2015-01-01")
+  snapshot: !expr lubridate::ymd_hms("2015-01-01 12:30:00")
+```
+
+Access with `params$start` in R code. Render with different values programmatically.
+
+## Citations and Bibliography
+
+Add a `.bib` file and CSL style:
+
+```yaml
+bibliography: references.bib
+csl: apa.csl
+```
+
+\medskip
+
+Citation syntax in text:
+
+| Syntax | Output |
+|--------|--------|
+| `[@smith04]` | (Smith 2004) |
+| `@smith04` | Smith (2004) |
+| `[@smith04; @doe99]` | (Smith 2004; Doe 1999) |
+| `[-@smith04]` | (2004) --- suppress author |
+
+Bibliography is auto-inserted at document end.
+
+## Troubleshooting
+
+Common issues and fixes:
+
+1. **Duplicated chunk labels** --- every label must be unique
+2. **Working directory** --- Quarto renders from the `.qmd` file's directory
+3. **Object not found** --- code runs top-to-bottom during render; test with "Restart R and Run All Chunks"
+4. **Hard-to-debug errors** --- add `error: true` to show the error in output
+5. **Package conflicts** --- use `pkg::fun()` calls or \comm{conflicted} package
+
+# Output Formats
+
+## Document Formats
+
+Set output in YAML:
+
+| Format | YAML | Output |
+|--------|------|--------|
+| HTML | `html` | Web page |
+| PDF | `pdf` | Fixed-layout (needs LaTeX) |
+| Word | `docx` | Editable document |
+| Markdown | `gfm` | GitHub-flavored markdown |
+
+\medskip
+
+Multiple formats from one file:
+
+```yaml
+format:
+  html:
+    toc: true
+  pdf: default
+  docx: default
+```
+
+Render all: `quarto render file.qmd --to all`
+
+## Presentations
+
+Quarto creates slides with header-based divisions:
+
+| Format | YAML | Technology |
+|--------|------|-----------|
+| RevealJS | `revealjs` | HTML/JS |
+| PowerPoint | `pptx` | MS Office |
+| Beamer | `beamer` | LaTeX/PDF |
+
+\medskip
+
+- `#` creates section title slides
+- `##` creates content slides
+- `---` creates untitled slides
+- Speaker notes go in `:::{.notes}` divs
+
+These slides are built with Quarto + Beamer!
+
+## Interactivity
+
+**htmlwidgets** --- client-side (no R server needed):
+
+```{r}
+#| eval: false
+library(leaflet)
+leaflet() |>
+  setView(174.764, -36.877, zoom = 16) |>
+  addTiles() |>
+  addMarkers(174.764, -36.877,
+    popup = "Maungawhau")
+```
+
+Packages: \comm{leaflet} (maps), \comm{DT} (tables), \comm{plotly} (interactive plots).
+
+\medskip
+
+**Shiny** --- server-side (needs R running): add `server: shiny` to YAML.
+
+## Websites and Books
+
+Multi-document projects use \comm{\_quarto.yml}:
+
+```yaml
+project:
+  type: website
+
+website:
+  title: "My Site"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - about.qmd
+```
+
+- **Websites:** linked pages with navigation bars
+- **Books:** ordered chapters; supports HTML + PDF + EPUB
+- Render all with `quarto render` from project root
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Pipeline:** `.qmd` $\to$ knitr $\to$ `.md` $\to$ Pandoc $\to$ output
+- **Three parts:** YAML header, code chunks, Markdown text
+- **Chunk options:** `eval`, `echo`, `include`, `message`, `warning`
+- **Global options:** `execute:` in YAML; override per-chunk
+- **Inline code:** embed R results directly in text
+- **Figure sizing:** `fig-width`, `fig-height`, `fig-asp`, `out-width`
+- **Tables:** \comm{knitr::kable()} or \comm{gt::gt()} for polished output
+- **Caching:** `cache: true` + `dependson` for expensive computations
+- **Self-contained:** `embed-resources: true` for portable HTML
+- **Parameters:** `params:` in YAML for reusable documents
+- **Citations:** `.bib` file + `[@key]` syntax
+- **Formats:** HTML, PDF, Word, RevealJS, Beamer, PowerPoint
+- **Projects:** \comm{\_quarto.yml} for websites and books
+-->

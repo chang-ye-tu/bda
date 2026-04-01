@@ -1,0 +1,542 @@
+---
+title: "R4DS 14 -- Iteration & Base R"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(tidyverse)
+```
+
+# Modifying Multiple Columns
+
+## `across()` --- Apply to Many Columns
+
+Instead of repeating the same operation per column:
+
+```{r}
+#| eval: false
+df |> summarize(a = median(a), b = median(b),
+                c = median(c), d = median(d))
+```
+
+Use \comm{across(.cols, .fns)}:
+
+```{r}
+#| eval: false
+df |> summarize(across(a:d, median))
+```
+
+Common \comm{.cols} selectors:
+
+| Selector | Matches |
+|----------|---------|
+| `a:d` | Columns a through d |
+| `everything()` | All non-grouping columns |
+| `where(is.numeric)` | All numeric columns |
+| `starts_with("x")` | Columns starting with "x" |
+
+## Anonymous Functions in `across()`
+
+Pass the **function name**, not a call. For extra arguments, use an anonymous function:
+
+```{r}
+#| output.lines: 6
+df_miss <- tibble(a = c(1, NA, 3, 4),
+  b = c(NA, 5, 6, 7), c = c(7, 8, NA, 10))
+
+# Without na.rm: NAs propagate
+df_miss |> summarize(across(a:c, median))
+```
+
+```{r}
+#| output.lines: 5
+# Fix: anonymous function
+df_miss |> summarize(
+  across(a:c, \(x) median(x, na.rm = TRUE)))
+```
+
+`\(x)` is shorthand for `function(x)`.
+
+## Multiple Functions and `.names`
+
+Pass a **named list** of functions:
+
+```{r}
+#| output.lines: 5
+df_miss |> summarize(across(a:c, list(
+  med = \(x) median(x, na.rm = TRUE),
+  n_miss = \(x) sum(is.na(x)))))
+```
+
+Control output names with \comm{.names} (glue syntax):
+
+```{r}
+#| eval: false
+df_miss |> summarize(across(a:c, list(
+  med = \(x) median(x, na.rm = TRUE),
+  n_miss = \(x) sum(is.na(x))),
+  .names = "{.fn}_{.col}"))
+```
+
+Placeholders: `{.col}` = column name, `{.fn}` = function name.
+
+## `if_any()` and `if_all()`
+
+Filter rows based on conditions across multiple columns:
+
+```{r}
+#| output.lines: 5
+# Rows where ANY column has NA (OR logic)
+df_miss |> filter(if_any(a:c, is.na))
+```
+
+```{r}
+#| output.lines: 5
+# Rows where ALL columns are non-NA (AND logic)
+df_miss |> filter(if_all(a:c, \(x) !is.na(x)))
+```
+
+Use in \comm{mutate()} with \comm{coalesce()} to replace NAs:
+
+```{r}
+#| eval: false
+df_miss |> mutate(across(a:c, \(x) coalesce(x, 0)))
+```
+
+## `across()` in Functions
+
+Combine embracing with tidy-select:
+
+```{r}
+#| eval: false
+summarize_means <- function(df,
+    summary_vars = where(is.numeric)) {
+  df |> summarize(
+    across({{ summary_vars }},
+      \(x) mean(x, na.rm = TRUE)),
+    n = n(), .groups = "drop")
+}
+
+diamonds |> group_by(cut) |> summarize_means()
+diamonds |> group_by(cut) |>
+  summarize_means(c(carat, x:z))
+```
+
+Default \comm{where(is.numeric)} selects all numeric columns; user can override.
+
+## Exercises (across)
+
+1. Practice \comm{across()} skills:
+   a. Compute unique values per column in \comm{palmerpenguins::penguins}
+   b. Compute mean of every column in \comm{mtcars}
+   c. Group \comm{diamonds} by \comm{cut}, \comm{clarity}, \comm{color}; count and compute mean of numeric columns
+
+2. What happens with an unnamed list of functions in \comm{across()}?
+
+3. Modify \comm{expand\_dates()} to auto-remove the original date columns after expansion.
+
+4. Explain each step:
+
+```{r}
+#| eval: false
+show_missing <- function(df, group_vars,
+    summary_vars = everything()) {
+  df |> group_by(pick({{ group_vars }})) |>
+    summarize(across({{ summary_vars }},
+      \(x) sum(is.na(x))), .groups = "drop") |>
+    select(where(\(x) any(x > 0)))
+}
+```
+
+## Solutions (across) --- 1
+
+```{r}
+#| output.lines: 5
+#| message: false
+# 1b. Mean of every column in mtcars
+mtcars |>
+  summarize(across(everything(), mean))
+```
+
+```{r}
+#| output.lines: 5
+#| message: false
+# 1c. Grouped means of numeric columns
+diamonds |> group_by(cut, clarity, color) |>
+  summarize(n = n(),
+    across(where(is.numeric), mean),
+    .groups = "drop")
+```
+
+1a. Same pattern: `penguins |> summarize(across(everything(), n_distinct))`
+
+## Solutions (across) --- 2--4
+
+2. Unnamed functions get numeric suffixes: \comm{col\_1}, \comm{col\_2}, etc.
+
+3. Add \comm{select(!where(is.Date))} at the end:
+
+```{r}
+#| eval: false
+expand_dates <- function(df) {
+  df |>
+    mutate(across(where(is.Date),
+      list(year = year, month = month,
+           day = mday))) |>
+    select(!where(is.Date))
+}
+```
+
+4. Groups by \comm{group\_vars}, counts NAs per \comm{summary\_vars} column, then \comm{select(where(...))} keeps only columns where **any group has missing values**.
+
+# Reading Multiple Files
+
+## `map()` and `list_rbind()`
+
+```{r}
+#| eval: false
+paths <- list.files("data/gapminder",
+  pattern = "[.]xlsx$", full.names = TRUE)
+```
+
+\comm{map()} applies a function to each element, returning a **list**:
+
+```{r}
+#| eval: false
+files <- map(paths, readxl::read_excel)
+files[[1]]      # access first data frame
+```
+
+\comm{list\_rbind()} stacks all data frames into one:
+
+```{r}
+#| eval: false
+paths |>
+  map(readxl::read_excel) |>
+  list_rbind()
+```
+
+Pass extra arguments with an anonymous function:
+
+```{r}
+#| eval: false
+paths |>
+  map(\(p) readxl::read_excel(p, n_max = 1)) |>
+  list_rbind()
+```
+
+## Data in the Path
+
+File names often contain data. Use \comm{set\_names()} + \comm{names\_to}:
+
+```{r}
+#| eval: false
+paths |>
+  set_names(basename) |>
+  map(readxl::read_excel) |>
+  list_rbind(names_to = "year") |>
+  mutate(year = parse_number(year))
+```
+
+**Workflow:** list files $\to$ name them $\to$ read each $\to$ bind with name column $\to$ parse.
+
+\medskip
+
+Save processed data to avoid re-reading:
+
+```{r}
+#| eval: false
+gapminder <- paths |>
+  set_names(basename) |>
+  map(readxl::read_excel) |>
+  list_rbind(names_to = "year") |>
+  mutate(year = parse_number(year))
+write_csv(gapminder, "gapminder.csv")
+```
+
+## Handling Failures with `possibly()`
+
+\comm{possibly()} wraps a function to return a default instead of erroring:
+
+```{r}
+#| eval: false
+files <- paths |>
+  map(possibly(
+    \(p) readxl::read_excel(p), NULL))
+
+data <- files |> list_rbind()
+
+# Find which files failed
+failed <- map_vec(files, is.null)
+paths[failed]
+```
+
+Useful when some files are corrupt or have unexpected formats.
+
+# Saving Multiple Outputs
+
+## Writing Files with `walk()`
+
+\comm{walk()} is like \comm{map()} but for **side effects** (writing, printing):
+
+```{r}
+#| output.lines: 5
+by_clarity <- diamonds |> group_nest(clarity)
+by_clarity
+```
+
+```{r}
+#| eval: false
+by_clarity <- by_clarity |>
+  mutate(path = str_glue("diamonds-{clarity}.csv"))
+
+# Write each subset to its own file
+walk2(by_clarity$data, by_clarity$path, write_csv)
+```
+
+\comm{walk2()} maps over **two** inputs simultaneously.
+
+## Saving Plots
+
+```{r}
+#| eval: false
+carat_histogram <- function(df) {
+  ggplot(df, aes(x = carat)) +
+    geom_histogram(binwidth = 0.1)
+}
+
+by_clarity <- by_clarity |>
+  mutate(
+    plot = map(data, carat_histogram),
+    path = str_glue("clarity-{clarity}.png"))
+
+walk2(by_clarity$path, by_clarity$plot,
+  \(path, plot) ggsave(path, plot,
+    width = 6, height = 6))
+```
+
+Pattern: nest data $\to$ create plots with \comm{map()} $\to$ save with \comm{walk2()}.
+
+# Base R Essentials
+
+## Subsetting Vectors with `[`
+
+Five ways to subset a vector:
+
+```{r}
+#| output.lines: 5
+x <- c("one", "two", "three", "four", "five")
+x[c(3, 2, 5)]           # positive integers
+x[c(-1, -3, -5)]        # negative = exclude
+```
+
+```{r}
+#| output.lines: 4
+x <- c(10, 3, NA, 5, 8, 1, NA)
+x[!is.na(x)]            # logical vector
+x[x %% 2 == 0]          # NAs propagate!
+```
+
+```{r}
+#| output.lines: 3
+x <- c(abc = 1, def = 2, xyz = 5)
+x[c("xyz", "def")]      # by name
+```
+
+Also: repeated indices (\comm{x[c(1,1,5)]}) and empty (\comm{x[]}) are valid.
+
+## Subsetting Data Frames with `[`
+
+`df[rows, cols]` --- rows and columns independently:
+
+```{r}
+#| output.lines: 5
+df <- tibble(x = 1:3, y = c("a", "e", "f"),
+             z = runif(3))
+df[1, 2]                 # row 1, col 2
+```
+
+```{r}
+#| output.lines: 5
+df[df$x > 1, ]           # filter rows
+```
+
+\comm{df[, c("x", "y")]} selects columns. **Tibble vs. data.frame:** tibbles always return tibbles; \comm{data.frame} may drop to a vector.
+
+## dplyr Equivalents
+
+| dplyr | Base R |
+|-------|--------|
+| `filter(df, x > 1)` | `df[df$x > 1, ]` |
+| `arrange(df, x)` | `df[order(df$x), ]` |
+| `select(df, x, z)` | `df[, c("x", "z")]` |
+| `mutate(df, z = x+y)` | `df$z <- df$x + df$y` |
+| `pull(df, x)` | `df$x` or `df[["x"]]` |
+
+\medskip
+
+\comm{subset()} combines filter + select:
+
+```{r}
+#| eval: false
+df |> subset(x > 1, c(y, z))
+# same as: df |> filter(x > 1) |> select(y, z)
+```
+
+## Single Elements: `[[` and `$`
+
+\comm{[[} extracts a **single element**; \comm{\$} is shorthand by name:
+
+```{r}
+#| output.lines: 5
+tb <- tibble(x = 1:4, y = c(10, 4, 1, 21))
+tb[["x"]]       # by name
+tb$x             # shorthand
+tb[[1]]          # by position
+```
+
+Create new columns with \comm{\$}:
+
+```{r}
+#| output.lines: 5
+tb$z <- tb$x + tb$y
+tb
+```
+
+**Tibbles are strict:** \comm{\$} warns on partial/missing names. \comm{data.frame} silently does partial matching.
+
+## Lists: `[` vs. `[[`
+
+```{r}
+l <- list(a = 1:3, b = "a string",
+          c = pi, d = list(-1, -5))
+```
+
+\comm{[} returns a **sub-list**; \comm{[[} extracts the **element itself**:
+
+```{r}
+#| output.lines: 6
+str(l[1:2])     # sub-list of first 2
+str(l[[1]])     # the vector itself
+str(l[[4]])     # extracts the inner list
+```
+
+Same for data frames: \comm{df["x"]} = one-column data frame; \comm{df[["x"]]} = vector.
+
+## Exercises (Base R)
+
+1. Create functions that take a vector and return:
+   a. Elements at even-numbered positions
+   b. Every element except the last
+   c. Only even values (no missing values)
+
+2. Why is `x[-which(x > 0)]` not the same as `x[x <= 0]`?
+
+3. What happens with \comm{[[} and an index larger than the vector length? With a non-existent name?
+
+## Solutions (Base R)
+
+1.
+
+```{r}
+#| output.lines: 5
+even_pos <- function(x) x[seq(2, length(x), 2)]
+drop_last <- function(x) x[-length(x)]
+even_vals <- function(x) x[!is.na(x) & x %% 2 == 0]
+
+even_pos(1:10)
+drop_last(1:5)
+even_vals(c(1, NA, 4, 7, 8))
+```
+
+2. With \comm{NA}: `x <= 0` returns \comm{NA} (keeps element as \comm{NA}), but \comm{which()} drops \comm{NA}s. Also, \comm{-which(x > 0)} on empty result gives \comm{-integer(0)} = select nothing.
+
+3. \comm{[[} with out-of-bounds index: error. Non-existent name: \comm{NULL} for lists, error for atomic vectors.
+
+# Apply Family and For Loops
+
+## The Apply Family
+
+| Function | Like purrr | Returns |
+|----------|-----------|---------|
+| `lapply(x, f)` | `map(x, f)` | Always a list |
+| `sapply(x, f)` | --- | Simplified (unpredictable) |
+| `vapply(x, f, type)` | `map_vec(x, f)` | Specified type (strict) |
+| `tapply(x, grp, f)` | grouped summarize | Named vector |
+
+```{r}
+#| output.lines: 3
+sapply(mtcars[1:4], is.numeric)
+```
+
+```{r}
+#| output.lines: 3
+tapply(diamonds$price, diamonds$cut, mean)
+```
+
+Prefer \comm{vapply()} over \comm{sapply()} --- it fails clearly on type mismatches.
+
+## For Loops
+
+```{r}
+#| eval: false
+for (element in vector) {
+  # do something with element
+}
+```
+
+Use for **side effects** (same purpose as \comm{walk()}):
+
+```{r}
+#| eval: false
+# purrr
+paths |> walk(append_file)
+
+# base R equivalent
+for (path in paths) {
+  append_file(path)
+}
+```
+
+For loops themselves aren't slow --- **growing vectors** inside them is.
+
+## Pre-allocation and `seq_along()`
+
+**Never grow** a vector in a loop --- pre-allocate:
+
+```{r}
+#| eval: false
+# Good: pre-allocate, then fill
+files <- vector("list", length(paths))
+for (i in seq_along(paths)) {
+  files[[i]] <- readxl::read_excel(paths[[i]])
+}
+do.call(rbind, files)  # combine list
+
+# Bad: grows quadratically (O(n^2))
+out <- NULL
+for (path in paths) {
+  out <- rbind(out, readxl::read_excel(path))
+}
+```
+
+\comm{seq\_along()} generates indices; \comm{do.call(rbind, ...)} combines a list.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **\comm{across(.cols, .fns)}:** apply functions to multiple columns; use \comm{where()}, \comm{everything()}, tidy-select
+- **Anonymous functions:** `\(x) f(x, na.rm = TRUE)` for extra arguments
+- **Multiple functions:** named list in \comm{.fns}; \comm{.names} controls output naming
+- **\comm{if\_any()}/\comm{if\_all()}:** filter with OR/AND logic across columns
+- **\comm{map()} + \comm{list\_rbind()}:** read multiple files $\to$ one data frame
+- **\comm{set\_names()} + \comm{names\_to}:** extract metadata from file paths
+- **\comm{possibly()}:** handle failures gracefully in \comm{map()}
+- **\comm{walk()}/\comm{walk2()}:** like \comm{map()} but for side effects
+- **Base R \comm{[}:** 5 subsetting modes (positive, negative, logical, character, empty)
+- **\comm{[[} and \comm{\$}:** extract single elements; tibbles are stricter than data frames
+- **Apply family:** \comm{lapply} $\approx$ \comm{map}, \comm{vapply} for strict types, \comm{tapply} for groups
+- **For loops:** pre-allocate with \comm{vector()}, use \comm{seq\_along()}, never grow vectors
+-->

@@ -1,0 +1,534 @@
+---
+title: "R4DS 03 -- Data Transformation"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+```
+
+# Introduction
+
+## dplyr: The Data Transformation Toolbox
+
+- **dplyr** provides verbs for the most common data manipulation tasks
+- All verbs share a common pattern:
+  1. First argument: a data frame
+  2. Subsequent arguments: what to do (using column names, no quotes)
+  3. Output: a new data frame
+- Combine verbs with the **pipe** `|>`
+
+## Prerequisites
+
+```{r}
+#| output.lines: 3
+library(nycflights13)
+library(tidyverse)
+```
+
+## The `flights` Data
+
+```{r}
+#| output.lines: 7
+flights
+```
+
+- `r format(nrow(flights), big.mark = ",")` flights departing NYC in 2013
+- Types: \comm{<int>} integer, \comm{<dbl>} double, \comm{<chr>} character, \comm{<dttm>} date-time
+
+## `glimpse()` --- See All Variables
+
+```{r}
+#| output.lines: 12
+glimpse(flights)
+```
+
+## dplyr Verbs at a Glance
+
+| Category | Verb | Action |
+|----------|------|--------|
+| Rows | `filter()` | Keep rows that match conditions |
+| Rows | `arrange()` | Reorder rows |
+| Rows | `distinct()` | Remove duplicate rows |
+| Columns | `mutate()` | Create/modify columns |
+| Columns | `select()` | Pick columns |
+| Columns | `rename()` | Rename columns |
+| Columns | `relocate()` | Reorder columns |
+| Groups | `group_by()` | Define groups |
+| Groups | `summarize()` | Collapse groups to summaries |
+
+# Rows
+
+## `filter()` --- Keep Rows by Condition
+
+```{r}
+#| output.lines: 6
+# Flights that departed more than 2 hours late
+flights |>
+  filter(dep_delay > 120)
+```
+
+## `filter()` --- Combining Conditions
+
+```{r}
+#| output.lines: 5
+# Flights on January 1
+flights |>
+  filter(month == 1 & day == 1)
+```
+
+```{r}
+#| output.lines: 5
+# Flights in January or February (shortcut with %in%)
+flights |>
+  filter(month %in% c(1, 2))
+```
+
+## `filter()` --- Common Mistakes
+
+\textbf{Use \comm{==} not \comm{=} for comparison:}
+
+```{r}
+#| error: true
+flights |>
+  filter(month = 1)
+```
+
+\textbf{Use \comm{\%in\%} or \comm{|}, not English "or":}
+
+```{r}
+#| eval: false
+# WRONG: month == 1 | 2  (always TRUE!)
+# RIGHT:
+flights |> filter(month == 1 | month == 2)
+flights |> filter(month %in% c(1, 2))
+```
+
+## `arrange()` --- Reorder Rows
+
+```{r}
+#| output.lines: 5
+flights |>
+  arrange(year, month, day, dep_time)
+```
+
+Use \comm{desc()} for descending order:
+
+```{r}
+#| output.lines: 5
+flights |>
+  arrange(desc(dep_delay))
+```
+
+## `distinct()` --- Unique Rows
+
+```{r}
+#| output.lines: 5
+flights |>
+  distinct(origin, dest)
+```
+
+Use \comm{count()} to also get frequencies:
+
+```{r}
+#| output.lines: 5
+flights |>
+  count(origin, dest, sort = TRUE)
+```
+
+## Exercises 3.2.5
+
+1. Find all flights that:
+   - Arrived $>$ 2 hours late
+   - Flew to Houston (\comm{IAH} or \comm{HOU})
+   - Operated by United, American, or Delta
+   - Departed in summer (Jul--Sep)
+   - Arrived $>$ 2 hours late but didn't leave late
+   - Delayed $\geq$ 1 hour but made up $>$ 30 min in flight
+
+## Exercises 3.2.5 (cont.)
+
+2. Sort \comm{flights} to find longest departure delays. Find earliest morning flights.
+3. Sort to find fastest flights. (Hint: use math in the function.)
+4. Was there a flight on every day of 2013?
+5. Which flights traveled farthest? Least distance?
+6. Does order of \comm{filter()} and \comm{arrange()} matter? Why/why not?
+
+## Solutions 3.2.5 (1)
+
+```{r}
+#| eval: false
+# a) Arrived > 2 hours late
+flights |> filter(arr_delay > 120)
+# b) Flew to Houston
+flights |> filter(dest %in% c("IAH", "HOU"))
+# c) United, American, or Delta
+flights |> filter(carrier %in% c("UA", "AA", "DL"))
+# d) Summer
+flights |> filter(month %in% c(7, 8, 9))
+# e) Arrived >2h late, didn't leave late
+flights |> filter(arr_delay > 120 & dep_delay <= 0)
+# f) Delayed >=1h, made up >30 min
+flights |> filter(dep_delay >= 60 &
+                  dep_delay - arr_delay > 30)
+```
+
+## Solutions 3.2.5 (2--6)
+
+2.
+```{r}
+#| eval: false
+flights |> arrange(desc(dep_delay))   # longest delay
+flights |> arrange(dep_time)          # earliest morning
+```
+
+3. `flights |> arrange(air_time)` or `flights |> arrange(distance / air_time)`
+
+4. `flights |> distinct(month, day) |> nrow()` --- yes, 365 rows.
+
+5. `flights |> arrange(desc(distance))` (farthest) and `flights |> arrange(distance)` (shortest).
+
+6. **No** --- same rows and same order either way. But filtering first is more efficient (fewer rows to sort).
+
+# Columns
+
+## `mutate()` --- Create New Columns
+
+```{r}
+#| output.lines: 6
+flights |>
+  mutate(
+    gain = dep_delay - arr_delay,
+    speed = distance / air_time * 60,
+    .before = 1
+  )
+```
+
+\comm{.before = 1} places new columns at the front.
+
+## `mutate()` --- `.keep` Argument
+
+```{r}
+#| output.lines: 6
+flights |>
+  mutate(
+    gain = dep_delay - arr_delay,
+    hours = air_time / 60,
+    gain_per_hour = gain / hours,
+    .keep = "used"
+  )
+```
+
+\comm{.keep = "used"} keeps only input and output columns.
+
+## `select()` --- Pick Columns
+
+```{r}
+#| eval: false
+flights |> select(year, month, day)       # by name
+flights |> select(year:day)               # range
+flights |> select(!year:day)              # exclude range
+flights |> select(where(is.character))    # by type
+```
+
+**Helper functions:** \comm{starts\_with()}, \comm{ends\_with()}, \comm{contains()}, \comm{num\_range()}
+
+Rename while selecting:
+
+```{r}
+#| output.lines: 5
+flights |>
+  select(tail_num = tailnum)
+```
+
+## `rename()` and `relocate()`
+
+\comm{rename()} keeps all columns, just renames:
+
+```{r}
+#| eval: false
+flights |> rename(tail_num = tailnum)
+```
+
+\comm{relocate()} moves columns:
+
+```{r}
+#| output.lines: 5
+flights |>
+  relocate(time_hour, air_time)
+```
+
+Use \comm{.before} / \comm{.after} to control position.
+
+## Exercises 3.3.5
+
+1. Compare \comm{dep\_time}, \comm{sched\_dep\_time}, \comm{dep\_delay}. How are they related?
+2. Brainstorm ways to select \comm{dep\_time}, \comm{dep\_delay}, \comm{arr\_time}, \comm{arr\_delay}.
+3. What if you specify the same variable multiple times in \comm{select()}?
+4. What does \comm{any\_of()} do?
+5. Does \comm{select(contains("TIME"))} surprise you?
+6. Rename \comm{air\_time} to \comm{air\_time\_min} and move to front.
+7. Why doesn't this work?
+
+```{r}
+#| eval: false
+flights |> select(tailnum) |> arrange(arr_delay)
+```
+
+## Solutions 3.3.5 (1--4)
+
+1. `dep_time = sched_dep_time + dep_delay` (in minutes, though `dep_time` is HHMM format).
+
+2. Several ways:
+
+```{r}
+#| eval: false
+flights |> select(dep_time, dep_delay, arr_time, arr_delay)
+flights |> select(starts_with("dep"), starts_with("arr"))
+flights |> select(matches("^(dep|arr)_(time|delay)$"))
+```
+
+3. Column appears only **once** --- duplicates are silently ignored.
+
+4. \comm{any\_of()} selects columns from a character vector, ignoring names that don't exist (no error).
+
+## Solutions 3.3.5 (5--7)
+
+5. \comm{contains()} is **case-insensitive** by default. Change with \comm{contains("TIME", ignore.case = FALSE)}.
+
+6.
+
+```{r}
+#| eval: false
+flights |>
+  rename(air_time_min = air_time) |>
+  relocate(air_time_min)
+```
+
+7. After \comm{select(tailnum)}, only \comm{tailnum} remains --- \comm{arr\_delay} no longer exists.
+
+# The Pipe
+
+## Chaining Verbs with `|>`
+
+```{r}
+#| output.lines: 5
+# Fastest flights to Houston
+flights |>
+  filter(dest == "IAH") |>
+  mutate(speed = distance / air_time * 60) |>
+  select(year:day, dep_time, carrier, flight, speed) |>
+  arrange(desc(speed))
+```
+
+Read as: "Take flights, **then** filter, **then** mutate, **then** select, **then** arrange."
+
+## Without the Pipe
+
+Nesting (hard to read):
+
+```{r}
+#| eval: false
+arrange(select(mutate(filter(flights,
+  dest == "IAH"), speed = distance / air_time * 60),
+  year:day, dep_time, carrier, flight, speed),
+  desc(speed))
+```
+
+Intermediate objects (clutters environment):
+
+```{r}
+#| eval: false
+flights1 <- filter(flights, dest == "IAH")
+flights2 <- mutate(flights1, speed = distance / air_time * 60)
+flights3 <- select(flights2, year:day, dep_time, carrier, flight, speed)
+arrange(flights3, desc(speed))
+```
+
+The pipe is cleaner. Shortcut: **Ctrl + Shift + M**.
+
+# Groups
+
+## `group_by()` + `summarize()`
+
+```{r}
+#| output.lines: 8
+flights |>
+  group_by(month) |>
+  summarize(
+    avg_delay = mean(dep_delay, na.rm = TRUE),
+    n = n()
+  )
+```
+
+- \comm{na.rm = TRUE} --- ignore missing values
+- \comm{n()} --- count rows per group
+
+## The `.by` Syntax (dplyr 1.1.0+)
+
+Per-operation grouping --- no need for \comm{ungroup()}:
+
+```{r}
+#| output.lines: 6
+flights |>
+  summarize(
+    delay = mean(dep_delay, na.rm = TRUE),
+    n = n(),
+    .by = c(origin, dest)
+  )
+```
+
+\comm{.by} works with all verbs.
+
+## `slice_*()` Functions
+
+| Function | Action |
+|----------|--------|
+| `slice_head(n = 1)` | First row per group |
+| `slice_tail(n = 1)` | Last row per group |
+| `slice_min(x, n = 1)` | Row with smallest `x` |
+| `slice_max(x, n = 1)` | Row with largest `x` |
+| `slice_sample(n = 1)` | Random row per group |
+
+```{r}
+#| output.lines: 5
+flights |>
+  group_by(dest) |>
+  slice_max(arr_delay, n = 1) |>
+  relocate(dest)
+```
+
+## Grouping by Multiple Variables
+
+```{r}
+#| output.lines: 6
+#| message: false
+daily <- flights |> group_by(year, month, day)
+daily |> summarize(n = n())
+```
+
+Each \comm{summarize()} peels off the last group. Use \comm{.groups = "drop"} to drop all.
+
+## Exercises 3.5.7 (1--5)
+
+1. Which carrier has the worst average delays?
+2. Most delayed departure flight to each destination.
+3. How do delays vary over the course of the day? (Plot it.)
+4. What happens with negative \comm{n} in \comm{slice\_min()}?
+5. Explain \comm{count()} in terms of dplyr verbs. What does \comm{sort} do?
+
+## Exercise 3.5.7 (6)
+
+Given:
+
+```{r}
+df <- tibble(
+  x = 1:5,
+  y = c("a", "b", "a", "a", "b"),
+  z = c("K", "K", "L", "L", "K")
+)
+```
+
+Predict the output of each, then check:
+
+a. `df |> group_by(y)`
+b. `df |> arrange(y)`
+c. `df |> group_by(y) |> summarize(mean_x = mean(x))`
+d. `df |> group_by(y, z) |> summarize(mean_x = mean(x))`
+e. Same as (d) but with `.groups = "drop"`
+f. Compare `summarize(mean_x = mean(x))` vs. `mutate(mean_x = mean(x))` after `group_by(y, z)`
+
+## Solutions 3.5.7 (1--3)
+
+1.
+
+```{r}
+#| output.lines: 5
+flights |>
+  group_by(carrier) |>
+  summarize(avg_delay = mean(dep_delay, na.rm = TRUE)) |>
+  arrange(desc(avg_delay))
+```
+
+Hard to disentangle airport vs. carrier effects (confounded).
+
+## Solutions 3.5.7 (2--3)
+
+2.
+
+```{r}
+#| eval: false
+flights |>
+  group_by(dest) |>
+  slice_max(dep_delay, n = 1)
+```
+
+3.
+
+```{r}
+#| fig.height: 2.2
+#| warning: false
+flights |>
+  group_by(hour) |>
+  summarize(avg_delay = mean(dep_delay, na.rm = TRUE)) |>
+  ggplot(aes(x = hour, y = avg_delay)) +
+  geom_line() + geom_point()
+```
+
+Delays increase throughout the day.
+
+## Solutions 3.5.7 (4--6)
+
+4. Negative \comm{n} removes that many rows (keeps all except the $n$ smallest/largest).
+
+5. `count(x)` is equivalent to `group_by(x) |> summarize(n = n())`. The \comm{sort = TRUE} argument arranges results in descending order of \comm{n}.
+
+6.
+   a. Same data, but grouped (header shows \comm{Groups: y [2]}).
+   b. Rows reordered by \comm{y} (a's first, then b's). Not grouped.
+   c. Two rows: mean of \comm{x} for \comm{y = "a"} (mean 3) and \comm{y = "b"} (mean 3.5).
+   d. Three rows (one per y-z combo). Message: "grouped by y".
+   e. Same three rows, but result is **ungrouped**.
+   f. \comm{summarize} collapses to 3 rows; \comm{mutate} keeps all 5 rows, adding the group mean as a new column.
+
+# Case Study
+
+## Aggregates and Sample Size
+
+```{r}
+#| output.lines: 5
+batters <- Lahman::Batting |>
+  group_by(playerID) |>
+  summarize(
+    performance = sum(H, na.rm = TRUE) / sum(AB, na.rm = TRUE),
+    n = sum(AB, na.rm = TRUE)
+  )
+batters
+```
+
+## Variation Decreases with Sample Size
+
+```{r}
+#| fig.height: 2.5
+#| warning: false
+batters |>
+  filter(n > 100) |>
+  ggplot(aes(x = n, y = performance)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(se = FALSE)
+```
+
+Always include \comm{n()} when aggregating --- don't draw conclusions from tiny groups.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Rows:** \comm{filter()} (keep), \comm{arrange()} (sort), \comm{distinct()} (unique)
+- **Columns:** \comm{mutate()} (create), \comm{select()} (pick), \comm{rename()}, \comm{relocate()}
+- **Groups:** \comm{group\_by() |> summarize()} or use \comm{.by}
+- **Pipe** \comm{|>}: chain verbs, read left-to-right
+- \comm{n()} counts rows per group; always pair with summaries
+- \comm{na.rm = TRUE} for \comm{mean()}, \comm{sum()}, etc.
+- Variation shrinks with sample size --- include counts in aggregates
+-->

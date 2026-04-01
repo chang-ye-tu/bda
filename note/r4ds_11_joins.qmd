@@ -1,0 +1,396 @@
+---
+title: "R4DS 11 -- Joins"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(tidyverse)
+library(nycflights13)
+```
+
+# Keys
+
+## Primary and Foreign Keys
+
+A **primary key** uniquely identifies each row. A **foreign key** links to another table's primary key.
+
+\medskip
+
+| Table | Primary key | Identifies |
+|-------|-------------|------------|
+| `airlines` | `carrier` | Airline |
+| `airports` | `faa` | Airport |
+| `planes` | `tailnum` | Plane |
+| `weather` | `origin`, `time_hour` | Weather obs. |
+
+\medskip
+
+Foreign keys in \comm{flights}: \comm{carrier} $\to$ \comm{airlines}, \comm{tailnum} $\to$ \comm{planes}, \comm{origin}/\comm{dest} $\to$ \comm{airports\$faa}, (\comm{origin}, \comm{time\_hour}) $\to$ \comm{weather}.
+
+## Checking Primary Keys
+
+Verify uniqueness with \comm{count()} + \comm{filter()}:
+
+```{r}
+#| output.lines: 5
+planes |>
+  count(tailnum) |> filter(n > 1)
+```
+
+Also check for missing values:
+
+```{r}
+#| output.lines: 5
+planes |> filter(is.na(tailnum))
+```
+
+**Surrogate keys:** when no natural key exists, add one with \comm{row\_number()}:
+
+```{r}
+#| eval: false
+flights |> mutate(id = row_number(), .before = 1)
+```
+
+## Exercises (Keys)
+
+1. What is the relationship between \comm{weather} and \comm{airports}?
+2. If \comm{weather} contained records for all US airports, what additional connection would it make to \comm{flights}?
+3. The \comm{year}, \comm{month}, \comm{day}, \comm{hour}, and \comm{origin} variables almost form a compound key for \comm{weather}, but one hour has duplicates. What's special about it?
+4. How would you represent "special days" (e.g., Christmas) as a data frame? What would be its primary key?
+
+## Solutions (Keys)
+
+1. \comm{weather\$origin} is a foreign key to \comm{airports\$faa}. Only the three NYC airports appear.
+
+2. \comm{weather} could also connect to \comm{flights\$dest}, providing weather at the destination.
+
+3. The duplicate hour is likely the fall-back DST hour (November, when clocks go back --- the same hour occurs twice).
+
+4. A tibble with \comm{month} and \comm{day} as compound primary key. Connects to \comm{flights} via those columns.
+
+# Mutating Joins
+
+## `left_join()` --- The Most Common Join
+
+A **mutating join** adds variables from one table to another by matching keys.
+
+```{r}
+#| output.lines: 8
+flights2 <- flights |>
+  select(year, time_hour, origin, dest,
+         tailnum, carrier)
+
+flights2 |> left_join(airlines)
+```
+
+\comm{left\_join()} keeps **all rows** in \comm{x}, fills \comm{NA} for non-matches.
+
+## `left_join()` --- Adding Weather
+
+```{r}
+#| output.lines: 8
+flights2 |>
+  left_join(weather |>
+    select(origin, time_hour, temp, wind_speed))
+```
+
+Non-matches produce \comm{NA} for the new columns.
+
+## `left_join()` --- Adding Plane Info
+
+```{r}
+#| output.lines: 8
+flights2 |>
+  left_join(planes |>
+    select(tailnum, type, engines, seats))
+```
+
+Many planes have \comm{NA} for \comm{type}/\comm{seats} --- those tail numbers are missing from the \comm{planes} table.
+
+## Specifying Join Keys with `join_by()`
+
+Default: join on **all shared column names** (natural join). This can go wrong:
+
+```{r}
+#| output.lines: 4
+#| warning: false
+# year means different things in flights vs planes!
+flights2 |> left_join(planes) |>
+  select(tailnum, type) |> head(3)
+```
+
+Fix: specify the key explicitly:
+
+```{r}
+#| eval: false
+flights2 |> left_join(planes, join_by(tailnum))
+```
+
+For **different column names**, use \comm{==}:
+
+```{r}
+#| eval: false
+flights2 |>
+  left_join(airports, join_by(dest == faa))
+```
+
+## Four Types of Mutating Joins
+
+Simple example:
+
+```{r}
+x <- tribble(~key, ~val_x, 1, "x1",
+             2, "x2", 3, "x3")
+y <- tribble(~key, ~val_y, 1, "y1",
+             2, "y2", 4, "y3")
+```
+
+| Join | Keeps rows from | Unmatched rows |
+|------|----------------|----------------|
+| `left_join(x, y)` | All of `x` | `y` gets `NA` |
+| `right_join(x, y)` | All of `y` | `x` gets `NA` |
+| `full_join(x, y)` | All of `x` and `y` | Both get `NA` |
+| `inner_join(x, y)` | Only matches | Dropped |
+
+## `inner_join()` and `left_join()`
+
+```{r}
+#| output.lines: 6
+x |> inner_join(y, join_by(key))
+```
+
+```{r}
+#| output.lines: 7
+x |> left_join(y, join_by(key))
+```
+
+## `full_join()`
+
+```{r}
+#| output.lines: 8
+x |> full_join(y, join_by(key))
+```
+
+Key 3 exists only in \comm{x} $\to$ \comm{val\_y} is \comm{NA}. Key 4 exists only in \comm{y} $\to$ \comm{val\_x} is \comm{NA}.
+
+## Filtering Joins: `semi_join()` and `anti_join()`
+
+**Filtering joins** filter rows --- they never add columns.
+
+\comm{semi\_join(x, y)}: keep rows in \comm{x} that **have** a match in \comm{y}:
+
+```{r}
+#| output.lines: 6
+airports |>
+  semi_join(flights2, join_by(faa == origin))
+```
+
+\comm{anti\_join(x, y)}: keep rows in \comm{x} that have **no** match in \comm{y}:
+
+```{r}
+#| output.lines: 6
+flights2 |>
+  anti_join(airports, join_by(dest == faa)) |>
+  distinct(dest)
+```
+
+## Row Matching
+
+Three outcomes for a row in \comm{x}:
+
+- **0 matches** --- dropped (inner) or filled with \comm{NA} (left/right/full)
+- **1 match** --- preserved as-is
+- **>1 matches** --- **duplicated** once per match
+
+\medskip
+
+**Many-to-many** joins cause row explosion:
+
+```{r}
+#| output.lines: 7
+#| warning: false
+df1 <- tibble(key = c(1, 2, 2),
+              val_x = c("x1", "x2", "x3"))
+df2 <- tibble(key = c(1, 2, 2),
+              val_y = c("y1", "y2", "y3"))
+df1 |> inner_join(df2, join_by(key))
+```
+
+## Exercises (Basic Joins)
+
+1. Find the 48 hours with the worst delays over the year. Cross-reference with \comm{weather}.
+2. Find all flights to the top 10 most popular destinations.
+3. Does every departing flight have corresponding weather data?
+4. What do tail numbers missing from \comm{planes} have in common? (Hint: one variable explains ~90\%.)
+5. Add origin **and** destination airport latitude/longitude to \comm{flights}.
+6. Compute average delay by destination, then plot on a US map.
+
+## Solutions (Basic Joins) --- 1--3
+
+1.
+
+```{r}
+#| eval: false
+flights |>
+  mutate(hour = dep_time %/% 100) |>
+  group_by(year, month, day, hour) |>
+  summarize(avg_delay = mean(dep_delay,
+    na.rm = TRUE)) |>
+  ungroup() |> slice_max(avg_delay, n = 48) |>
+  left_join(weather)
+```
+
+2.
+
+```{r}
+#| eval: false
+top_dest <- flights |>
+  count(dest, sort = TRUE) |> head(10)
+flights |> semi_join(top_dest, join_by(dest))
+```
+
+3. No --- \comm{flights |> anti\_join(weather)} reveals some flights without matching weather.
+
+## Solutions (Basic Joins) --- 4--6
+
+4. Mostly \comm{carrier == "MQ"} or \comm{"AA"} --- they report tail numbers differently.
+
+5.
+
+```{r}
+#| eval: false
+flights |>
+  left_join(airports |> select(faa, lat, lon),
+    join_by(origin == faa)) |>
+  rename(origin_lat = lat, origin_lon = lon) |>
+  left_join(airports |> select(faa, lat, lon),
+    join_by(dest == faa)) |>
+  rename(dest_lat = lat, dest_lon = lon)
+```
+
+Rename **after** the join to avoid ambiguity.
+
+6.
+
+```{r}
+#| eval: false
+flights |>
+  group_by(dest) |>
+  summarize(delay = mean(arr_delay, na.rm = TRUE)) |>
+  inner_join(airports, join_by(dest == faa)) |>
+  ggplot(aes(lon, lat, color = delay)) +
+  borders("state") + geom_point() +
+  coord_quickmap()
+```
+
+# Non-Equi Joins
+
+## Cross Joins
+
+\comm{cross\_join()} matches every row in \comm{x} with every row in \comm{y} (Cartesian product):
+
+```{r}
+#| output.lines: 8
+df <- tibble(name = c("John", "Simon",
+                      "Tracy", "Max"))
+df |> cross_join(df)
+```
+
+Useful for generating all permutations. Output has $n_x \times n_y$ rows.
+
+## Inequality Joins
+
+Use `<`, `<=`, `>`, `>=` in \comm{join\_by()} instead of `==`:
+
+```{r}
+#| output.lines: 8
+df <- tibble(id = 1:4,
+  name = c("John", "Simon", "Tracy", "Max"))
+df |> inner_join(df, join_by(id < id))
+```
+
+Generates all **combinations** (not permutations) --- avoids duplicates.
+
+## Rolling Joins
+
+Match the **closest** row satisfying an inequality with \comm{closest()}:
+
+```{r}
+#| output.lines: 8
+parties <- tibble(
+  q = 1:4,
+  party = ymd(c("2022-01-10", "2022-04-04",
+                "2022-07-11", "2022-10-03")))
+
+set.seed(123)
+employees <- tibble(
+  name = c("Alice", "Bob", "Carol", "Dan"),
+  birthday = ymd(c("2022-03-15", "2022-06-20",
+                    "2022-01-05", "2022-11-01")))
+
+employees |>
+  left_join(parties,
+    join_by(closest(birthday >= party)))
+```
+
+## Overlap Joins
+
+Three helpers for working with date ranges:
+
+| Helper | Condition |
+|--------|-----------|
+| `between(x, y_lower, y_upper)` | `x >= y_lower & x <= y_upper` |
+| `within(xl, xu, yl, yu)` | `xl >= yl & xu <= yu` |
+| `overlaps(xl, xu, yl, yu)` | `xl <= yu & xu >= yl` |
+
+```{r}
+#| eval: false
+parties <- parties |>
+  mutate(start = ymd(c("2022-01-01",
+    "2022-04-04", "2022-07-11", "2022-10-03")),
+    end = ymd(c("2022-04-03", "2022-07-10",
+      "2022-10-02", "2022-12-31")))
+
+employees |>
+  inner_join(parties,
+    join_by(between(birthday, start, end)))
+```
+
+## Exercises (Non-Equi Joins)
+
+1. Explain the difference in output between these two:
+
+```{r}
+#| eval: false
+x |> full_join(y, join_by(key == key))
+x |> full_join(y, join_by(key == key),
+               keep = TRUE)
+```
+
+2. When checking party period overlaps, why is \comm{q < q} needed in the \comm{join\_by()}? What happens without it?
+
+## Solutions (Non-Equi Joins)
+
+1. Without \comm{keep = TRUE}, the key columns are coalesced into one (showing the non-\comm{NA} value). With \comm{keep = TRUE}, both \comm{key.x} and \comm{key.y} are shown separately.
+
+2. Without \comm{q < q}, every interval overlaps with itself, giving spurious matches. The inequality ensures each pair is compared only once and excludes self-matches.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Primary key:** uniquely identifies rows; **foreign key:** links tables
+- **Surrogate key:** \comm{row\_number()} when no natural key exists
+- **Mutating joins** add columns:
+  - \comm{left\_join()}: keeps all rows in \comm{x} (most common)
+  - \comm{inner\_join()}: keeps only matches
+  - \comm{right\_join()}: keeps all rows in \comm{y}
+  - \comm{full\_join()}: keeps all rows in both
+- **Filtering joins** filter rows:
+  - \comm{semi\_join()}: keeps \comm{x} rows with a match in \comm{y}
+  - \comm{anti\_join()}: keeps \comm{x} rows without a match in \comm{y}
+- **Join keys:** \comm{join\_by(x == y)} for different names; natural join by default
+- **Row matching:** 0 matches $\to$ \comm{NA}; 1 match $\to$ kept; >1 match $\to$ duplicated
+- **Non-equi joins:** \comm{cross\_join()}, inequality (\comm{<}, \comm{>=}), \comm{closest()}, \comm{between()}/\comm{overlaps()}
+-->

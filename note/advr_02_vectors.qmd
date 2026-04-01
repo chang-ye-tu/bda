@@ -1,0 +1,541 @@
+---
+title: "AdvR 02 -- Vectors"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(lobstr)
+library(tibble)
+```
+
+# Atomic Vectors
+
+## Vector Types
+
+Two flavors of vectors in R:
+
+1. **Atomic vectors** --- all elements same type
+2. **Lists** --- elements can be any type
+
+\medskip
+
+**Four common atomic types:**
+
+| Type | Example | `typeof()` |
+|------|---------|-----------|
+| Logical | `TRUE`, `FALSE` | `"logical"` |
+| Integer | `1L`, `6L` | `"integer"` |
+| Double | `1.5`, `1.23e4` | `"double"` |
+| Character | `"hello"` | `"character"` |
+
+Two rare types: `complex` and `raw`.
+
+\medskip
+
+"Numeric" = integer + double collectively.
+
+## Creating Vectors with `c()`
+
+```{r}
+#| output.lines: 5
+lgl_var <- c(TRUE, FALSE)
+int_var <- c(1L, 6L, 10L)
+dbl_var <- c(1, 2.5, 4.5)
+chr_var <- c("these are", "some strings")
+
+typeof(int_var)
+length(dbl_var)
+```
+
+\comm{c()} **flattens** nested calls:
+
+```{r}
+#| output.lines: 3
+c(c(1, 2), c(3, 4))
+```
+
+Special doubles: `Inf`, `-Inf`, `NaN`.
+
+## Missing Values
+
+`NA` is infectious --- most operations with `NA` return `NA`:
+
+```{r}
+#| output.lines: 3
+NA > 5
+10 * NA
+```
+
+Exceptions (identity holds for all inputs): `NA ^ 0` $\to$ `1`, `NA | TRUE` $\to$ `TRUE`, `NA & FALSE` $\to$ `FALSE`.
+
+\medskip
+
+**Test** with \comm{is.na()}, never `==`. Logical $\to$ numeric is useful:
+
+```{r}
+#| output.lines: 3
+x <- c(FALSE, FALSE, TRUE, TRUE, FALSE)
+sum(x)      # count TRUEs
+mean(x)     # proportion of TRUEs
+```
+
+Four typed NAs: `NA` (logical), `NA_integer_`, `NA_real_`, `NA_character_`.
+
+## Coercion
+
+When types are mixed, R coerces to the most flexible type:
+
+$$\text{logical} \to \text{integer} \to \text{double} \to \text{character}$$
+
+```{r}
+#| output.lines: 5
+c(1, FALSE)        # double: c(1, 0)
+c("a", 1)          # character: c("a", "1")
+c(TRUE, 1L)        # integer: c(1L, 1L)
+```
+
+Manual coercion with \comm{as.*()}:
+
+```{r}
+#| output.lines: 3
+as.integer("42")
+as.double(TRUE)
+```
+
+Test with \comm{is.na()}, not `== NA` (which returns `NA`).
+
+## Exercises (Atomic Vectors)
+
+1. How do you create raw and complex scalars? (Hint: `?raw` and `?complex`.)
+
+2. Predict the output:
+
+```{r}
+#| eval: false
+c(1, FALSE)
+c("a", 1)
+c(TRUE, 1L)
+```
+
+3. Why is `1 == "1"` true? Why is `-1 < FALSE` true? Why is `"one" < 2` false?
+
+4. Why is the default missing value `NA` a logical vector? (Hint: think about \comm{c(FALSE, NA\_character\_)}.)
+
+## Solutions (Atomic Vectors)
+
+1. `as.raw(42)` or `charToRaw("A")` for raw. `complex(real = 1, imaginary = 1)` or `1 + 1i` for complex.
+
+2.
+
+```{r}
+#| output.lines: 5
+str(c(1, FALSE))     # double: c(1, 0)
+str(c("a", 1))       # character: c("a", "1")
+str(c(TRUE, 1L))     # integer: c(1L, 1L)
+```
+
+3. Comparison operators coerce to common type. `1` $\to$ `"1"`, `FALSE` $\to$ `0`, `2` $\to$ `"2"` (and `"one" > "2"` lexicographically).
+
+4. Logical is the least flexible type. `NA` coerces **up** (to `NA_integer_`, etc.) without affecting the result type. If `NA` were character, everything would become character.
+
+# Attributes
+
+## Getting and Setting Attributes
+
+Attributes are **name-value pairs** attached to any object:
+
+```{r}
+#| output.lines: 5
+a <- 1:3
+attr(a, "x") <- "abcdef"
+attr(a, "y") <- 4:6
+str(attributes(a))
+```
+
+Or use \comm{structure()}:
+
+```{r}
+#| output.lines: 5
+a <- structure(1:3, x = "abcdef", y = 4:6)
+str(attributes(a))
+```
+
+**Most attributes are lost** by operations:
+
+```{r}
+#| output.lines: 3
+attributes(a[1])   # NULL
+```
+
+Two exceptions routinely preserved: **names** and **dim**.
+
+## Names and Dimensions
+
+**Names** --- three ways to create:
+
+```{r}
+#| eval: false
+x <- c(a = 1, b = 2, c = 3)         # at creation
+names(x) <- c("a", "b", "c")         # assignment
+x <- setNames(1:3, c("a", "b", "c")) # setNames()
+```
+
+Remove with `names(x) <- NULL` or \comm{unname(x)}.
+
+\medskip
+
+**Dimensions** turn vectors into matrices/arrays:
+
+```{r}
+#| output.lines: 5
+x <- matrix(1:6, nrow = 2, ncol = 3)
+x
+```
+
+| Vector | Matrix | Array |
+|--------|--------|-------|
+| `names()` | `rownames()`, `colnames()` | `dimnames()` |
+| `length()` | `nrow()`, `ncol()` | `dim()` |
+| `c()` | `rbind()`, `cbind()` | `abind::abind()` |
+
+## Exercises (Attributes)
+
+1. How is \comm{setNames()} implemented? How is \comm{unname()} implemented?
+
+2. What does \comm{dim()} return for a 1-d vector? When might you use \comm{NROW()} or \comm{NCOL()}?
+
+3. Describe these objects. What makes them different from `1:5`?
+
+```{r}
+#| eval: false
+x1 <- array(1:5, c(1, 1, 5))
+x2 <- array(1:5, c(1, 5, 1))
+x3 <- array(1:5, c(5, 1, 1))
+```
+
+## Solutions (Attributes)
+
+1. \comm{setNames()} assigns `names(object) <- nm` and returns the object. \comm{unname()} sets `names(obj) <- NULL` (and optionally `dimnames`).
+
+2. `dim()` returns `NULL` for a plain vector. Use \comm{NROW()}/\comm{NCOL()} to treat vectors uniformly with matrices:
+
+```{r}
+#| output.lines: 5
+x <- 1:10
+c(nrow(x), ncol(x))     # NULL, NULL
+c(NROW(x), NCOL(x))     # 10, 1
+```
+
+3. All three are 3-d arrays with a `dim` attribute (1-by-1-by-5, 1-by-5-by-1, 5-by-1-by-1). Unlike `1:5`, they have dimensionality.
+
+# S3 Atomic Vectors
+
+## Factors
+
+**Factors** store categorical data. Built on integer vectors with `levels`:
+
+```{r}
+#| output.lines: 5
+x <- factor(c("a", "b", "b", "a"))
+typeof(x)
+levels(x)
+```
+
+Factors record **all possible** values, even unobserved:
+
+```{r}
+#| output.lines: 5
+sex_char <- c("m", "m", "m")
+sex_factor <- factor(sex_char, levels = c("m", "f"))
+table(sex_char)
+table(sex_factor)
+```
+
+**Ordered factors** have meaningful level order:
+
+```{r}
+#| eval: false
+grade <- ordered(c("b", "b", "a", "c"),
+  levels = c("c", "b", "a"))
+```
+
+## Dates and Date-Times
+
+**Dates** --- doubles representing days since 1970-01-01:
+
+```{r}
+#| output.lines: 5
+today <- Sys.Date()
+typeof(today)
+unclass(as.Date("1970-02-01"))  # 31 days
+```
+
+**Date-times (POSIXct)** --- doubles representing seconds since epoch:
+
+```{r}
+#| output.lines: 3
+now_ct <- as.POSIXct("2018-08-01 22:00", tz = "UTC")
+typeof(now_ct)
+```
+
+**Durations (difftime)** --- doubles with a `units` attribute:
+
+```{r}
+#| output.lines: 2
+as.difftime(1, units = "weeks")
+```
+
+## Exercises (S3 Vectors)
+
+1. What sort of object does \comm{table()} return? What is its type? What attributes does it have?
+
+2. What happens to a factor when you modify its levels?
+
+```{r}
+#| eval: false
+f1 <- factor(letters)
+levels(f1) <- rev(levels(f1))
+```
+
+3. How do `f2` and `f3` differ from `f1`?
+
+```{r}
+#| eval: false
+f2 <- rev(factor(letters))
+f3 <- factor(letters, levels = rev(letters))
+```
+
+## Solutions (S3 Vectors)
+
+1. \comm{table()} returns an integer array with class `"table"`, a `dim` attribute, and `dimnames`. Dimensions correspond to unique values in each input.
+
+2. The **underlying integers stay the same** but the level labels change. This makes it *look* like the data changed, but only the mapping changed:
+
+```{r}
+#| output.lines: 5
+f1 <- factor(letters[1:5])
+as.integer(f1)
+levels(f1) <- rev(levels(f1))
+as.integer(f1)   # still 1 2 3 4 5
+f1               # but displays as e d c b a
+```
+
+3. `f2 <- rev(factor(letters))` reverses **element order** (integers change, levels stay). `f3 <- factor(letters, levels = rev(letters))` reverses **level order** (integers change, levels reversed).
+
+# Lists
+
+## Lists: Heterogeneous Vectors
+
+Each element can be **any type**, including other lists:
+
+```{r}
+#| output.lines: 6
+l1 <- list(1:3, "a", c(TRUE, FALSE), c(2.3, 5.9))
+str(l1)
+```
+
+Lists store **references** (not copies) and are **recursive**:
+
+```{r}
+#| output.lines: 3
+lobstr::obj_size(mtcars)
+lobstr::obj_size(list(mtcars, mtcars, mtcars))
+```
+
+Three copies of `mtcars` in a list costs only ~80 extra bytes. Lists of lists: `list(list(list(1)))`.
+
+## Combining and Coercing Lists
+
+\comm{c()} with lists combines them --- \comm{list()} nests, \comm{c()} flattens:
+
+```{r}
+#| output.lines: 5
+str(list(list(1, 2), c(3, 4)))   # nested
+```
+
+```{r}
+#| output.lines: 5
+str(c(list(1, 2), c(3, 4)))     # flat
+```
+
+\comm{as.list()} converts atomic to list. \comm{unlist()} does the reverse.
+
+## Exercises (Lists)
+
+1. List all ways a list differs from an atomic vector.
+
+2. Why do you need \comm{unlist()} to convert a list to an atomic vector? Why doesn't \comm{as.vector()} work?
+
+3. Compare \comm{c()} and \comm{unlist()} when combining a date and a date-time.
+
+## Solutions (Lists)
+
+1. Key differences:
+   - **Heterogeneous** vs. homogeneous types
+   - Elements are **references** to separate objects
+   - Can be **recursive** (lists of lists)
+   - Out-of-bounds subsetting returns `NULL`, not `NA`
+
+2. A list **is already a vector** (just not atomic). \comm{as.vector()} won't change that. \comm{unlist()} recursively extracts and coerces elements into an atomic vector.
+
+3. \comm{c()} converts to a common S3 type (POSIXct):
+
+```{r}
+#| output.lines: 3
+c(as.Date("1970-01-02"),
+  as.POSIXct("1970-01-01 01:00", tz = "UTC"))
+```
+
+\comm{unlist()} strips **all attributes** --- returns raw doubles (losing date meaning).
+
+# Data Frames and Tibbles
+
+## Data Frame Basics
+
+Data frames are **named lists of equal-length vectors**:
+
+```{r}
+#| output.lines: 5
+df <- data.frame(x = 1:3, y = c("a", "b", "c"))
+typeof(df)
+attributes(df) |> str()
+```
+
+Key properties:
+
+```{r}
+#| output.lines: 3
+names(df)
+nrow(df)
+ncol(df)
+```
+
+## Tibbles vs. Data Frames
+
+Tibbles are a modern reimagining with stricter behavior:
+
+| Feature | `data.frame` | `tibble` |
+|---------|-------------|----------|
+| String coercion | Converts to factor (pre-4.0) | Never |
+| Non-syntactic names | Transforms | Preserves |
+| Recycling | Integer multiples | Length-1 only |
+| `$` partial matching | Yes (silent) | No (warns) |
+| `[, "col"]` returns | Vector | Tibble |
+
+```{r}
+#| output.lines: 3
+names(data.frame(`1` = 1))  # "X1" (transformed)
+names(tibble(`1` = 1))      # "1" (preserved)
+```
+
+Tibbles allow **column references** during creation: `tibble(x = 1:3, y = x * 2)`.
+
+## Row Names and List Columns
+
+**Row names** are discouraged --- use a column instead:
+
+```{r}
+#| eval: false
+df3 <- data.frame(age = c(35, 27),
+  row.names = c("Bob", "Sue"))
+as_tibble(df3, rownames = "name")
+# Converts row names to a regular column
+```
+
+**List columns** store complex data per row:
+
+```{r}
+#| output.lines: 5
+tibble(x = 1:3, y = list(1:2, 1:3, 1:4))
+```
+
+In base R, list columns need \comm{I()}: `data.frame(x = 1:3, y = I(list(...)))`.
+
+## Exercises (Data Frames)
+
+1. Can you have a data frame with zero rows? Zero columns?
+
+2. What happens if you set rownames that are not unique?
+
+3. If `df` is a data frame, what can you say about `t(df)` and `t(t(df))`?
+
+4. What does \comm{as.matrix()} do with mixed column types? How does \comm{data.matrix()} differ?
+
+## Solutions (Data Frames) --- 1--2
+
+1. Yes to both:
+
+```{r}
+#| output.lines: 5
+data.frame(a = integer(), b = logical()) # zero rows
+data.frame()                             # zero columns
+mtcars[0, 0]                             # both zero
+```
+
+2. Data frames **error** on duplicate row names. But subsetting with `[` can create duplicates (auto-deduplicated with suffixes).
+
+```{r}
+#| error: true
+#| output.lines: 3
+df <- data.frame(x = 1:3)
+row.names(df) <- c("x", "y", "y")
+```
+
+## Solutions (Data Frames) --- 3--4
+
+3. `t(df)` coerces to matrix first (\comm{as.matrix()}), then transposes. With mixed types, everything becomes the most flexible type (usually character). `t(t(df))` transposes back but remains a matrix.
+
+```{r}
+#| output.lines: 5
+df <- data.frame(x = 1:3, y = letters[1:3])
+t(df)  # character matrix
+```
+
+4. \comm{as.matrix()} coerces to the most flexible type (character if any character columns). \comm{data.matrix()} always returns a **numeric** matrix --- factors become integer codes, characters become `NA`.
+
+# NULL
+
+## NULL: The Empty/Absent Vector
+
+`NULL` is a special type of length zero with no attributes:
+
+```{r}
+#| output.lines: 3
+typeof(NULL)
+length(NULL)
+```
+
+Two uses: (1) **empty vector** (`c()` returns `NULL`) and (2) **absent vector** (default argument when no value makes sense).
+
+\medskip
+
+Contrast with `NA`:
+
+- `NULL` = the **vector** is absent (disappears in `c()`)
+- `NA` = an **element** is absent (stays in `c()`)
+
+```{r}
+#| output.lines: 3
+c(NULL, 1, 2)      # NULL disappears
+c(NA, 1, 2)        # NA stays
+```
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Two vector types:** atomic (homogeneous) and list (heterogeneous)
+- **Four common types:** logical, integer, double, character
+- **Coercion:** logical $\to$ integer $\to$ double $\to$ character
+- **NA is infectious:** use \comm{is.na()}, not `== NA`
+- **Attributes:** name-value metadata; most lost on operations
+- **Names and dim:** the two preserved attributes
+- **Factors:** integer + levels; record all possible values
+- **Dates:** doubles (days since epoch); POSIXct (seconds)
+- **Lists:** heterogeneous, recursive, store references
+- **Data frames:** named lists of equal-length vectors
+- **Tibbles:** stricter subsetting, no coercion, better printing
+- **List columns:** store complex data; easy with tibbles
+- **NULL:** absent vector vs. NA (absent element)
+-->

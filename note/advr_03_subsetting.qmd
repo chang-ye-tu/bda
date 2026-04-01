@@ -1,0 +1,469 @@
+---
+title: "AdvR 03 -- Subsetting"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(tidyverse)
+```
+
+# Selecting Multiple Elements
+
+## Six Ways to Subset Atomic Vectors (1--3)
+
+```{r}
+#| output.lines: 3
+x <- c(2.1, 4.2, 3.3, 5.4)
+x[c(3, 1)]         # 1. Positive integers: select
+x[c(1, 1)]         # Duplicates allowed
+```
+
+```{r}
+#| output.lines: 3
+x[-c(3, 1)]        # 2. Negative integers: exclude
+```
+
+```{r}
+#| output.lines: 3
+x[c(TRUE, TRUE, FALSE, FALSE)]   # 3. Logical vector
+x[x > 3]           # Most common use
+```
+
+## Six Ways to Subset Atomic Vectors (4--6)
+
+```{r}
+#| output.lines: 3
+x[]                 # 4. Nothing: returns all
+x[0]                # 5. Zero: returns empty
+```
+
+```{r}
+#| output.lines: 3
+y <- setNames(x, letters[1:4])
+y[c("d", "c", "a")]   # 6. Character: by name
+```
+
+## Matrices and Data Frames
+
+**Matrices** --- subset with `[rows, cols]`:
+
+```{r}
+#| output.lines: 5
+a <- matrix(1:9, nrow = 3)
+colnames(a) <- c("A", "B", "C")
+a[1:2, ]
+```
+
+```{r}
+#| output.lines: 3
+a[c(TRUE, FALSE, TRUE), c("B", "A")]
+```
+
+**Data frames** --- single index = columns (list behavior); two indices = rows, columns (matrix behavior):
+
+```{r}
+#| output.lines: 5
+df <- data.frame(x = 1:3, y = 3:1, z = letters[1:3])
+df[c("x", "z")]     # list-style: data frame
+```
+
+## Preserving Dimensionality
+
+By default, `[` simplifies output (drops dimensions):
+
+```{r}
+#| output.lines: 3
+a <- matrix(1:4, nrow = 2)
+str(a[1, ])               # vector (simplified)
+str(a[1, , drop = FALSE]) # matrix (preserved)
+```
+
+Same for data frames:
+
+```{r}
+#| output.lines: 3
+df <- data.frame(a = 1:2, b = 1:2)
+str(df[, "a"])             # vector
+str(df[, "a", drop = FALSE]) # data frame
+```
+
+**Use `drop = FALSE` in functions** to avoid surprising simplification.
+
+\medskip
+
+Tibbles default to `drop = FALSE` --- they always return tibbles.
+
+## Exercises (Selecting Multiple)
+
+1. Fix each error:
+
+```{r}
+#| eval: false
+mtcars[mtcars$cyl = 4, ]          # a
+mtcars[-1:4, ]                     # b
+mtcars[mtcars$cyl <= 5]            # c
+mtcars[mtcars$cyl == 4 | 6, ]     # d
+```
+
+2. Why does `x[NA]` (where `x <- 1:5`) return five `NA`s?
+
+3. What does \comm{upper.tri()} return? How does subsetting a matrix with it work?
+
+4. Why does `mtcars[1:20]` error but `mtcars[1:20, ]` doesn't?
+
+5. Implement your own function to extract diagonal entries from a matrix.
+
+## Solutions (Selecting Multiple) --- 1
+
+```{r}
+#| eval: false
+# a. Use == not =
+mtcars[mtcars$cyl == 4, ]
+
+# b. Use -(1:4) not -1:4
+mtcars[-(1:4), ]
+
+# c. Missing comma (selects columns, not rows)
+mtcars[mtcars$cyl <= 5, ]
+
+# d. Need full comparison on both sides
+mtcars[mtcars$cyl == 4 | mtcars$cyl == 6, ]
+# Or: mtcars[mtcars$cyl %in% c(4, 6), ]
+```
+
+## Solutions (Selecting Multiple) --- 2--5
+
+2. `NA` is logical type $\to$ recycled to `c(NA, NA, NA, NA, NA)`. Each `NA` index produces `NA` output.
+
+3. \comm{upper.tri()} returns a logical matrix (`TRUE` above diagonal). Subsetting with a logical matrix selects all `TRUE` positions as a vector.
+
+4. Single index on data frame = column selection. `mtcars[1:20]` tries to select 20 columns, but only 11 exist. Two-index `mtcars[1:20, ]` selects rows.
+
+5.
+
+```{r}
+#| output.lines: 3
+diag2 <- function(x) {
+  n <- min(nrow(x), ncol(x))
+  x[cbind(seq_len(n), seq_len(n))]
+}
+diag2(matrix(1:9, 3))
+```
+
+# Selecting a Single Element
+
+## `[[` --- Extract One Element
+
+`[` returns a **sub-structure** (list $\to$ list). `[[` extracts the **element itself**:
+
+\medskip
+
+**Train car metaphor:**
+
+- `x[4:6]` = a train of cars 4--6
+- `x[[5]]` = the **contents** of car 5
+
+\medskip
+
+```{r}
+#| output.lines: 5
+x <- list(1:3, "a", 4:6)
+str(x[1])      # list containing the vector
+str(x[[1]])    # the vector itself
+```
+
+`[[` can only take a **single** positive integer or string.
+
+\medskip
+
+**Recursive indexing:** `x[[c(1, 2)]]` = `x[[1]][[2]]` (dig into nested structures).
+
+## `$` --- Shorthand for Named Elements
+
+`x$y` is roughly `x[["y"]]`, but with **partial matching**:
+
+```{r}
+#| output.lines: 5
+x <- list(abc = 1, def = 2)
+x$a          # matches "abc" --- dangerous!
+x[["a"]]     # NULL (exact match only)
+```
+
+**Common mistake** with data frames:
+
+```{r}
+#| output.lines: 3
+var <- "cyl"
+# mtcars$var   # wrong! looks for column named "var"
+mtcars[[var]]   # correct! uses the value of var
+```
+
+Disable partial matching: `options(warnPartialMatchDollar = TRUE)`.
+
+## Missing and Out-of-Bounds with `[[`
+
+| `row[[col]]` | Zero-length | OOB (int) | OOB (chr) | Missing |
+|--------------|-------------|-----------|-----------|---------|
+| Atomic | Error | Error | Error | Error |
+| List | Error | Error | `NULL` | `NULL` |
+| `NULL` | `NULL` | `NULL` | `NULL` | `NULL` |
+
+\medskip
+
+Use \comm{purrr::pluck()} for safe extraction with defaults:
+
+```{r}
+#| output.lines: 5
+x <- list(a = list(1, 2, 3), b = list(3, 4, 5))
+purrr::pluck(x, "a", 1)    # 1
+purrr::pluck(x, "c", 1)    # NULL (no error)
+purrr::pluck(x, "c", .default = NA)  # NA
+```
+
+## Exercises (Single Element)
+
+1. Brainstorm as many ways as possible to extract the third value from `cyl` in `mtcars`.
+
+2. Given `mod <- lm(mpg ~ wt, data = mtcars)`, extract the residual degrees of freedom. Then extract R-squared from \comm{summary(mod)}.
+
+## Solutions (Single Element) --- 1
+
+1. Many approaches:
+
+```{r}
+#| output.lines: 5
+# Column first, then element
+mtcars$cyl[[3]]
+mtcars[["cyl"]][[3]]
+
+# Row first, then column
+mtcars[3, "cyl"]
+mtcars[3, ]$cyl
+```
+
+Also: `mtcars[[c(2, 3)]]`, `with(mtcars, cyl[[3]])`.
+
+## Solutions (Single Element) --- 2
+
+2. Models are lists:
+
+```{r}
+#| output.lines: 3
+mod <- lm(mpg ~ wt, data = mtcars)
+mod$df.residual
+summary(mod)$r.squared
+```
+
+# Subsetting and Assignment
+
+## Subassignment
+
+Combine subsetting operators with assignment:
+
+```{r}
+#| output.lines: 3
+x <- 1:5
+x[c(1, 2)] <- c(101, 102)
+x
+```
+
+**With lists** --- `NULL` removes, `list(NULL)` adds literal NULL:
+
+```{r}
+#| output.lines: 5
+x <- list(a = 1, b = 2)
+x[["b"]] <- NULL     # removes b
+str(x)
+```
+
+```{r}
+#| output.lines: 5
+y <- list(a = 1, b = 2)
+y["b"] <- list(NULL)  # b exists but is NULL
+str(y)
+```
+
+## Subsetting with Nothing Preserves Structure
+
+`x[]` keeps the original structure:
+
+```{r}
+#| output.lines: 5
+mtcars[] <- lapply(mtcars, as.integer)
+is.data.frame(mtcars)  # TRUE --- still a data frame
+```
+
+Without `[]`:
+
+```{r}
+#| output.lines: 3
+data(mtcars)  # reset
+mtcars2 <- lapply(mtcars, as.integer)
+is.data.frame(mtcars2)  # FALSE --- now a list!
+```
+
+**Replace NAs:** `df[is.na(df)] <- 0` replaces all `NA`s with `0`.
+
+# Applications
+
+## Lookup Tables
+
+A **named vector** acts as a simple lookup table:
+
+```{r}
+#| output.lines: 3
+x <- c("m", "f", "u", "f", "f", "m", "m")
+lookup <- c(m = "Male", f = "Female", u = NA)
+unname(lookup[x])
+```
+
+For complex lookups, use \comm{match()}:
+
+```{r}
+#| output.lines: 4
+grades <- c(1, 2, 2, 3, 1)
+info <- data.frame(grade = 3:1,
+  desc = c("Excellent", "Good", "Poor"),
+  fail = c(FALSE, FALSE, TRUE))
+info[match(grades, info$grade), ]
+```
+
+For multiple columns, use \comm{merge()} or \comm{dplyr::left\_join()}.
+
+## Random Samples and Ordering
+
+**Random sampling** with \comm{sample()}:
+
+```{r}
+#| output.lines: 5
+df <- data.frame(x = c(1, 2, 3, 1, 2), y = 5:1)
+df[sample(nrow(df), 3), ]   # 3 random rows
+```
+
+**Ordering** with \comm{order()}:
+
+```{r}
+#| output.lines: 3
+x <- c("b", "c", "a")
+x[order(x)]
+```
+
+```{r}
+#| eval: false
+# Sort data frame by column
+df[order(df$x), ]
+
+# Sort columns alphabetically
+df[order(names(df))]
+```
+
+## Expanding and Deduplicating
+
+**Expanding aggregated counts** with \comm{rep()}:
+
+```{r}
+#| output.lines: 5
+df <- data.frame(x = c(2, 4, 1), n = c(3, 5, 1))
+df[rep(1:nrow(df), df$n), ]
+```
+
+**Deduplicating** with \comm{duplicated()} or `!duplicated()`:
+
+```{r}
+#| eval: false
+df[!duplicated(df$x), ]
+```
+
+## Removing Columns and Filtering Rows
+
+**Remove columns** --- three ways:
+
+```{r}
+#| eval: false
+df$z <- NULL                      # set to NULL
+df[c("x", "y")]                   # keep wanted
+df[setdiff(names(df), "z")]       # drop unwanted
+```
+
+**Filter rows** with logical subsetting:
+
+```{r}
+#| eval: false
+mtcars[mtcars$gear == 5, ]
+mtcars[mtcars$gear == 5 & mtcars$cyl == 4, ]
+```
+
+Use `&` and `|` (not `&&` and `||`).
+
+\medskip
+
+**De Morgan's laws:** `!(X & Y)` = `!X | !Y` and `!(X | Y)` = `!X & !Y`.
+
+## Boolean Algebra vs. Sets
+
+| Boolean (logical) | Set (integer via \comm{which()}) |
+|-------------------|-------------------------------|
+| `x & y` | `intersect(x, y)` |
+| `x \| y` | `union(x, y)` |
+| `x & !y` | `setdiff(x, y)` |
+
+\comm{which()} converts logical to integer indices:
+
+```{r}
+#| output.lines: 3
+x <- c(FALSE, TRUE, FALSE, TRUE, TRUE)
+which(x)
+```
+
+**Key difference:** logical subsetting preserves `NA`s; \comm{which()} drops them.
+
+Prefer integer subsetting when you need the first/last `TRUE` or have very few `TRUE`s in a long vector.
+
+## Exercises (Applications)
+
+1. How would you randomly permute the columns of a data frame? Can you permute rows and columns simultaneously?
+
+2. How would you select a random sample of `m` rows? What about a contiguous sample?
+
+3. How could you put columns in alphabetical order?
+
+## Solutions (Applications)
+
+1.
+
+```{r}
+#| eval: false
+mtcars[sample(ncol(mtcars))]         # permute cols
+mtcars[sample(nrow(mtcars)),
+  sample(ncol(mtcars))]              # both
+```
+
+2. Random sample: `mtcars[sample(nrow(mtcars), m), ]`. Contiguous:
+
+```{r}
+#| eval: false
+start <- sample(nrow(mtcars) - m + 1, 1)
+mtcars[start:(start + m - 1), ]
+```
+
+3. `mtcars[order(names(mtcars))]` or `mtcars[sort(names(mtcars))]`.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Six subsetting modes:** positive, negative, logical, nothing, zero, character
+- **`[`** selects sub-structures (list $\to$ list, df $\to$ df)
+- **`[[`** extracts a single element (digs into the structure)
+- **`$`** is shorthand for `[[` with partial matching (beware!)
+- **`drop = FALSE`:** preserves dimensionality; use in functions
+- **Tibbles** always return tibbles (no silent simplification)
+- **Subassignment:** `x[i] <- value` modifies in place
+- **`x[]` vs `x`:** subsetting with nothing preserves structure
+- **Lookup tables:** named vectors + character subsetting
+- **Sampling:** `sample()` + integer subsetting
+- **Ordering:** `order()` returns indices, not sorted values
+- **Filtering:** logical subsetting with `&`/`|` (not `&&`/`||`)
+- **\comm{which()}:** converts logical to integer; drops `NA`s
+-->

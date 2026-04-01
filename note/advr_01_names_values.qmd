@@ -1,0 +1,565 @@
+---
+title: "AdvR 01 -- Names and Values"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(lobstr)
+```
+
+# Binding Basics
+
+## Names Have Values, Not the Other Way Around
+
+A common simplification: "the object `x` stores the value `1:3`."
+
+More accurate: **the name `x` is bound to the object `1:3`**.
+
+\medskip
+
+```{r}
+#| output.lines: 3
+x <- c(1, 2, 3)
+```
+
+Think of `<-` as an **arrow** pointing from name to value.
+
+\medskip
+
+**Multiple names** can point to the same object:
+
+```{r}
+#| output.lines: 5
+y <- x
+obj_addr(x)
+obj_addr(y)   # same address --- no copy!
+```
+
+## Non-Syntactic Names
+
+**Syntactic names** may contain letters, digits, `.` and `_`. Must start with a letter (or `.` not followed by a digit). Cannot be reserved words.
+
+\medskip
+
+**Non-syntactic names** need backticks:
+
+```{r}
+#| output.lines: 5
+`_abc` <- 1
+`_abc`
+
+`if` <- 10
+`if`
+```
+
+\comm{make.names()} converts to syntactic names:
+
+```{r}
+#| output.lines: 3
+make.names(c("_abc", "if", "1st"))
+```
+
+## Exercises (Binding)
+
+1. Explain the relationship between `a`, `b`, `c`, and `d`:
+
+```{r}
+#| eval: false
+a <- 1:10
+b <- a
+c <- b
+d <- 1:10
+```
+
+2. Do these all point to the same function object? Verify with \comm{obj\_addr()}.
+
+```{r}
+#| eval: false
+mean
+base::mean
+get("mean")
+evalq(mean)
+match.fun("mean")
+```
+
+3. Why does \comm{read.csv()} auto-converting non-syntactic names cause problems? What option suppresses it?
+
+4. Why is `.123e1` not a syntactic name?
+
+## Solutions (Binding)
+
+1. `a`, `b`, `c` all point to the **same object**. `d` points to a **different object** with the same value.
+
+```{r}
+#| output.lines: 5
+a <- 1:10; b <- a; c <- b; d <- 1:10
+obj_addrs(list(a, b, c, d))
+```
+
+2. Yes, all five expressions return the same object:
+
+```{r}
+#| output.lines: 3
+obj_addrs(list(mean, base::mean, get("mean"),
+  evalq(mean), match.fun("mean"))) |> unique()
+```
+
+3. Column names are data; \comm{make.names()} is non-invertible (information loss). Use `check.names = FALSE`.
+
+4. `.123e1` parses as the double `1.23` (dot followed by digit).
+
+# Copy-on-Modify
+
+## The Core Rule
+
+When you modify an object with **multiple bindings**, R creates a copy:
+
+```{r}
+#| output.lines: 5
+x <- c(1, 2, 3)
+y <- x
+obj_addr(x)  # both point to same object
+
+y[[3]] <- 4  # modifying y triggers a copy
+obj_addr(y)  # y now points to new object
+```
+
+`x` is **unchanged** --- the copy was modified, not the original.
+
+## Detecting Copies with `tracemem()`
+
+\comm{tracemem()} prints a message whenever an object is copied:
+
+```{r}
+#| eval: false
+x <- c(1, 2, 3)
+cat(tracemem(x), "\n")
+#> <0x7f80c0e0ffc8>
+
+y <- x
+y[[3]] <- 4  # triggers copy
+#> tracemem[0x7f80c0e0ffc8 -> 0x7f80c4427f40]
+
+untracemem(x)
+```
+
+Turn off with \comm{untracemem()}. Useful for finding unexpected copies in performance-sensitive code.
+
+## Copy-on-Modify in Function Calls
+
+Function arguments create **temporary bindings** --- no copy if the object is only read:
+
+```{r}
+#| output.lines: 5
+f <- function(a) a   # just returns a
+
+x <- c(1, 2, 3)
+z <- f(x)
+obj_addr(x)
+obj_addr(z)   # same address --- no copy
+```
+
+Inside `f()`, the parameter `a` binds to the same object as `x`. Since `f()` doesn't modify anything, no copy occurs.
+
+\medskip
+
+**Rule of thumb:** Reading is free. Copying only happens on **modification**.
+
+## Shallow Copies: Lists
+
+Lists use **shallow copies** --- the list structure is copied, but elements still reference the same objects:
+
+```{r}
+#| output.lines: 6
+l1 <- list(1, 2, 3)
+l2 <- l1
+l2[[3]] <- 4
+```
+
+After modification: `l2` has a new list structure, but `l2[[1]]` and `l2[[2]]` still point to the same values as `l1[[1]]` and `l1[[2]]`.
+
+\medskip
+
+Verify with \comm{ref()}:
+
+```{r}
+#| output.lines: 8
+ref(l1, l2)
+```
+
+## Shallow Copies: Data Frames
+
+Data frames are lists of columns. **Column modification** is efficient:
+
+```{r}
+#| eval: false
+d1 <- data.frame(x = c(1, 5, 6), y = c(2, 4, 3))
+d2 <- d1
+d2[, 2] <- d2[, 2] * 2
+# Only column 2 is copied; column 1 still shared
+```
+
+**Row modification** copies every column:
+
+```{r}
+#| eval: false
+d3 <- d1
+d3[1, ] <- d3[1, ] * 3
+# Every column must be copied (all contain the modified row)
+```
+
+\medskip
+
+**Implication:** Prefer column-wise operations over row-wise for performance.
+
+## Character Vectors and the String Pool
+
+R uses a **global string pool** --- each unique string is stored once:
+
+```{r}
+#| output.lines: 8
+x <- c("a", "a", "abc", "d")
+ref(x, character = TRUE)
+```
+
+Repeated strings point to the same location in the pool. This saves memory for character-heavy data.
+
+## Exercises (Copy-on-Modify)
+
+1. Why is `tracemem(1:10)` not useful?
+
+2. Why does \comm{tracemem()} show two copies here?
+
+```{r}
+#| eval: false
+x <- c(1L, 2L, 3L)
+tracemem(x)
+x[[3]] <- 4
+```
+
+3. Sketch the relationships:
+
+```{r}
+#| eval: false
+a <- 1:10
+b <- list(a, a)
+c <- list(b, a, 1:10)
+```
+
+4. What happens here? Why isn't the result circular?
+
+```{r}
+#| eval: false
+x <- list(1:10)
+x[[2]] <- x
+```
+
+## Solutions (Copy-on-Modify) --- 1--2
+
+1. `1:10` creates an object not bound to any name. It can't be modified, so tracking copies is pointless.
+
+2. **Two copies** because `4` is a double but `x` is integer. R must:
+   - Copy `x` (copy-on-modify, since \comm{tracemem} holds a reference)
+   - Coerce integer to double
+
+Avoid the extra copy by assigning `4L` (integer):
+
+```{r}
+#| eval: false
+x <- c(1L, 2L, 3L)
+tracemem(x)
+x[[3]] <- 4L   # no type coercion needed
+```
+
+## Solutions (Copy-on-Modify) --- 3--4
+
+3. `a`, `b[[1]]`, `b[[2]]`, and `c[[2]]` all reference the **same** object. `c[[3]]` is a **different** object with the same value. `c[[1]]` references `b`.
+
+```{r}
+#| output.lines: 8
+a <- 1:10; b <- list(a, a); c <- list(b, a, 1:10)
+ref(c)
+```
+
+4. Not circular because **copy-on-modify** fires. `x[[2]] <- x` copies the old list into a new one. The old list becomes `x[[2]]`; `x` itself is the new copy.
+
+```{r}
+#| output.lines: 5
+x <- list(1:10)
+x[[2]] <- x
+ref(x)
+```
+
+# Object Size
+
+## Measuring with `obj_size()`
+
+Use \comm{lobstr::obj\_size()}, not \comm{utils::object.size()} (which ignores shared references):
+
+```{r}
+#| output.lines: 5
+x <- runif(1e6)
+obj_size(x)
+
+y <- list(x, x, x)
+obj_size(y)          # only ~80 bytes more!
+```
+
+All three list elements reference the same vector. The list overhead is just 80 bytes (empty 3-element list).
+
+\medskip
+
+**Combined size** accounts for sharing:
+
+```{r}
+#| output.lines: 3
+obj_size(x, y)       # same as obj_size(y)
+```
+
+## ALTREP and String Pool
+
+**ALTREP** (alternative representation) stores sequences compactly:
+
+```{r}
+#| output.lines: 5
+obj_size(1:3)
+obj_size(1:1e3)
+obj_size(1:1e6)
+obj_size(1:1e9)      # all the same!
+```
+
+Only the start and end are stored --- no matter how long the sequence.
+
+\medskip
+
+**String pool** --- each unique string stored once; repeating is cheap:
+
+```{r}
+#| output.lines: 2
+obj_size(rep("bananas bananas bananas", 100))
+```
+
+## Exercises (Object Size)
+
+1. Why are \comm{object.size(y)} and \comm{obj\_size(y)} so different?
+
+```{r}
+#| eval: false
+y <- rep(list(runif(1e4)), 100)
+object.size(y)   # ~8 MB
+obj_size(y)      # ~81 KB
+```
+
+2. Why is this list's size misleading?
+
+```{r}
+#| eval: false
+funs <- list(mean, sd, var)
+obj_size(funs)
+```
+
+3. Predict the output of each line (see next slide for answer).
+
+## Solutions (Object Size) --- 1--2
+
+1. \comm{object.size()} doesn't account for shared references. All 100 elements point to the same vector, so true size is ~80 KB, not ~8 MB.
+
+2. These functions exist in base R regardless --- they're always loaded. Measuring their "size" doesn't reflect freeable memory.
+
+## Solutions (Object Size) --- 3a
+
+3. Key predictions --- initial state:
+
+```{r}
+#| output.lines: 5
+a <- runif(1e6)
+cat("a:", obj_size(a), "\n")
+b <- list(a, a)
+cat("b:", obj_size(b), "\n")     # a + 64B list
+cat("a,b:", obj_size(a, b), "\n") # same as b (shared)
+```
+
+Both list elements share `a` $\to$ `b` is only 64 bytes larger than `a`.
+
+## Solutions (Object Size) --- 3b
+
+After modifications --- sharing breaks:
+
+```{r}
+#| output.lines: 5
+b[[1]][[1]] <- 10  # copy-on-modify: b[[1]] diverges
+cat("b:", obj_size(b), "\n")       # ~16 MB (two copies)
+cat("a,b:", obj_size(a, b), "\n")  # b[[2]] still shares a
+```
+
+```{r}
+#| output.lines: 4
+b[[2]][[1]] <- 10  # b[[2]] also diverges from a
+cat("b:", obj_size(b), "\n")       # still ~16 MB
+cat("a,b:", obj_size(a, b), "\n")  # ~24 MB (no sharing)
+```
+
+# Modify-in-Place
+
+## Single Binding Optimization
+
+If an object has only **one binding**, R modifies it in place (no copy):
+
+```{r}
+#| eval: false
+v <- c(1, 2, 3)
+# v is the only name bound to this object
+
+v[[3]] <- 4
+# Modified in place --- no copy
+```
+
+\medskip
+
+**Complications:**
+
+- R tracks references as: 0, 1, or "many"
+- Once "many", it **never** goes back to 1 (even after unbinding)
+- Most functions create temporary references, preventing in-place modification
+- Exception: **primitive** C functions (like `[[<-`) don't increment
+
+\medskip
+
+**Practical implication:** In-place modification is hard to predict. Focus on algorithmic efficiency instead.
+
+## Environments: Always Modified in Place
+
+Environments use **reference semantics** --- never copied:
+
+```{r}
+#| output.lines: 5
+e1 <- rlang::env(a = 1, b = 2, c = 3)
+e2 <- e1
+
+e1$c <- 4
+e2$c           # also 4! same environment
+```
+
+Environments can even contain **themselves**:
+
+```{r}
+#| output.lines: 5
+e <- rlang::env()
+e$self <- e
+ref(e)
+```
+
+This is impossible with lists (copy-on-modify prevents circularity).
+
+## Case Study: Loop Performance
+
+**Problem:** Modifying a data frame in a loop copies it every iteration:
+
+```{r}
+#| eval: false
+x <- data.frame(matrix(runif(5 * 1e4), ncol = 5))
+medians <- vapply(x, median, numeric(1))
+
+for (i in seq_along(medians)) {
+  x[[i]] <- x[[i]] - medians[[i]]
+}
+# Each iteration copies the ENTIRE data frame!
+```
+
+**Fix:** Convert to list first (uses internal C code, no extra references):
+
+```{r}
+#| eval: false
+y <- as.list(x)
+for (i in seq_along(medians)) {
+  y[[i]] <- y[[i]] - medians[[i]]
+}
+# Much fewer copies --- list modification is efficient
+x <- list2DF(y)
+```
+
+Data frame approach is **O(n^2)**; list approach is **O(n)**.
+
+## Exercises (Modify-in-Place)
+
+1. Why doesn't this create a circular list?
+
+```{r}
+#| eval: false
+x <- list()
+x[[1]] <- x
+```
+
+2. Wrap the data frame and list median-subtraction methods into functions. Use \comm{bench::mark()} to compare. How does performance change with number of columns?
+
+3. What happens if you use \comm{tracemem()} on an environment?
+
+## Solutions (Modify-in-Place)
+
+1. Copy-on-modify prevents it. `x[[1]] <- x` copies the old (empty) list. `x` now points to a new list containing the old one --- not itself.
+
+```{r}
+#| output.lines: 5
+x <- list()
+x[[1]] <- x
+ref(x)   # x and x[[1]] have different addresses
+```
+
+2. The data frame approach is O(n^2) in columns (each iteration copies all columns). The list approach is O(n). The list version wins decisively above ~300 columns.
+
+3. Error: environments are not duplicated, so tracing is not useful.
+
+```{r}
+#| error: true
+#| output.lines: 3
+tracemem(new.env())
+```
+
+# Unbinding and the Garbage Collector
+
+## How R Frees Memory
+
+When no name points to an object, it becomes **unreachable**:
+
+```{r}
+#| eval: false
+x <- 1:3
+x <- 2:4   # old object (1:3) is now unbound
+rm(x)      # new object (2:4) is now unbound
+```
+
+The **garbage collector (GC)** periodically frees unreachable objects.
+
+\medskip
+
+**Key facts:**
+
+- GC runs **automatically** when R needs memory
+- Traces from global environment + call stack to find reachable objects
+- Everything else is deleted
+- You rarely need to call \comm{gc()} manually
+- \comm{gc()} is useful mainly for its memory usage report
+
+```{r}
+#| output.lines: 5
+gc()
+```
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Names have values:** `x <- 1:3` binds the name `x` to an object
+- **Multiple bindings:** `y <- x` creates a second reference, not a copy
+- **Copy-on-modify:** copies happen only when a shared object is modified
+- **\comm{tracemem()}:** tracks when objects are copied
+- **Shallow copies:** lists/data frames copy structure but share elements
+- **\comm{obj\_size()}:** use instead of \comm{object.size()} (accounts for sharing)
+- **ALTREP:** sequences like `1:1e9` stored compactly (start + end only)
+- **String pool:** repeated strings share memory
+- **Single binding:** objects with one name are modified in place (when possible)
+- **Environments:** always modified in place (reference semantics)
+- **Loop optimization:** convert data frames to lists before looping
+- **Garbage collector:** automatically frees unreachable objects
+-->

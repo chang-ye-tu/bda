@@ -1,0 +1,73 @@
+project:
+  type: default
+
+format:
+  beamer:
+    theme: Madrid
+    colortheme: beaver
+    fontsize: 9pt
+    aspectratio: 169
+    section-titles: true
+    toc: false
+    toc-depth: 2
+    navigation: empty
+    pdf-engine: xelatex
+    code-line-numbers: false
+    header-includes: |
+      \usepackage{booktabs}
+      \usepackage{dsfont}
+      \setbeamertemplate{caption}[numbered]{}
+      \setbeamertemplate{footline}[text line]{%
+        \parbox{\linewidth}{\vspace*{-8pt}\hfill\insertframenumber\,/\,\inserttotalframenumber~~~~~~~~~}}
+      \setbeamertemplate{navigation symbols}{}
+      \setbeamercolor{item projected}{fg=white}
+      \setbeamercolor{frametitle}{fg=black}
+      \setbeamercolor{block title}{fg=white}
+      \definecolor{foo}{rgb}{.2,.2,.7}
+      \AtBeginSection[]{
+        \begin{frame}
+        \vfill
+        \centering
+        \begin{beamercolorbox}[sep=8pt,center,shadow=true,rounded=true]{section page}
+          \usebeamerfont{title}{\color{foo}\insertsectionhead}\par
+        \end{beamercolorbox}
+        \vfill
+        \end{frame}
+      }
+      \AtBeginSubsection{}
+      \setbeamertemplate{headline}{}
+      \setbeamertemplate{frametitle}{%
+        \nointerlineskip%
+        \begin{beamercolorbox}[wd=\paperwidth,sep=0.15cm,leftskip=0.15cm]{frametitle}%
+          \usebeamerfont{frametitle}\insertframetitle%
+        \end{beamercolorbox}%
+      }
+      \newcommand{\comm}[1]{\textcolor[rgb]{0.737,0.353,0.396}{{\tt #1}}}
+      \usepackage{fancyvrb}
+      \definecolor{errorred}{rgb}{0.80,0.10,0.10}
+      \definecolor{warnbrown}{rgb}{0.70,0.40,0.05}
+      \DefineVerbatimEnvironment{ErrorVerbatim}{Verbatim}{formatcom=\color{errorred},fontsize=\small}
+      \DefineVerbatimEnvironment{WarnVerbatim}{Verbatim}{formatcom=\color{warnbrown},fontsize=\small}
+      \setlength{\parskip}{0pt}
+      \setlength{\OuterFrameSep}{0pt}
+      \usepackage{etoolbox}
+      \makeatletter
+      \preto{\@verbatim}{\topsep=2pt \partopsep=0pt}
+      \makeatother
+      \AtBeginEnvironment{Shaded}{\vspace{0pt}}
+      \AfterEndEnvironment{Shaded}{\vspace{0pt}}
+      \AtBeginEnvironment{verbatim}{\vspace{0pt}}
+      \AfterEndEnvironment{verbatim}{\vspace{0pt}}
+      %% ── solution toggle ──
+      \newtoggle{showsol}
+
+knitr:
+  opts_chunk:
+    echo: true
+    comment: "#>"
+    R.options:
+      width: 55
+    fig.width: 7
+    fig.height: 3.5
+    out.width: "85%"
+    fig.align: "center"

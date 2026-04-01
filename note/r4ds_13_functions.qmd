@@ -1,0 +1,565 @@
+---
+title: "R4DS 13 -- Functions"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(tidyverse)
+library(nycflights13)
+```
+
+# Vector Functions
+
+## Why Write Functions?
+
+Spot the copy-paste bug:
+
+```{r}
+#| eval: false
+df |> mutate(
+  a = (a - min(a, na.rm = TRUE)) /
+    (max(a, na.rm = TRUE) - min(a, na.rm = TRUE)),
+  b = (b - min(a, na.rm = TRUE)) /   # bug: a!
+    (max(b, na.rm = TRUE) - min(b, na.rm = TRUE)),
+  c = (c - min(c, na.rm = TRUE)) /
+    (max(c, na.rm = TRUE) - min(c, na.rm = TRUE)))
+```
+
+**Rule of thumb:** write a function when you've copied code more than twice.
+
+Three useful types: **vector** (for `mutate`/`filter`), **data frame**, and **plot** functions.
+
+## Writing a Function
+
+**Template:** `name <- function(arguments) { body }`
+
+\medskip
+
+**Example** --- rescale to $[0, 1]$:
+
+```{r}
+#| output.lines: 4
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  (x - rng[1]) / (rng[2] - rng[1])
+}
+rescale01(c(-10, 0, 10))
+rescale01(c(1, 2, 3, NA, 5))
+```
+
+Now the repetitive code becomes clean:
+
+```{r}
+#| eval: false
+df |> mutate(a = rescale01(a), b = rescale01(b),
+             c = rescale01(c), d = rescale01(d))
+```
+
+## Improving: Handle Edge Cases
+
+Infinite values cause problems:
+
+```{r}
+#| output.lines: 3
+rescale01(c(1:10, Inf))
+```
+
+Fix: add \comm{finite = TRUE} to \comm{range()}:
+
+```{r}
+#| output.lines: 4
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE, finite = TRUE)
+  (x - rng[1]) / (rng[2] - rng[1])
+}
+rescale01(c(1:10, Inf))
+```
+
+**Strategy:** get the basics right, then handle edge cases iteratively.
+
+## Mutate Functions
+
+Return same-length output --- use in \comm{mutate()} and \comm{filter()}:
+
+```{r}
+#| output.lines: 3
+clamp <- function(x, min, max) {
+  case_when(x < min ~ min, x > max ~ max,
+            .default = x)
+}
+clamp(1:10, min = 3, max = 7)
+```
+
+```{r}
+#| output.lines: 3
+first_upper <- function(x) {
+  str_sub(x, 1, 1) <-
+    str_to_upper(str_sub(x, 1, 1))
+  x
+}
+first_upper("hello")
+```
+
+Other useful patterns: \comm{z\_score()}, \comm{clean\_number()}, \comm{fix\_na()}.
+
+## Summary Functions
+
+Return a single value --- use in \comm{summarize()}:
+
+```{r}
+#| output.lines: 3
+commas <- function(x) {
+  str_flatten(x, collapse = ", ",
+              last = " and ")
+}
+commas(c("cat", "dog", "pigeon"))
+```
+
+Pass \comm{na.rm} through to the underlying function:
+
+```{r}
+#| eval: false
+cv <- function(x, na.rm = FALSE) {
+  sd(x, na.rm = na.rm) / mean(x, na.rm = na.rm)
+}
+
+n_missing <- function(x) sum(is.na(x))
+
+mape <- function(actual, predicted) {
+  sum(abs((actual - predicted) / actual)) /
+    length(actual)
+}
+```
+
+## Exercises (Vector Functions)
+
+1. Turn these into functions. What would you name each?
+
+```{r}
+#| eval: false
+mean(is.na(x))           # snippet 1
+x / sum(x, na.rm = TRUE) # snippet 2
+round(x / sum(x, na.rm = TRUE) * 100, 1)
+```
+
+2. Rewrite \comm{rescale01()} so \comm{-Inf} $\to$ 0 and \comm{Inf} $\to$ 1.
+3. Write a function to compute age in years from a vector of birthdates.
+4. Write functions for variance and skewness of a numeric vector.
+5. Write \comm{both\_na()}: takes two vectors, returns count of positions with \comm{NA} in both.
+6. What do these do? Why are they useful despite being short?
+
+```{r}
+#| eval: false
+is_directory <- function(x) file.info(x)$isdir
+is_readable <- function(x) file.access(x, 4) == 0
+```
+
+## Solutions (Vector Functions) --- 1--3
+
+1.
+
+```{r}
+#| eval: false
+prop_na <- function(x) mean(is.na(x))
+prop_of_total <- function(x)
+  x / sum(x, na.rm = TRUE)
+pct_of_total <- function(x)
+  round(x / sum(x, na.rm = TRUE) * 100, 1)
+```
+
+2.
+
+```{r}
+#| output.lines: 3
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE, finite = TRUE)
+  y <- (x - rng[1]) / (rng[2] - rng[1])
+  y[x == -Inf] <- 0; y[x == Inf] <- 1; y
+}
+rescale01(c(-Inf, 1:5, Inf))
+```
+
+3.
+
+```{r}
+#| eval: false
+age_years <- function(birthdate) {
+  as.numeric(difftime(Sys.Date(), birthdate,
+    units = "days")) / 365.25
+}
+```
+
+## Solutions (Vector Functions) --- 4--6
+
+4.
+
+```{r}
+#| eval: false
+variance <- function(x, na.rm = FALSE) {
+  if (na.rm) x <- x[!is.na(x)]
+  n <- length(x)
+  sum((x - mean(x))^2) / (n - 1)
+}
+skewness <- function(x, na.rm = FALSE) {
+  if (na.rm) x <- x[!is.na(x)]
+  n <- length(x); m <- mean(x); s <- sd(x)
+  (n / ((n-1) * (n-2))) * sum(((x-m) / s)^3)
+}
+```
+
+5.
+
+```{r}
+#| output.lines: 3
+both_na <- function(x, y) {
+  sum(is.na(x) & is.na(y))
+}
+both_na(c(1, NA, 3, NA), c(NA, NA, 3, NA))
+```
+
+6. They wrap low-level system calls into readable names. Short functions are valuable when they **improve readability**.
+
+# Data Frame Functions
+
+## The Indirection Problem
+
+This fails --- dplyr looks for a column literally named \comm{group\_var}:
+
+```{r}
+#| eval: false
+grouped_mean <- function(df, group_var, mean_var) {
+  df |>
+    group_by(group_var) |>
+    summarize(mean(mean_var))
+}
+diamonds |> grouped_mean(cut, carat)
+#> Error: column `group_var` not found
+```
+
+The issue: dplyr uses **tidy evaluation** --- it looks for column names in the data, not in R's environment.
+
+## Embracing with `{{ }}`
+
+**Solution:** wrap arguments in \comm{\{\{ \}\}} ("embrace") to tell dplyr to look inside:
+
+```{r}
+#| output.lines: 7
+#| message: false
+grouped_mean <- function(df, group_var, mean_var) {
+  df |>
+    group_by({{ group_var }}) |>
+    summarize(mean({{ mean_var }}))
+}
+diamonds |> grouped_mean(cut, carat)
+```
+
+**Rule:** if an argument is passed to a dplyr verb, embrace it with \comm{\{\{ \}\}}.
+
+## Common Use Cases
+
+Flexible summary function:
+
+```{r}
+#| output.lines: 5
+summary6 <- function(data, var) {
+  data |> summarize(
+    min = min({{ var }}, na.rm = TRUE),
+    mean = mean({{ var }}, na.rm = TRUE),
+    median = median({{ var }}, na.rm = TRUE),
+    max = max({{ var }}, na.rm = TRUE),
+    n = n(), n_miss = sum(is.na({{ var }})),
+    .groups = "drop")
+}
+diamonds |> summary6(carat)
+```
+
+Works on grouped data and with expressions:
+
+```{r}
+#| eval: false
+diamonds |> group_by(cut) |> summary6(carat)
+diamonds |> group_by(cut) |> summary6(log10(carat))
+```
+
+## More Use Cases
+
+Count with proportions:
+
+```{r}
+#| output.lines: 5
+count_prop <- function(df, var, sort = FALSE) {
+  df |>
+    count({{ var }}, sort = sort) |>
+    mutate(prop = n / sum(n))
+}
+diamonds |> count_prop(clarity)
+```
+
+Unique values under a condition:
+
+```{r}
+#| output.lines: 4
+unique_where <- function(df, condition, var) {
+  df |> filter({{ condition }}) |>
+    distinct({{ var }}) |> arrange({{ var }})
+}
+flights |> unique_where(month == 12, dest)
+```
+
+## Data-Masking vs. Tidy-Selection
+
+Two types of tidy evaluation:
+
+- **Data-masking** (\comm{filter()}, \comm{mutate()}, \comm{summarize()}): works with expressions like \comm{x + 1}
+- **Tidy-selection** (\comm{select()}, \comm{rename()}, \comm{across()}): works with selections like \comm{starts\_with("x")}
+
+\medskip
+
+Problem: \comm{group\_by()} is data-masking, but you want to pass multiple variables. Use \comm{pick()}:
+
+```{r}
+#| output.lines: 5
+count_missing <- function(df, group_vars, x_var) {
+  df |>
+    group_by(pick({{ group_vars }})) |>
+    summarize(n_miss = sum(is.na({{ x_var }})),
+              .groups = "drop")
+}
+flights |>
+  count_missing(c(year, month, day), dep_time)
+```
+
+## Exercises (Data Frame Functions)
+
+1. Using \comm{nycflights13}, write functions that:
+   a. Find cancelled or >1 hour delayed flights
+   b. Count cancelled and >1 hour delayed by group
+   c. Like (a) but with user-supplied hours
+   d. Summarize weather: min, mean, max of any variable
+   e. Convert clock time to decimal hours
+
+2. Which arguments use tidy evaluation in: \comm{distinct()}, \comm{count()}, \comm{group\_by()}, \comm{rename\_with()}, \comm{slice\_min()}, \comm{slice\_sample()}?
+
+3. Generalize \comm{count\_prop()} to accept any number of variables.
+
+## Solutions (Data Frame Functions) --- 1a--c
+
+```{r}
+#| eval: false
+filter_severe <- function(df, hours = 1) {
+  df |> filter(is.na(arr_time) |
+    dep_delay > hours * 60)
+}
+
+summarize_severe <- function(df) {
+  df |> summarize(
+    n_cancelled = sum(is.na(arr_time)),
+    n_delayed = sum(dep_delay > 60, na.rm = TRUE))
+}
+```
+
+\comm{hours} parameter in \comm{filter\_severe()} handles both 1a and 1c.
+
+## Solutions (Data Frame Functions) --- 1d--e
+
+```{r}
+#| eval: false
+summarize_weather <- function(df, var) {
+  df |> summarize(
+    min = min({{ var }}, na.rm = TRUE),
+    mean = mean({{ var }}, na.rm = TRUE),
+    max = max({{ var }}, na.rm = TRUE))
+}
+
+standardize_time <- function(df, var) {
+  df |> mutate({{ var }} :=
+    ({{ var }} %/% 100) + ({{ var }} %% 100) / 60)
+}
+```
+
+Note: \comm{standardize\_time()} uses the walrus operator \comm{:=} to modify the column in place.
+
+## Solutions (Data Frame Functions) --- 2--3
+
+2. **Data-masking:** \comm{distinct(...)}, \comm{count(...)}, \comm{group\_by(...)}, \comm{slice\_min(order\_by)}. **Tidy-selection:** \comm{rename\_with(.cols)}. \comm{slice\_sample()} uses neither for column selection.
+
+3. Use \comm{...} instead of a single \comm{var}:
+
+```{r}
+#| output.lines: 6
+count_prop <- function(df, ..., sort = FALSE) {
+  df |>
+    count(..., sort = sort) |>
+    mutate(prop = n / sum(n))
+}
+diamonds |> count_prop(clarity, cut)
+```
+
+# Plot Functions
+
+## Building Plot Functions
+
+Same \comm{\{\{ \}\}} pattern --- embracing works inside \comm{aes()}:
+
+```{r}
+#| eval: false
+histogram <- function(df, var, binwidth = NULL) {
+  df |>
+    ggplot(aes(x = {{ var }})) +
+    geom_histogram(binwidth = binwidth)
+}
+
+diamonds |> histogram(carat, 0.1)
+
+# Can still add layers:
+diamonds |> histogram(carat, 0.1) +
+  labs(x = "Size (in carats)")
+```
+
+## More Variables and Labels
+
+```{r}
+#| eval: false
+linearity_check <- function(df, x, y) {
+  df |> ggplot(aes(x = {{ x }}, y = {{ y }})) +
+    geom_point() +
+    geom_smooth(method = "loess", formula = y ~ x,
+      color = "red", se = FALSE) +
+    geom_smooth(method = "lm", formula = y ~ x,
+      color = "blue", se = FALSE)
+}
+starwars |> filter(mass < 1000) |>
+  linearity_check(mass, height)
+```
+
+Dynamic labels with \comm{rlang::englue()} --- \comm{\{\{var\}\}} inserts the variable name:
+
+```{r}
+#| eval: false
+histogram <- function(df, var, binwidth) {
+  label <- rlang::englue(
+    "A histogram of {{var}} with binwidth {binwidth}")
+  df |> ggplot(aes(x = {{ var }})) +
+    geom_histogram(binwidth = binwidth) +
+    labs(title = label)
+}
+```
+
+## Combining with Tidyverse
+
+Use the **walrus operator** \comm{:=} to create variable names with \comm{\{\{ \}\}} on the left side:
+
+```{r}
+#| eval: false
+sorted_bars <- function(df, var) {
+  df |>
+    mutate({{ var }} :=
+      fct_rev(fct_infreq({{ var }}))) |>
+    ggplot(aes(y = {{ var }})) +
+    geom_bar()
+}
+diamonds |> sorted_bars(clarity)
+```
+
+\comm{:=} works like \comm{=} but allows embracing on the **left** side of assignment.
+
+## Exercises (Plot Functions)
+
+Build up a rich plotting function incrementally:
+
+1. Draw a scatterplot given a dataset and \comm{x} and \comm{y} variables.
+2. Add a line of best fit (linear model, no standard errors).
+3. Add a title that includes the variable names.
+
+## Solutions (Plot Functions)
+
+Build incrementally --- final version includes all three:
+
+```{r}
+#| eval: false
+# 1. Start: scatterplot
+scatter <- function(df, x, y) {
+  df |> ggplot(aes(x = {{ x }}, y = {{ y }})) +
+    geom_point()
+}
+
+# 2+3. Add line of best fit + dynamic title
+scatter <- function(df, x, y) {
+  df |> ggplot(aes(x = {{ x }}, y = {{ y }})) +
+    geom_point() +
+    geom_smooth(method = "lm", formula = y ~ x,
+      se = FALSE) +
+    labs(title = rlang::englue("{{x}} vs {{y}}"))
+}
+```
+
+# Style
+
+## Function Naming and Formatting
+
+**Names:** use verbs, be descriptive:
+
+```{r}
+#| eval: false
+# Too vague           # Better
+f()                    impute_missing()
+my_function()          collapse_years()
+```
+
+\medskip
+
+**Formatting:** extra indent inside function body:
+
+```{r}
+#| eval: false
+# Good --- body indented extra 2 spaces
+density <- function(color, facets,
+                    binwidth = 0.1) {
+  diamonds |>
+    ggplot(aes(x = carat,
+      y = after_stat(density),
+      color = {{ color }})) +
+    geom_freqpoly(binwidth = binwidth) +
+    facet_wrap(vars({{ facets }}))
+}
+```
+
+## Exercises (Style)
+
+1. What do these do? Suggest better names:
+
+```{r}
+#| eval: false
+f1 <- function(string, prefix) {
+  str_sub(string, 1, str_length(prefix)) == prefix
+}
+f3 <- function(x, y) {
+  rep(y, length.out = length(x))
+}
+```
+
+2. Make a case for \comm{norm\_r()}, \comm{norm\_d()} over \comm{rnorm()}, \comm{dnorm()}. Then make the opposite case.
+
+## Solutions (Style)
+
+1. \comm{f1} checks if a string starts with a given prefix $\to$ \comm{has\_prefix()} or \comm{str\_has\_prefix()}. \comm{f3} repeats \comm{y} to match the length of \comm{x} $\to$ \comm{match\_length()} or \comm{recycle()}.
+
+2. **For \comm{norm\_r()}:** common prefix groups all normal functions together --- autocomplete shows \comm{norm\_...}. Aids discovery. **Against:** R's convention (\comm{rnorm}, \comm{dnorm}, \comm{pnorm}) groups by **operation** across distributions (\comm{r...} = random, \comm{d...} = density). Muscle memory and decades of convention matter.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Rule of thumb:** write a function after copying code more than twice
+- **Template:** `name <- function(args) { body }`
+- **Vector functions:** same-length output for \comm{mutate()}/\comm{filter()}; single value for \comm{summarize()}
+- **Iterative improvement:** get basics right, then handle edge cases (\comm{NA}, \comm{Inf})
+- **Data frame functions:** use \comm{\{\{ \}\}} (embracing) for arguments passed to dplyr verbs
+- **Tidy evaluation:** data-masking (expressions) vs. tidy-selection (columns)
+- **\comm{pick()}:** bridges tidy-selection inside data-masking functions
+- **Plot functions:** \comm{\{\{ \}\}} works inside \comm{aes()}; return ggplot objects for \comm{+} layering
+- **Labeling:** \comm{rlang::englue()} for dynamic titles with variable names
+- **Walrus operator:** \comm{:=} allows \comm{\{\{ \}\}} on the left side
+- **Style:** verb names, descriptive arguments, extra indent in function body
+-->

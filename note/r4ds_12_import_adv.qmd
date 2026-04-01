@@ -1,0 +1,417 @@
+---
+title: "R4DS 12 -- Advanced Data Import"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(tidyverse)
+```
+
+# Spreadsheets
+
+## Reading Excel Files
+
+\comm{readxl::read\_excel()} reads both `.xls` and `.xlsx`:
+
+```{r}
+#| eval: false
+library(readxl)
+students <- read_excel("students.xlsx",
+  col_names = c("id", "name", "food",
+                "meal_plan", "age"),
+  skip = 1,
+  na = c("", "N/A"),
+  col_types = c("numeric", "text", "text",
+                "text", "text"))
+```
+
+Key arguments:
+
+| Argument | Purpose |
+|----------|---------|
+| `col_names` | Override column names |
+| `skip` | Skip header rows |
+| `na` | Strings to treat as `NA` |
+| `col_types` | Force column types |
+| `range` | Read specific cells (`"A5:F15"`) |
+
+## Multiple Sheets
+
+\comm{excel\_sheets()} lists all sheets; \comm{sheet} argument selects one:
+
+```{r}
+#| eval: false
+excel_sheets("penguins.xlsx")
+
+# Read and combine all sheets
+penguins <- bind_rows(
+  read_excel("penguins.xlsx",
+    sheet = "Torgersen Island", na = "NA"),
+  read_excel("penguins.xlsx",
+    sheet = "Biscoe Island", na = "NA"),
+  read_excel("penguins.xlsx",
+    sheet = "Dream Island", na = "NA"))
+```
+
+## Writing Excel and Google Sheets
+
+**Write Excel** with \comm{writexl::write\_xlsx()}:
+
+```{r}
+#| eval: false
+library(writexl)
+bake_sale <- tibble(
+  item = c("brownie", "cupcake", "cookie"),
+  quantity = c(10, 5, 8))
+write_xlsx(bake_sale, path = "bake-sale.xlsx")
+```
+
+\medskip
+
+**Google Sheets** with \comm{googlesheets4}:
+
+```{r}
+#| eval: false
+library(googlesheets4)
+gs4_deauth()  # for public sheets
+read_sheet("sheet_url_or_id",
+  col_types = "dcccc")  # shorthand types
+```
+
+## Exercises (Spreadsheets)
+
+1. Read a messy Excel file and clean: handle merged cells with \comm{fill()}, filter out non-data rows.
+2. What does \comm{janitor::clean\_names()} do? How does it improve imported column names?
+3. What happens if you use \comm{read\_xls()} on an \comm{.xlsx} file?
+
+## Solutions (Spreadsheets)
+
+1. Read with \comm{read\_excel()}, then pipe to \comm{fill()} for merged cells and \comm{filter(!is.na(...))} to remove blank rows.
+
+2. \comm{clean\_names()} converts to snake\_case, removes special characters, and handles duplicates:
+
+```{r}
+#| output.lines: 3
+janitor::make_clean_names(
+  c("First Name", "% Change", "1st Column"))
+```
+
+3. It will error or produce garbled results --- the formats are different (\comm{.xls} is binary, \comm{.xlsx} is XML-based).
+
+# Databases
+
+## Connecting with DBI
+
+```{r}
+#| eval: false
+library(DBI)
+library(duckdb)
+
+# Connect (duckdb runs in-process, no server)
+con <- dbConnect(duckdb())
+dbWriteTable(con, "mpg", ggplot2::mpg)
+dbWriteTable(con, "diamonds", ggplot2::diamonds)
+
+# List tables and read
+dbListTables(con)
+dbReadTable(con, "mpg") |> as_tibble()
+```
+
+Other backends: \comm{RPostgres}, \comm{RMariaDB}, \comm{RSQLite}, \comm{odbc}.
+
+## Lazy Queries with dbplyr
+
+\comm{tbl()} creates a **lazy** reference --- no data is fetched until \comm{collect()}:
+
+```{r}
+#| eval: false
+library(dbplyr)
+diamonds_db <- tbl(con, "diamonds")
+
+# Build query (lazy --- nothing executes yet)
+big <- diamonds_db |>
+  filter(price > 15000) |>
+  select(carat:clarity, price)
+
+big |> show_query()   # see generated SQL
+big |> collect()      # execute and return tibble
+```
+
+\comm{show\_query()} is invaluable for learning SQL.
+
+## dplyr $\to$ SQL Translation
+
+| dplyr | SQL |
+|-------|-----|
+| `select()` | `SELECT` |
+| `filter()` | `WHERE` |
+| `arrange()` | `ORDER BY` |
+| `group_by() + summarize()` | `GROUP BY` |
+| `mutate()` | `SELECT expr AS col` |
+| `rename()` | `AS` |
+| `left_join()` | `LEFT JOIN ... ON` |
+
+\medskip
+
+```{r}
+#| eval: false
+flights |>
+  filter(dest %in% c("IAH", "HOU")) |>
+  show_query()
+# SELECT * FROM flights WHERE dest IN ('IAH', 'HOU')
+```
+
+## Exercises (Databases)
+
+1. What SQL does \comm{distinct()} translate to? What about \comm{head(n = 10)}?
+2. Use dbplyr to recreate: find flights where \comm{dep\_delay < arr\_delay}, and compute speed (\comm{distance / air\_time * 60}).
+
+## Solutions (Databases)
+
+1. \comm{distinct()} $\to$ \comm{SELECT DISTINCT}. \comm{head(10)} $\to$ \comm{LIMIT 10}.
+
+2.
+
+```{r}
+#| eval: false
+# Flights where dep_delay < arr_delay
+flights_db |>
+  filter(dep_delay < arr_delay) |> collect()
+
+# Speed calculation
+flights_db |>
+  mutate(speed = distance / air_time * 60) |>
+  select(tailnum, speed) |> collect()
+```
+
+# Arrow and Parquet
+
+## Why Parquet?
+
+| Feature | CSV | Parquet |
+|---------|-----|---------|
+| Size | Large (text) | 50--60% smaller |
+| Types | Guessed on read | Embedded metadata |
+| Reading | Must read entire file | Column-selective |
+| Speed | Slow for big data | Very fast |
+
+Parquet is a **columnar** format --- reads only the columns you need.
+
+## Reading and Writing Parquet
+
+```{r}
+#| eval: false
+library(arrow)
+
+# Read large CSV lazily
+data <- open_dataset("checkouts.csv",
+  format = "csv",
+  col_types = schema(ISBN = string()))
+
+# Convert to partitioned parquet
+data |>
+  group_by(CheckoutYear) |>
+  write_dataset("checkouts_pq",
+    format = "parquet")
+
+# Query parquet (lazy until collect)
+open_dataset("checkouts_pq") |>
+  filter(CheckoutYear == 2021) |>
+  group_by(CheckoutMonth) |>
+  summarize(total = sum(Checkouts)) |>
+  collect()
+```
+
+Partitioning by year means filtering by year only reads the relevant files.
+
+## Exercises (Arrow)
+
+1. Find the most popular book each year.
+2. How have checkouts of physical books vs. ebooks changed over the last 10 years?
+
+## Solutions (Arrow)
+
+1.
+
+```{r}
+#| eval: false
+open_dataset("checkouts_pq") |>
+  filter(MaterialType == "BOOK") |>
+  group_by(CheckoutYear, Title) |>
+  summarize(n = sum(Checkouts)) |>
+  slice_max(n, n = 1) |> collect()
+```
+
+2. Filter \comm{MaterialType \%in\% c("BOOK", "EBOOK")}, group by year and type, sum checkouts, plot as line chart.
+
+# Rectangling
+
+## List-Columns and Nested Data
+
+Tibbles can hold **list-columns** --- columns where each cell is a list:
+
+```{r}
+#| output.lines: 5
+df <- tibble(
+  x = 1:2,
+  y = list(list(a = 11, b = 12),
+           list(a = 21, b = 22)))
+df
+```
+
+Two key operations to flatten:
+
+- \comm{unnest\_wider()}: named list $\to$ new **columns**
+- \comm{unnest\_longer()}: unnamed list $\to$ new **rows**
+
+## `unnest_wider()` --- Named Lists to Columns
+
+```{r}
+#| output.lines: 6
+df |> unnest_wider(y)
+```
+
+Each **name** in the list becomes a column. Use when elements have consistent names.
+
+\medskip
+
+For nested lists, chain multiple unnest calls:
+
+```{r}
+#| eval: false
+data |>
+  unnest_wider(json) |>    # level 1
+  unnest_wider(owner, names_sep = "_")  # level 2
+```
+
+\comm{names\_sep} prevents column name conflicts.
+
+## `unnest_longer()` --- Unnamed Lists to Rows
+
+```{r}
+#| output.lines: 8
+df2 <- tibble(
+  x = 1:3,
+  y = list(c(11, 12, 13), 21, c(31, 32)))
+df2 |> unnest_longer(y)
+```
+
+Each **element** becomes a row. The parent row is duplicated.
+
+## Working with JSON
+
+JSON maps to R as: objects $\to$ named lists, arrays $\to$ unnamed lists.
+
+```{r}
+#| output.lines: 6
+json <- '[
+  {"name": "John", "age": 34},
+  {"name": "Susan", "age": 27}]'
+
+tibble(json = jsonlite::parse_json(json)) |>
+  unnest_wider(json)
+```
+
+**Strategy:** start with \comm{unnest\_wider()}, inspect, then \comm{unnest\_longer()} for arrays, repeat.
+
+## Exercises (Rectangling)
+
+1. What happens if you use \comm{unnest\_wider()} on an unnamed list-column?
+2. What happens if you use \comm{unnest\_longer()} on a named list-column?
+3. Explain the difference between \comm{hoist()} and repeated \comm{unnest\_wider()} calls.
+
+## Solutions (Rectangling)
+
+1. It errors --- names are needed for column names. Use \comm{names\_repair} or provide names manually.
+
+2. It creates rows from the values and adds an extra column with the names (the index column).
+
+3. \comm{hoist()} extracts deeply nested components in one step using path specifications (e.g., \comm{c("bounds", "northeast", "lat")}). Repeated \comm{unnest\_wider()} flattens one level at a time. \comm{hoist()} is more concise for deep extraction.
+
+# Web Scraping
+
+## HTML Basics
+
+```{r}
+#| eval: false
+library(rvest)
+```
+
+HTML is a tree of **elements**: `<tag attribute="value">content</tag>`
+
+| Tag | Purpose |
+|-----|---------|
+| `<h1>` -- `<h6>` | Headings |
+| `<p>` | Paragraphs |
+| `<a href="...">` | Links |
+| `<table>` | Tables |
+| `<ul>`, `<li>` | Lists |
+| `<div>`, `<span>` | Containers |
+
+Attributes: \comm{id} (unique), \comm{class} (group), \comm{href} (link target).
+
+## Extracting Data with rvest
+
+```{r}
+#| eval: false
+html <- read_html("https://example.com")
+
+# Find elements with CSS selectors
+html |> html_elements("h2")          # by tag
+html |> html_elements(".classname")  # by class
+html |> html_elements("#myid")       # by id
+
+# Extract content
+html |> html_elements("h2") |> html_text2()
+html |> html_elements("a") |>
+  html_attr("href")
+
+# Tables → tibbles automatically
+html |> html_element("table") |> html_table()
+```
+
+## Nesting Pattern for Complex Pages
+
+**Critical:** use \comm{html\_element()} (singular) inside a pipeline to maintain row alignment:
+
+```{r}
+#| eval: false
+# Each <section> = one film
+sections <- html |> html_elements("section")
+
+tibble(
+  title = sections |>
+    html_element("h2") |> html_text2(),
+  director = sections |>
+    html_element(".director") |> html_text2()
+)
+```
+
+\comm{html\_element()} returns \comm{NA} for missing matches (keeps alignment). \comm{html\_elements()} drops non-matches (breaks alignment).
+
+## Ethics of Web Scraping
+
+- **Public + non-personal + factual** = generally okay
+- Always check **Terms of Service**
+- Be careful with **personally identifiable information**
+- Facts are not copyrighted; original content is
+- Use the \comm{polite} package to rate-limit requests
+- \comm{rvest} does **not** execute JavaScript --- use \comm{chromote} for dynamic sites
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Excel:** \comm{read\_excel()} with \comm{col\_names}, \comm{skip}, \comm{na}, \comm{col\_types}; \comm{write\_xlsx()}
+- **Multiple sheets:** \comm{excel\_sheets()} + \comm{bind\_rows()}
+- **Databases:** \comm{DBI::dbConnect()} + \comm{tbl()} for lazy queries; \comm{collect()} to execute
+- **dbplyr:** translates dplyr $\to$ SQL; \comm{show\_query()} reveals the SQL
+- **Parquet:** columnar, typed, fast; \comm{open\_dataset()} + \comm{write\_dataset()}
+- **Partitioning:** speeds queries by reading only relevant files
+- **Rectangling:** \comm{unnest\_wider()} (named $\to$ cols), \comm{unnest\_longer()} (unnamed $\to$ rows)
+- **JSON:** objects $\to$ named lists, arrays $\to$ unnamed lists; iterate unnest
+- **Web scraping:** \comm{read\_html()} + \comm{html\_elements()} + \comm{html\_text2()}
+- **Alignment:** use \comm{html\_element()} (singular) inside pipelines
+- **Ethics:** respect ToS, avoid personal data, use \comm{polite} package
+-->

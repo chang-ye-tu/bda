@@ -1,0 +1,363 @@
+---
+title: "R4DS 01 -- Introduction & Workflow Basics"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+```
+
+# Introduction
+
+## What is Data Science?
+
+- Transform **raw data** into understanding, insight, and knowledge
+- This course follows *R for Data Science* (2e) by Wickham, Çetinkaya-Rundel & Grolemund
+- Tools: R + tidyverse ecosystem
+- **80/20 rule**: the tools here cover ~80% of every project
+
+## The Data Science Workflow
+
+\begin{center}
+\textbf{Import} $\;\rightarrow\;$ \textbf{Tidy} $\;\rightarrow\;$
+\textbf{Transform} $\;\leftrightarrow\;$ \textbf{Visualize}
+$\;\rightarrow\;$ \textbf{Communicate}
+\end{center}
+
+\medskip
+
+- **Import**: load data from files, databases, APIs into R
+- **Tidy**: each column = variable, each row = observation
+- **Transform**: filter, create new variables, summarize
+- **Visualize**: discover patterns, raise new questions
+- **Communicate**: share results with others
+- **Program**: the cross-cutting tool used in every step
+
+## What This Course Covers (and Doesn't)
+
+**Covers:**
+
+- Data wrangling (import, tidy, transform)
+- Visualization (ggplot2)
+- Programming in R (functions, iteration)
+- Communication (Quarto)
+
+**Does not cover:**
+
+- Modeling (see *Tidy Modeling with R*)
+- Big data (see \comm{data.table} for 10--100 GB)
+- Other languages (Python, Julia)
+
+# Prerequisites
+
+## R and RStudio
+
+**R** --- the language
+
+- Download from CRAN: \texttt{https://cloud.r-project.org}
+- Recommend R $\geq$ 4.2.0
+
+**RStudio** --- the IDE
+
+- Download from: \texttt{https://posit.co/download/rstudio-desktop/}
+- Console pane (left): type and run R code
+- Output pane (right): plots, help, files
+
+## The Tidyverse
+
+An R **package** = collection of functions + data + documentation
+
+Install the tidyverse (run once):
+
+```{r}
+#| eval: false
+install.packages("tidyverse")
+```
+
+Load it (every session):
+
+```{r}
+library(tidyverse)
+```
+
+Core packages: \comm{ggplot2}, \comm{dplyr}, \comm{tidyr}, \comm{readr}, \comm{purrr}, \comm{tibble}, \comm{stringr}, \comm{forcats}, \comm{lubridate}
+
+## Other Useful Packages
+
+```{r}
+#| eval: false
+install.packages(
+  c("arrow", "babynames", "curl", "duckdb",
+    "gapminder", "ggrepel", "ggridges",
+    "ggthemes", "hexbin", "janitor", "Lahman",
+    "leaflet", "maps", "nycflights13",
+    "openxlsx", "palmerpenguins", "repurrrsive",
+    "tidymodels", "writexl")
+)
+```
+
+If you see: \texttt{Error: there is no package called 'foo'} --- just run \comm{install.packages("foo")}
+
+# Coding Basics
+
+## Arithmetic
+
+R works as a calculator:
+
+```{r}
+1 / 200 * 30
+```
+
+```{r}
+(59 + 73 + 2) / 3
+```
+
+```{r}
+sin(pi / 2)
+```
+
+## Assignment with `<-`
+
+Create objects with the **assignment operator** `<-`:
+
+```{r}
+x <- 3 * 4
+x
+```
+
+\medskip
+
+- Read as: "x **gets** 3 times 4"
+- RStudio shortcut: **Alt + -** (inserts \comm{<-} with spaces)
+- The value is stored, not printed --- type the name to see it
+
+## Vectors
+
+Combine elements with \comm{c()}:
+
+```{r}
+primes <- c(2, 3, 5, 7, 11, 13)
+primes
+```
+
+Arithmetic is **vectorized** (applied element-wise):
+
+```{r}
+primes * 2
+```
+
+```{r}
+primes - 1
+```
+
+# Comments and Naming
+
+## Comments
+
+Everything after `#` is ignored by R:
+
+```{r}
+# create vector of primes
+primes <- c(2, 3, 5, 7, 11, 13)
+
+# multiply primes by 2
+primes * 2
+```
+
+\medskip
+
+**Best practice:** comment on *why*, not *what* or *how*
+
+## Object Names
+
+Rules:
+
+- Must start with a letter
+- Can contain: letters, numbers, `_`, `.`
+
+Convention --- use **snake\_case**:
+
+```{r}
+#| eval: false
+i_use_snake_case       # recommended
+otherPeopleUseCamelCase
+some.people.use.periods
+```
+
+## Case Sensitivity and Typos
+
+R is **case-sensitive** and **exact**:
+
+```{r}
+r_rocks <- 2^3
+```
+
+```{r}
+#| eval: false
+r_rock
+#> Error: object 'r_rock' not found
+R_rocks
+#> Error: object 'R_rocks' not found
+```
+
+\medskip
+
+**The contract:** R does the tedious computation; you must be precise in your instructions.
+
+# Calling Functions
+
+## Function Syntax
+
+General form:
+
+```{r}
+#| eval: false
+function_name(argument1 = value1, argument2 = value2)
+```
+
+Example with \comm{seq()}:
+
+```{r}
+seq(from = 1, to = 10)
+```
+
+Named arguments can be shortened by position:
+
+```{r}
+seq(1, 10)
+```
+
+## RStudio Shortcuts
+
+| Action | Shortcut |
+|--------|----------|
+| Assignment `<-` | Alt + - |
+| Run current line | Ctrl + Enter |
+| Tab completion | TAB |
+| Command history | $\uparrow$ |
+| Filter history | Ctrl + $\uparrow$ |
+| Keyboard shortcut list | Alt + Shift + K |
+
+\medskip
+
+**Tip:** RStudio auto-completes function names, arguments, and file paths. Type a few characters and press TAB.
+
+## Strings and Matching Pairs
+
+```{r}
+x <- "hello world"
+x
+```
+
+\medskip
+
+Quotation marks and parentheses must come in **matched pairs**.
+
+If you see `+` in the console, R is waiting for more input:
+
+```
+> x <- "hello
++
+```
+
+Press **Escape** to abort, then fix the missing `"` or `)`.
+
+# Exercises
+
+## Exercise 1
+
+Why does this code not work? Look carefully!
+
+```{r}
+#| error: true
+my_variable <- 10
+my_varıable
+```
+
+## Exercise 1 --- Solution
+
+The second line uses a **Turkish dotless i** (\texttt{ı}) instead of a regular \texttt{i}.
+
+\medskip
+
+Correct code:
+
+```{r}
+my_variable <- 10
+my_variable
+```
+
+**Lesson:** tiny typos matter. Train your eyes to spot differences.
+
+## Exercise 2
+
+Fix each line so it runs correctly:
+
+```{r}
+#| eval: false
+libary(todyverse)
+
+ggplot(dTA = mpg) +
+  geom_point(maping = aes(x = displ y = hwy)) +
+  geom_smooth(method = "lm)
+```
+
+## Exercise 2 --- Solution
+
+```{r}
+#| output.lines: 3
+library(tidyverse)
+```
+
+```{r}
+#| fig.height: 2.5
+#| message: false
+ggplot(data = mpg, mapping = aes(x = displ, y = hwy)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+```
+
+Fixes: \comm{libary}$\to$\comm{library}, \comm{todyverse}$\to$\comm{tidyverse}, \comm{dTA}$\to$\comm{data}, \comm{maping}$\to$\comm{mapping}, missing comma after \comm{displ}, unclosed quote in \comm{"lm"}, \comm{aes()} moved to \comm{ggplot()} so all layers inherit it.
+
+## Exercise 3
+
+Press **Alt + Shift + K** (Windows/Linux) or **Option + Shift + K** (Mac).
+
+\medskip
+
+What happens?
+
+\medskip
+
+**Answer:** Opens the **Keyboard Shortcut Quick Reference** in RStudio. Same as: Help $\to$ Keyboard Shortcuts Help.
+
+## Exercise 4
+
+Which plot is saved as \texttt{mpg-plot.png}? Why?
+
+```{r}
+#| eval: false
+my_bar_plot <- ggplot(mpg, aes(x = class)) +
+  geom_bar()
+my_scatter_plot <- ggplot(mpg, aes(x = cty, y = hwy)) +
+  geom_point()
+ggsave(filename = "mpg-plot.png", plot = my_bar_plot)
+```
+
+\medskip
+
+**Answer:** The **bar plot** is saved, because \comm{ggsave()} uses the \comm{plot} argument explicitly. Without \comm{plot =}, it defaults to the last displayed plot.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- Data science workflow: Import $\to$ Tidy $\to$ Transform $\leftrightarrow$ Visualize $\to$ Communicate
+- R + RStudio + tidyverse = core toolkit
+- Assignment: \comm{x <- value}
+- Vectors: \comm{c(1, 2, 3)} --- arithmetic is vectorized
+- Functions: \comm{f(arg1, arg2)}
+- Comments: \comm{\# why, not what}
+- Names: \comm{snake\_case}, case-sensitive, no typos
+- RStudio: TAB completion, Alt+- for \comm{<-}, Ctrl+Enter to run
+-->

@@ -1,0 +1,482 @@
+---
+title: "AdvR 09 -- Function Factories & Operators"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+library(rlang)
+library(scales)
+```
+
+# Function Factories
+
+## What Is a Function Factory?
+
+A **function factory** makes functions. The manufactured function's enclosing environment is an execution environment of the factory:
+
+```{r}
+#| output.lines: 5
+power1 <- function(exp) {
+  function(x) x ^ exp
+}
+square <- power1(2)
+cube   <- power1(3)
+c(square(3), cube(3))
+```
+
+Building blocks: first-class functions + function environments + execution environments.
+
+## How It Works
+
+Each call to the factory creates a **separate** execution environment:
+
+```{r}
+#| output.lines: 5
+fn_env(square)$exp
+fn_env(cube)$exp
+```
+
+`square` and `cube` have identical bodies but different enclosing environments --- that's what makes them behave differently.
+
+## Forcing Evaluation
+
+Lazy evaluation causes a subtle bug:
+
+```{r}
+#| output.lines: 3
+x <- 2
+square <- power1(x)
+x <- 3
+square(2)   # returns 8, not 4!
+```
+
+Fix: **force** evaluation in the factory:
+
+```{r}
+#| output.lines: 3
+power2 <- function(exp) {
+  force(exp)
+  function(x) x ^ exp
+}
+x <- 2; square <- power2(x); x <- 3
+square(2)   # correct: 4
+```
+
+**Rule:** always \comm{force()} arguments used only by the manufactured function.
+
+## Stateful Functions
+
+Factories + `<<-` = functions that **remember** across calls:
+
+```{r}
+#| output.lines: 5
+new_counter <- function() {
+  i <- 0
+  function() { i <<- i + 1; i }
+}
+counter_one <- new_counter()
+counter_two <- new_counter()
+c(counter_one(), counter_one(), counter_two())
+```
+
+Each manufactured function has its own enclosing environment, so counters are **independent**.
+
+\medskip
+
+**Tip:** when state grows complex, switch to R6.
+
+## Garbage Collection in Factories
+
+Manufactured functions retain their enclosing environment. Large temp objects persist:
+
+```{r}
+#| output.lines: 5
+f1 <- function(n) {
+  x <- runif(n); m <- mean(x)
+  function() m
+}
+f2 <- function(n) {
+  x <- runif(n); m <- mean(x); rm(x)
+  function() m
+}
+c(lobstr::obj_size(f1(1e6)),
+  lobstr::obj_size(f2(1e6)))
+```
+
+**Rule:** \comm{rm()} large temp objects before returning the closure.
+
+## Exercises (Factory Fundamentals)
+
+1. Why is `force(x)` better than just writing `x` in a factory?
+
+2. Create `pick(i)` that returns a function subsetting `x` with `i`:
+
+```{r}
+#| eval: false
+pick(1)(x)       # equivalent to x[[1]]
+lapply(mtcars, pick(5))
+```
+
+3. What happens without a closure? Predict, then verify:
+
+```{r}
+#| eval: false
+i <- 0
+new_counter2 <- function() { i <<- i + 1; i }
+```
+
+4. What if you use `<-` instead of `<<-`?
+
+```{r}
+#| eval: false
+new_counter3 <- function() {
+  i <- 0
+  function() { i <- i + 1; i }
+}
+```
+
+## Solutions (Factory Fundamentals) --- 1--2
+
+1. `force(x)` clearly signals intent --- you're forcing evaluation, not accidentally typing a bare `x`. Both do the same thing, but `force()` is self-documenting.
+
+2.
+
+```{r}
+#| output.lines: 3
+pick <- function(i) {
+  force(i)
+  function(x) x[[i]]
+}
+identical(mtcars[[5]][[1]], pick(5)(mtcars[[1]]))
+```
+
+## Solutions (Factory Fundamentals) --- 3--4
+
+3. Without a closure, `i` lives in the **global environment** --- it can be overwritten or interfere with other code. No encapsulation:
+
+```{r}
+#| output.lines: 3
+i <- 0
+new_counter2 <- function() { i <<- i + 1; i }
+c(new_counter2(), new_counter2())
+i   # global i is modified
+```
+
+4. With `<-` instead of `<<-`, the counter **always returns 1** --- each call creates a fresh local `i` and never modifies the enclosing `i`:
+
+```{r}
+#| output.lines: 3
+new_counter3 <- function() {
+  i <- 0
+  function() { i <- i + 1; i }
+}
+c3 <- new_counter3()
+c(c3(), c3(), c3())
+```
+
+# Factory Applications
+
+## ggplot2 Labelling Factories
+
+The \comm{scales} package uses factories for axis label formatters:
+
+```{r}
+#| output.lines: 3
+y <- c(12345, 123456, 1234567)
+comma_format()(y)
+number_format(scale = 1e-3, suffix = " K")(y)
+```
+
+Works with ggplot2's `labels` argument:
+
+```{r}
+#| eval: false
+ggplot(df, aes(x, y)) +
+  scale_y_continuous(labels = comma_format())
+```
+
+**Pattern:** factory configures formatting rules $\to$ manufactured function applies them.
+
+## Box-Cox Transformation
+
+Re-formulating as a factory makes it easy to explore:
+
+```{r}
+#| output.lines: 3
+boxcox2 <- function(lambda) {
+  if (lambda == 0) function(x) log(x)
+  else function(x) (x ^ lambda - 1) / lambda
+}
+c(boxcox2(1)(4), boxcox2(0)(4))
+```
+
+The factory fixes `lambda`; the manufactured function takes `x`. Clean separation of roles.
+
+## Maximum Likelihood with Factories
+
+Factory precomputes constants, speeding up optimisation:
+
+```{r}
+#| output.lines: 5
+ll_poisson <- function(x) {
+  n <- length(x); sum_x <- sum(x)
+  c <- sum(lfactorial(x))
+  function(lambda) {
+    log(lambda) * sum_x - n * lambda - c
+  }
+}
+x1 <- c(41, 30, 31, 38, 29, 24, 30, 29, 31, 38)
+optimise(ll_poisson(x1), c(0, 100), maximum = TRUE)
+```
+
+**Pattern:** data $\to$ factory $\to$ likelihood function $\to$ \comm{optimise()}.
+
+## Bootstrap Generators
+
+Factory fits model once; manufactured function resamples:
+
+```{r}
+#| output.lines: 3
+boot_model <- function(df, formula) {
+  mod <- lm(formula, data = df)
+  fitted <- unname(fitted(mod))
+  resid <- unname(resid(mod))
+  rm(mod)
+  function() fitted + sample(resid)
+}
+boot_mtcars <- boot_model(mtcars, mpg ~ wt)
+head(boot_mtcars())
+```
+
+No need to \comm{force()} --- `df` and `formula` are used by `lm()` before the closure is returned.
+
+## Exercises (Factory Applications)
+
+1. Why might you formulate Box-Cox with `x` fixed and `lambda` varying?
+
+```{r}
+#| eval: false
+boxcox3 <- function(x) {
+  function(lambda) {
+    if (lambda == 0) log(x)
+    else (x ^ lambda - 1) / lambda
+  }
+}
+```
+
+2. Why doesn't `boot_permute()` store a copy of the data?
+
+```{r}
+#| eval: false
+boot_permute <- function(df, var) {
+  n <- nrow(df); force(var)
+  function() {
+    col <- df[[var]]
+    col[sample(n, replace = TRUE)]
+  }
+}
+```
+
+## Solutions (Factory Applications)
+
+1. Fixing `x` lets you try many `lambda` values on the **same data** --- useful for finding the best transformation. You can give it a descriptive name like `boxcox_airpassengers <- boxcox3(AirPassengers)`.
+
+2. R's **copy-on-modify** semantics mean `df` inside the closure is just a name pointing to the same object in memory --- no copy is made unless `df` is modified (which it isn't):
+
+```{r}
+#| output.lines: 3
+boot_permute <- function(df, var) {
+  n <- nrow(df); force(var)
+  function() df[[var]][sample(n, replace = TRUE)]
+}
+bp <- boot_permute(mtcars, "mpg")
+lobstr::obj_sizes(mtcars, bp)
+```
+
+# Factories + Functionals
+
+## Generating Function Families
+
+Combine \comm{map()} with a factory to create many functions at once:
+
+```{r}
+#| output.lines: 5
+names <- list(
+  square = 2, cube = 3,
+  root = 1/2, reciprocal = -1
+)
+funs <- purrr::map(names, power2)
+funs$root(64)
+funs$reciprocal(4)
+```
+
+Access without `funs$` prefix:
+
+```{r}
+#| output.lines: 3
+with(funs, root(100))
+```
+
+## Exercises (Factories + Functionals)
+
+1. Which is equivalent to `with(x, f(z))`?
+
+   (a) `x$f(x$z)`
+   (b) `f(x$z)`
+   (c) `x$f(z)`
+   (d) `f(z)`
+   (e) It depends
+
+## Solutions (Factories + Functionals)
+
+1. **(e) It depends.** With a data frame, `with()` evaluates in a temporary environment where columns are visible, so `f(z)` looks up `f` and `z` in that environment, then the calling environment. The answer depends on what `x` contains:
+
+```{r}
+#| output.lines: 5
+f <- mean; z <- 1
+x <- list(f = mean, z = 1)
+identical(with(x, f(z)), x$f(x$z))   # TRUE
+identical(with(x, f(z)), f(x$z))     # TRUE
+identical(with(x, f(z)), f(z))       # TRUE
+```
+
+All four are equivalent here because `f` and `z` in `x` match the global ones.
+
+# Function Operators
+
+## What Is a Function Operator?
+
+A **function operator** takes a function as input and returns a modified function:
+
+```{r}
+#| output.lines: 5
+chatty <- function(f) {
+  force(f)
+  function(x, ...) {
+    message("Processing ", x)
+    f(x, ...)
+  }
+}
+s <- c(3, 2, 1)
+purrr::map_dbl(s, chatty(\(x) x^2))
+```
+
+Function operators are function factories that take a **function** as input. Python calls them **decorators**.
+
+## `safely()` --- Capturing Errors
+
+\comm{purrr::safely()} wraps a function to return `result` + `error`:
+
+```{r}
+#| output.lines: 3
+x <- list(1, 10, "oops")
+out <- purrr::map(x, purrr::safely(log))
+str(out[[3]])
+```
+
+Use \comm{list\_transpose()} to restructure:
+
+```{r}
+#| output.lines: 3
+out <- purrr::list_transpose(purrr::map(x, purrr::safely(log)))
+ok <- purrr::map_lgl(out$error, is.null)
+out$result[ok]
+```
+
+Related: \comm{possibly()} (default on error), \comm{quietly()} (captures messages/warnings).
+
+## `memoise()` --- Caching Results
+
+\comm{memoise::memoise()} remembers previous inputs $\to$ instant on repeat calls:
+
+```{r}
+#| eval: false
+slow_fn <- function(x) { Sys.sleep(1); x * 10 }
+fast_fn <- memoise::memoise(slow_fn)
+system.time(fast_fn(1))  # ~1 second
+system.time(fast_fn(1))  # instant (cached)
+```
+
+**Classic example:** memoised Fibonacci is O(n) instead of exponential:
+
+```{r}
+#| eval: false
+fib <- memoise::memoise(function(n) {
+  if (n < 2) return(n)
+  fib(n - 2) + fib(n - 1)
+})
+```
+
+**Warning:** only memoise **pure** functions (output depends solely on input).
+
+## Building Your Own: `delay_by()` and `dot_every()`
+
+```{r}
+#| output.lines: 3
+delay_by <- function(f, amount) {
+  force(f); force(amount)
+  function(...) { Sys.sleep(amount); f(...) }
+}
+```
+
+```{r}
+#| output.lines: 3
+dot_every <- function(f, n) {
+  force(f); force(n)
+  i <- 0
+  function(...) {
+    i <<- i + 1
+    if (i %% n == 0) cat(".")
+    f(...)
+  }
+}
+```
+
+**Compose** them with the pipe:
+
+```{r}
+#| eval: false
+walk2(urls, paths,
+  download.file %>% dot_every(10) %>% delay_by(0.1))
+```
+
+## Exercises (Function Operators)
+
+1. What does `base::Vectorize()` do? When might you use it?
+
+2. Weigh the pros and cons of:
+
+```{r}
+#| eval: false
+download.file %>% dot_every(10) %>% delay_by(0.1)
+# versus
+download.file %>% delay_by(0.1) %>% dot_every(10)
+```
+
+3. Should you memoise `download.file()`? Why or why not?
+
+## Solutions (Function Operators)
+
+1. `Vectorize()` wraps a non-vectorised function so it iterates over vector arguments (via `mapply()`). It does **not** speed up the function --- it just changes the input interface. Use when you need to pass vector arguments to a scalar function.
+
+2. Both take the same total time. **First:** dot is printed, then delay occurs before download starts. **Second:** delay occurs, then download starts, then dot is printed after 10th download completes. The difference is timing of the dot relative to the delay.
+
+3. Generally **no**. Files at a URL may change, so memoising would serve stale content. Also, downloaded files can be large, consuming lots of memory. Only memoise if files are small, immutable, and downloaded repeatedly.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Function factory:** a function that returns a function; enclosing env = execution env of factory
+- **`force()`:** always force arguments used only by the manufactured function
+- **Stateful functions:** `<<-` modifies the enclosing environment; each manufactured function gets its own
+- **Garbage collection:** `rm()` large temp objects before returning closures
+- **Applications:** ggplot2 labellers, Box-Cox, MLE, bootstrap generators
+- **Factories + functionals:** `map(params, factory)` generates function families
+- **Function operator:** takes function in, returns modified function out (= decorator)
+- **`safely()`:** wraps function to return `list(result, error)` instead of throwing
+- **`memoise()`:** caches results; only for pure functions
+- **`delay_by()` / `dot_every()`:** custom FOs compose with pipe for readable code
+- **`Vectorize()`:** base R FO; wraps scalar functions for vector input
+-->

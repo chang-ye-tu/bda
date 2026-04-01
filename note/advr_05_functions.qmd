@@ -1,0 +1,491 @@
+---
+title: "AdvR 05 -- Functions"
+---
+
+```{r setup, include=FALSE}
+source("_common.R")
+```
+
+# Function Fundamentals
+
+## Three Components
+
+Every R function has three parts:
+
+- \comm{formals()}: list of arguments
+- \comm{body()}: code inside the function
+- \comm{environment()}: where to look up names
+
+```{r}
+#| output.lines: 5
+f <- function(x, y) { x + y }
+formals(f)
+body(f)
+environment(f)
+```
+
+## Primitive Functions
+
+Exception: **primitive functions** call C directly --- all three components are `NULL`:
+
+```{r}
+#| output.lines: 5
+sum
+typeof(sum)
+```
+
+```{r}
+#| output.lines: 3
+formals(sum)
+body(sum)
+```
+
+Two types: `builtin` (e.g., `sum`) and `special` (e.g., `[`). Only in the base package.
+
+## First-Class Functions and `do.call()`
+
+Functions are **objects** --- no special syntax needed:
+
+```{r}
+#| eval: false
+f <- function(x) sin(1 / x ^ 2)  # bind to name
+lapply(mtcars, function(x) length(unique(x)))  # anonymous
+```
+
+R 4.1+ shorthand: `\(x) x + 1` is equivalent to `function(x) x + 1`.
+
+\medskip
+
+**Lists of functions:**
+
+```{r}
+#| output.lines: 3
+funs <- list(half = \(x) x / 2, double = \(x) x * 2)
+funs$double(10)
+```
+
+\comm{do.call()} calls a function with arguments from a list:
+
+```{r}
+#| output.lines: 3
+do.call(mean, list(1:10, na.rm = TRUE))
+```
+
+## Exercises (Fundamentals)
+
+1. Given a name like `"mean"`, \comm{match.fun()} finds a function. Given a function, can you find its name? Why doesn't that make sense in R?
+
+2. Which of these is correct? Why?
+
+```{r}
+#| eval: false
+function(x) 3()
+(function(x) 3)()
+```
+
+3. What function tells you if an object is a function? What about a primitive function?
+
+4. What are the three important components of a function?
+
+## Solutions (Fundamentals)
+
+1. No one-to-one mapping: a function can have **zero, one, or many** names. Multiple names can bind to the same function; some functions are anonymous.
+
+2. The second: `(function(x) 3)()`. Parentheses separate the anonymous function from the call `()`. The first creates a function with invalid body `3()`.
+
+3. \comm{is.function()} and \comm{is.primitive()}.
+
+4. \comm{formals()} (arguments), \comm{body()} (code), \comm{environment()} (lookup context). Primitives have all three as `NULL`.
+
+# Lexical Scoping
+
+## Four Scoping Rules
+
+R uses **lexical scoping**: looks up values based on where a function is **defined**, not where it is **called**.
+
+\medskip
+
+**1. Name masking** --- inner definitions shadow outer:
+
+```{r}
+#| output.lines: 3
+x <- 10
+g <- function() { x <- 20; x }
+g()
+```
+
+**2. Functions vs. variables** --- R ignores non-functions in function-call position:
+
+```{r}
+#| output.lines: 3
+g09 <- function(x) x + 100
+g10 <- function() { g09 <- 10; g09(g09) }
+g10()
+```
+
+## Four Scoping Rules (continued)
+
+**3. Fresh start** --- each call creates a new environment:
+
+```{r}
+#| output.lines: 3
+g11 <- function() {
+  if (!exists("a")) a <- 1
+  else a <- a + 1
+  a
+}
+c(g11(), g11())   # both 1
+```
+
+**4. Dynamic lookup** --- values looked up at **run time**, not definition time:
+
+```{r}
+#| output.lines: 3
+g12 <- function() x + 1
+x <- 15; g12()
+```
+
+Use \comm{codetools::findGlobals()} to detect external dependencies.
+
+## Exercises (Scoping)
+
+1. What does this return? How is each `c` interpreted?
+
+```{r}
+#| eval: false
+c <- 10
+c(c = c)
+```
+
+2. What are the four principles governing how R looks for values?
+
+3. Predict the result:
+
+```{r}
+#| eval: false
+f <- function(x) {
+  f <- function(x) {
+    f <- function() x ^ 2
+    f() + 1
+  }
+  f(x) * 2
+}
+f(10)
+```
+
+## Solutions (Scoping)
+
+1. Returns `c(c = 10)`. First `c` = the \comm{c()} function; second `c` = a quoted name; third `c` = the value `10`.
+
+2. Name masking, functions vs. variables, fresh start, dynamic lookup.
+
+3. `((10^2) + 1) * 2` = **202**. Innermost `f()` returns `100`, middle adds `1` $\to$ `101`, outer multiplies by `2`.
+
+# Lazy Evaluation
+
+## Arguments Are Evaluated Only When Accessed
+
+```{r}
+#| output.lines: 3
+h01 <- function(x) 10
+h01(stop("This is an error!"))  # no error!
+```
+
+Powered by **promises**: expression + environment + cached value. Evaluated at most **once**.
+
+\medskip
+
+**Default arguments** can reference other arguments or variables defined later:
+
+```{r}
+#| output.lines: 3
+h04 <- function(x = 1, y = x * 2) c(x, y)
+h04()
+```
+
+Default arguments are evaluated **inside** the function; user-supplied arguments in the **calling** environment.
+
+## Missing Arguments
+
+\comm{missing()} detects whether argument was user-supplied:
+
+```{r}
+#| output.lines: 5
+h06 <- function(x = 10) {
+  list(missing(x), x)
+}
+str(h06())
+str(h06(10))
+```
+
+## The `%||%` Operator
+
+The `%||%` operator provides a cleaner pattern for defaults:
+
+```{r}
+#| output.lines: 3
+`%||%` <- function(lhs, rhs) {
+  if (!is.null(lhs)) lhs else rhs
+}
+NULL %||% 42
+```
+
+## Exercises (Lazy Evaluation)
+
+1. What important property of `&&` makes this work?
+
+```{r}
+#| eval: false
+x_ok <- function(x) {
+  !is.null(x) && length(x) == 1 && x > 0
+}
+```
+
+What happens if you replace `&&` with `&`?
+
+2. What does this return? Which principle?
+
+```{r}
+#| eval: false
+f2 <- function(x = z) { z <- 100; x }
+f2()
+```
+
+## Solutions (Lazy Evaluation)
+
+1. `&&` **short-circuits**: if the LHS is `FALSE`, the RHS is never evaluated. This prevents `length(NULL) == 1` from running when `x` is `NULL`. With `&`, all conditions are evaluated (vectorized), causing errors or unexpected results for `NULL` or length > 1 inputs.
+
+2. Returns **100**. Lazy evaluation: `x = z` is not evaluated until `x` is accessed, by which time `z <- 100` has already run inside the function.
+
+# `...` (Dot-Dot-Dot)
+
+## Passing Extra Arguments
+
+`...` lets a function accept and pass on **any number** of extra arguments:
+
+```{r}
+#| output.lines: 5
+i02 <- function(x, ...) {
+  list(x = x, extras = list(...))
+}
+str(i02(1, a = 2, b = 3))
+```
+
+**Two main uses:**
+
+1. Pass arguments to inner functions (e.g., `na.rm` through `lapply`)
+2. Allow S3 methods to take different arguments
+
+\medskip
+
+**Downside:** misspelled arguments silently absorbed:
+
+```{r}
+#| output.lines: 3
+sum(1, 2, NA, na_rm = TRUE)  # na_rm, not na.rm!
+```
+
+## Exercises (`...`)
+
+1. Explain these results:
+
+```{r}
+#| output.lines: 5
+sum(1, 2, 3)
+mean(1, 2, 3)
+sum(1, 2, 3, na.omit = TRUE)
+mean(1, 2, 3, na.omit = TRUE)
+```
+
+## Solutions (`...`)
+
+1. \comm{sum()} takes `...` --- all arguments are summed. `na.omit = TRUE` is coerced to `1`, giving `7` instead of `6`.
+
+\medskip
+
+\comm{mean()} has `x`, `trim`, `na.rm`, `...`. Arguments matched by position: `x = 1`, `trim = 2`, `na.rm = 3`. `na.omit` goes to `...` (ignored). Only `x = 1` matters for the mean, so both calls return `1`.
+
+# Exiting a Function
+
+## Return Values and Invisibility
+
+**Implicit return:** last evaluated expression:
+
+```{r}
+#| output.lines: 3
+j01 <- function(x) if (x < 10) 0 else 10
+j01(5)
+```
+
+**Explicit return:** via \comm{return()}. Use for early exits only.
+
+\medskip
+
+**Invisible return** --- suppresses auto-printing:
+
+```{r}
+#| output.lines: 3
+j04 <- function() invisible(1)
+j04()           # nothing printed
+print(j04())    # force printing
+```
+
+`<-` returns invisibly, enabling chained assignment: `a <- b <- c <- 1`.
+
+## Exit Handlers with `on.exit()`
+
+\comm{on.exit()} runs cleanup code **regardless** of how the function exits:
+
+```{r}
+#| error: true
+#| output.lines: 5
+j06 <- function(x) {
+  cat("Hello\n")
+  on.exit(cat("Goodbye!\n"), add = TRUE)
+  if (x) return(10) else stop("Error")
+}
+j06(TRUE)
+```
+
+```{r}
+#| error: true
+#| output.lines: 3
+j06(FALSE)
+```
+
+## `on.exit()` Pattern
+
+**Restore global state** (working directory, options, connections):
+
+```{r}
+#| eval: false
+with_dir <- function(dir, code) {
+  old <- setwd(dir)
+  on.exit(setwd(old), add = TRUE)
+  force(code)
+}
+```
+
+Always use `add = TRUE` to avoid overwriting previous handlers.
+
+## Exercises (Exiting)
+
+1. What does \comm{load()} return? Why don't you normally see it?
+
+2. Write a function that opens a graphics device, runs code, and closes the device (always, even on error).
+
+## Solutions (Exiting)
+
+1. \comm{load()} invisibly returns a character vector of names of loaded objects. You don't see it because the return is invisible.
+
+2.
+
+```{r}
+#| eval: false
+plot_pdf <- function(code) {
+  pdf("test.pdf")
+  on.exit(dev.off(), add = TRUE)
+  force(code)
+}
+```
+
+# Function Forms
+
+## Four Calling Styles
+
+> Everything that exists is an object. Everything that happens is a function call. --- John Chambers
+
+| Form | Example | Prefix equivalent |
+|------|---------|-------------------|
+| Prefix | `mean(x)` | `mean(x)` |
+| Infix | `x + y` | `` `+`(x, y) `` |
+| Replacement | `names(x) <- y` | `` `names<-`(x, y) `` |
+| Special | `for (i in x) ...` | `` `for`(i, x, ...) `` |
+
+**Everything** can be rewritten in prefix form:
+
+```{r}
+#| output.lines: 3
+`+`(1, `*`(2, 3))   # 1 + (2 * 3)
+```
+
+## Argument Matching and Infix Functions
+
+Arguments are matched by: (1) **exact name**, (2) **partial match**, (3) **position**.
+
+```{r}
+#| eval: false
+# Confusing but valid:
+x <- sample(replace = TRUE, 20, x = c(1:10, NA))
+# Clear version:
+x <- sample(c(1:10, NA), size = 20, replace = TRUE)
+```
+
+\medskip
+
+**User-defined infix functions** use `%name%`:
+
+```{r}
+#| output.lines: 3
+`%xor%` <- function(a, b) xor(a, b)
+TRUE %xor% TRUE
+FALSE %xor% TRUE
+```
+
+**Replacement functions** must return the modified object:
+
+```{r}
+#| eval: false
+`random<-` <- function(x, value) {
+  x[sample(length(x), 1)] <- value
+  x
+}
+```
+
+## Exercises (Function Forms)
+
+1. Rewrite in prefix form: `1 + 2 + 3`
+
+2. Clarify these scrambled function calls:
+
+```{r}
+#| eval: false
+x <- sample(replace = TRUE, 20, x = c(1:10, NA))
+y <- runif(min = 0, max = 1, 20)
+cor(m = "k", y = y, u = "p", x = x)
+```
+
+## Solutions (Function Forms)
+
+1. `` `+`(`+`(1, 2), 3) ``
+
+2. Rewritten with explicit matching:
+
+```{r}
+#| eval: false
+x <- sample(c(1:10, NA), size = 20, replace = TRUE)
+y <- runif(20, min = 0, max = 1)
+cor(x, y, use = "pairwise.complete.obs",
+  method = "kendall")
+```
+
+Arguments matched: exact names first, then partial matching (`m` $\to$ `method`, `u` $\to$ `use`), then by position.
+
+<!--
+# Summary
+
+## Key Takeaways
+
+- **Three components:** \comm{formals()}, \comm{body()}, \comm{environment()} (all `NULL` for primitives)
+- **First-class:** functions are objects; can be anonymous, in lists, passed as arguments
+- **\comm{do.call()}:** call a function with args from a list
+- **Lexical scoping:** name masking, functions vs. variables, fresh start, dynamic lookup
+- **Lazy evaluation:** arguments evaluated only when accessed (promises)
+- **Default args:** evaluated inside the function environment
+- **`%||%`:** `NULL`-coalescing operator (left if non-`NULL`, else right)
+- **`...`:** variadic arguments; enables pass-through but hides typos
+- **Invisible return:** \comm{invisible()} suppresses auto-printing
+- **\comm{on.exit()}:** cleanup handler; always use `add = TRUE`
+- **Four forms:** prefix, infix (`%name%`), replacement (`name<-`), special
+- **Everything** can be rewritten in prefix form
+-->

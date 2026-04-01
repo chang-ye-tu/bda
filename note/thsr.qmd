@@ -2,70 +2,20 @@
 title: "以 R 語言控制瀏覽器"
 subtitle: "從網頁基礎到台灣高鐵自動訂票"
 lang: zh-TW
-fontsize: 10pt
 CJKmainfont: "Noto Sans CJK TC"
 format:
   beamer:
-    aspectratio: 169
-    theme: Madrid
-    slide-level: 2
-    toc: true
-    toc-title: "大綱"
-    pdf-engine: xelatex
-    highlight-style: tango
     include-in-header:
       text: |
         \setCJKmonofont{Noto Sans CJK TC}
-        \AtBeginEnvironment{Shaded}{\small}
-        \setbeamertemplate{navigation symbols}{}
-        \setbeamertemplate{footline}[frame number]
-        \setbeamertemplate{section page}{
-          \centering
-          \vfill
-          \begin{beamercolorbox}[sep=12pt,center]{part title}
-            \usebeamerfont{section title}\insertsection\par
-          \end{beamercolorbox}
-          \vfill
-        }
 execute:
   eval: false
   echo: true
 ---
 
-# 課程簡介
-
-## 早鳥票：便宜但需要搶
-
-- 高鐵**早鳥優惠**：出發日 28 天前開放預售
-- 特定班次最低 **65 折**（台南↔台中 650 元 → 420 元）
-- 每天 **00:00** 開放，熱門班次幾分鐘售罄
-- 你必須半夜守在電腦前手動操作
-
-\bigskip
-
-**有沒有辦法讓程式代勞？**
-
-## 自動排程訂票
-
-如果有一支程式能在指定時間自動：
-
-1. 開啟 Chrome → 前往高鐵訂票頁面
-2. 選出發站、到達站、日期、車次
-3. 截取驗證碼 → 辨識或人工輸入
-4. 填寫旅客資料 → 勾選同意 → 送出
-
-\bigskip
-
-**`thsr.R` 就是這支程式。**
-
-## 這堂課要學什麼
-
-要讀懂 `thsr.R` 的每一行，先回答四個問題：
-
-1. **網頁是什麼做的？**（HTML / DOM / CSS / JavaScript）
-2. **程式怎麼定位網頁元素？**（CSS Selector + DevTools）
-3. **程式怎麼遠端控制瀏覽器？**（WebDriver 協定）
-4. **R 怎麼實作？**（`thsr.R` 逐段解析）
+```{r setup, include=FALSE}
+source("_common.R")
+```
 
 # 網頁基礎：HTML
 
@@ -322,6 +272,28 @@ execute:
 <input type="radio" name="seat" value="1">
 <input type="submit" value="開始查詢">
 ```
+
+## 屬性：data-* 自訂資料屬性
+
+HTML5 允許開發者用 `data-` 前綴自訂任意屬性：
+
+```html
+<!-- thsr.R 用到的實例 -->
+<input type="radio"
+       data-target="search-by-trainNo">
+
+<div data-user-id="12345"
+     data-role="admin">...</div>
+```
+
+- `data-` 後面的名稱**自由定義**
+- 不影響標籤原有功能，純粹用來**存放額外資訊**
+- CSS 可用 `[data-target='search-by-trainNo']` 選取
+- JavaScript 可用 `el.dataset.target` 讀取
+
+\bigskip
+
+`thsr.R` 中的 `input[data-target='search-by-trainNo']` 就是用屬性選擇器定位「車次查詢」radio。
 
 ## 習題：HTML 屬性
 
@@ -677,6 +649,75 @@ div.uk-modal.uk-open input.uk-modal-close
 3. 前兩個。它們的 `name` 都等於 `"agree"`。第三個是 `"disagree"`，不符合。
 4. 所有 `<input>` 標籤中 `type` 屬性為 `"radio"` 的元素。
 
+## Box Model：元素的空間結構
+
+每個 HTML 元素都是一個**矩形盒子**，由內到外四層：
+
+```
+┌─────────────── margin ────────────────┐
+│ ┌──────────── border ──────────────┐  │
+│ │ ┌────────── padding ──────────┐  │  │
+│ │ │                              │  │  │
+│ │ │         content              │  │  │
+│ │ │                              │  │  │
+│ │ └──────────────────────────────┘  │  │
+│ └───────────────────────────────────┘  │
+└────────────────────────────────────────┘
+```
+
+```css
+#SubmitButton {
+  padding: 8px 16px;   /* 內容與邊框間距 */
+  border: 2px solid orange;
+  margin: 10px;        /* 與其他元素間距 */
+}
+```
+
+DevTools 的 Elements 面板右下角可視覺化看到 Box Model。
+
+## 偽類（Pseudo-class）
+
+偽類描述元素的**狀態**，用 `:` 語法：
+
+| 偽類 | 觸發時機 |
+|---|---|
+| `:hover` | 滑鼠移上去 |
+| `:focus` | 欄位被聚焦（點進輸入框） |
+| `:first-child` | 父元素的第一個子元素 |
+| `:nth-child(n)` | 父元素的第 n 個子元素 |
+| `:checked` | radio / checkbox 被勾選 |
+| `:disabled` | 被停用的表單元素 |
+
+```css
+input:focus   { border-color: blue; }
+option:checked { background: yellow; }
+li:nth-child(2n) { background: #f0f0f0; }
+```
+
+爬蟲較少用偽類選取元素，但理解它有助於讀懂頁面的 CSS。
+
+## CSS Specificity（優先權）
+
+當多條規則指向同一元素，哪條生效？**Specificity 高者贏**。
+
+計算方式（由高到低）：
+
+| 來源 | 權重 | 範例 |
+|---|---|---|
+| 行內 `style=""` | 1000 | `style="color:red"` |
+| `#id` | 100 | `#SubmitButton` |
+| `.class` / `[attr]` / `:pseudo` | 10 | `.btn-edit`, `[name='x']` |
+| `tag` | 1 | `button`, `input` |
+
+```css
+button          { color: black; }  /* 1 */
+#SubmitButton   { color: orange; } /* 100 → 贏 */
+```
+
+\bigskip
+
+**`!important` 蓋過一切**（但不建議濫用）。了解 Specificity 可幫助你在 DevTools 中判斷哪條 CSS 規則真正生效。
+
 ## thsr.R 中的 CSS Selector 實例
 
 ```r
@@ -824,6 +865,31 @@ var x;       // x 是 undefined
 "Hello".toUpperCase()      // "HELLO"
 ```
 
+## 模板字串（Template Literal）
+
+ES6 引入用**反引號** `` ` `` 包裹的字串，支援**插值**和**多行**：
+
+```js
+// 插值：${expression}
+var name = "Alice";
+var msg = `Hello, ${name}!`;
+// → "Hello, Alice!"
+
+// 表達式
+var price = 650;
+var discount = 0.65;
+`票價：${price * discount} 元`
+// → "票價：422.5 元"
+
+// 多行字串（不需要 \n）
+var html = `
+  <div>
+    <p>Hello</p>
+  </div>`;
+```
+
+`thsr.R` 使用傳統字串，但現代 JavaScript 廣泛使用模板字串。
+
 ## 比較運算子
 
 ```js
@@ -935,6 +1001,30 @@ setTimeout(function() {
 - 匿名函式常用於**回呼（callback）**：「事情完成後，幫我執行這段程式」
 - `thsr.R` 中大量使用，如 `addEventListener("load", function() {...})`
 
+## 箭頭函式（Arrow Function）
+
+ES6 的簡潔函式語法：
+
+```js
+// 傳統匿名函式
+nums.filter(function(n) { return n > 3; });
+
+// 箭頭函式（完全等價）
+nums.filter(n => n > 3);
+
+// 多參數 / 多行
+var add = (a, b) => {
+  return a + b;
+};
+
+// 單一表達式（省略 {} 和 return）
+var add = (a, b) => a + b;
+```
+
+- `thsr.R` 的 JavaScript 用 `function`（相容舊版瀏覽器）
+- 現代 JS 幾乎全面使用 `=>`
+- **重要差異**：箭頭函式沒有自己的 `this`（繼承外層）
+
 ## IIFE：立即執行函式
 
 ```js
@@ -951,11 +1041,81 @@ setTimeout(function() {
 - 好處：`var el` 只存在函式內部，**不汙染全域命名空間**
 - `thsr.R` 的 `fill()`、`js_select()`、`click_link_text()` 都用這個模式
 
-## 習題：JS 函式
+## 閉包（Closure）
+
+函式可以「記住」它被**建立時**的變數環境：
+
+```js
+function makeCounter() {
+  var count = 0;          // 外層變數
+  return function() {     // 內層函式
+    count += 1;           // 存取外層變數
+    return count;
+  };
+}
+
+var counter = makeCounter();
+counter()  // 1
+counter()  // 2
+counter()  // 3 — count 被「記住」了
+```
+
+- 內層函式 + 它記住的外層變數 = **閉包**
+- 和 R 的 closure（`<<-`）原理相同
+
+## 閉包實例：IIFE 就是閉包
+
+`thsr.R` 的 `fill()` 函式送出的 JavaScript：
+
+```js
+(function() {
+  var el = document.querySelector("#btn");
+  el.value = "hello";
+  el.dispatchEvent(new Event("change",
+    {bubbles: true}));
+})();
+```
+
+IIFE 建立了一個閉包：
+
+- `var el` 只存在於這個閉包內
+- 外部無法存取或汙染 `el`
+- 執行完畢後，閉包中的變數自動釋放
+
+\bigskip
+
+**閉包的核心價值**：資料封裝（data encapsulation）— 不需要 class 也能隱藏內部狀態。
+
+## 錯誤處理：try / catch / finally
+
+```js
+try {
+  // 可能出錯的程式碼
+  var el = document.querySelector("#xxx");
+  el.click();  // 如果 el 是 null → TypeError
+} catch (error) {
+  // 出錯時執行
+  console.log("錯誤：" + error.message);
+} finally {
+  // 不管有沒有出錯，一定執行
+  console.log("清理完成");
+}
+
+// 主動拋出錯誤
+function divide(a, b) {
+  if (b === 0) throw new Error("除以零");
+  return a / b;
+}
+```
+
+和 R 的 `tryCatch` 相似。`thsr.R` 在 R 層用 `tryCatch` 處理錯誤，JS 層靠 `if (el)` 防禦。
+
+## 習題：JS 函式與閉包
 
 1. 沒有 `return` 的函式回傳什麼？這對 `wd_js()` 有什麼影響？
 2. 什麼是匿名函式？它通常用在什麼場合？
-3. 以下 IIFE 執行後，全域變數裡有 `el` 嗎？
+3. 將 `nums.filter(function(n) { return n > 3; })` 改寫為箭頭函式。
+4. 以下 IIFE 執行後，全域變數裡有 `el` 嗎？為什麼？
 
 ```js
 (function() {
@@ -964,11 +1124,24 @@ setTimeout(function() {
 })();
 ```
 
-## 解答：JS 函式
+5. 以下 `makeGreeter` 是閉包嗎？呼叫 `hi("Alice")` 的結果？
 
-1. 回傳 `undefined`。對 `wd_js` 的影響：R 會收到 `NULL`。所以所有透過 `wd_js` 執行的 JS，如果要回傳結果，**必須寫 `return`**。
-2. 沒有名字的函式。通常用作 callback（回呼），例如事件監聽器、`setTimeout`、陣列的 `.find()` 等。
-3. **沒有**。`var el` 在 IIFE 的函式作用域內，執行完即消失，不會汙染全域。
+```js
+function makeGreeter(greeting) {
+  return function(name) {
+    return greeting + ", " + name;
+  };
+}
+var hi = makeGreeter("Hello");
+```
+
+## 解答：JS 函式與閉包
+
+1. 回傳 `undefined`。`wd_js` 會收到 `NULL`。所有要回傳結果的 JS 必須寫 `return`。
+2. 沒有名字的函式。常用作 callback（事件監聽、`.find()`、`setTimeout`）。
+3. `nums.filter(n => n > 3)`
+4. **沒有**。`var el` 在 IIFE 的函式作用域內，執行完即消失。這就是閉包的資料封裝。
+5. **是閉包**。內層函式記住了外層的 `greeting` 變數。`hi("Alice")` → `"Hello, Alice"`。
 
 ## 陣列（Array）
 
@@ -1049,6 +1222,30 @@ function getInfo() {
 ```
 
 WebDriver 的 JSON 回應就是物件；`getBoundingClientRect()` 回傳的也是物件。
+
+## JSON：JavaScript 物件表示法
+
+**JSON** = JavaScript Object Notation，資料交換的通用格式。
+
+```js
+// JS 物件 → JSON 字串
+var obj = { name: "THSR", year: 2007 };
+JSON.stringify(obj)
+// → '{"name":"THSR","year":2007}'
+
+// JSON 字串 → JS 物件
+var text = '{"x":100,"y":200}';
+var rect = JSON.parse(text);
+rect.x    // 100
+```
+
+\bigskip
+
+**WebDriver 協定全部使用 JSON 通訊**：
+
+- R 的 `toJSON()` = JavaScript 的 `JSON.stringify()`
+- R 的 `fromJSON()` = JavaScript 的 `JSON.parse()`
+- `thsr.R` 的 `wd_cmd` 用 `fromJSON(rawToChar(res$content))` 解析 ChromeDriver 的 JSON 回應
 
 ## 習題：JS 陣列與物件
 
@@ -1363,6 +1560,156 @@ new Promise(function(resolve) {
 2. `resolve` = 告知「操作成功」並傳回結果。`reject` = 告知「操作失敗」並傳回原因。
 3. `true`。Promise 只會被 resolve/reject **一次**。第一個 `setTimeout`（1 秒）先觸發，`resolve(true)` 生效。第二個 `setTimeout`（2 秒）的 `resolve(false)` 被忽略。
 
+## Promise 鏈：.then() 與 .catch()
+
+Promise 可以**串接**，形成處理鏈：
+
+```js
+fetch("https://api.example.com/data")
+  .then(function(response) {
+    return response.json();     // 也回傳 Promise
+  })
+  .then(function(data) {
+    console.log(data.name);     // 處理資料
+  })
+  .catch(function(error) {
+    console.log("失敗：" + error.message);
+  });
+```
+
+- `.then(fn)` — Promise 成功後執行
+- `.catch(fn)` — 鏈中任何一步失敗都會跳到這裡
+- 每個 `.then` 回傳新的 Promise → 可無限串接
+
+## async/await：更直覺的 Promise 語法
+
+ES2017 引入 `async`/`await`，讓非同步程式碼**讀起來像同步**：
+
+```js
+// Promise 鏈版本
+fetch(url)
+  .then(function(r) { return r.json(); })
+  .then(function(data) { console.log(data); });
+
+// async/await 版本（完全等價）
+async function getData(url) {
+  var response = await fetch(url);
+  var data = await response.json();
+  console.log(data);
+}
+```
+
+- `async` 標記函式為「非同步函式」
+- `await` 暫停執行，等 Promise 解析完再繼續
+- 錯誤用 `try/catch` 捕獲（和同步程式一樣）
+
+## thsr.R 中的 Promise 應用
+
+`element_screenshot()` 等待驗證碼圖片載入：
+
+```js
+// WebDriver /execute/sync 自動等待 Promise
+return new Promise(function(resolve) {
+  el.addEventListener("load",
+    function() { resolve(true); });
+  el.addEventListener("error",
+    function() { resolve(false); });
+  setTimeout(function() {
+    resolve(false);   // 5 秒超時
+  }, 5000);
+});
+```
+
+三個可能的 resolve 路徑（先觸發者贏）：
+
+1. 圖片載入成功 → `resolve(true)`
+2. 圖片載入失敗 → `resolve(false)`
+3. 5 秒超時 → `resolve(false)`
+
+WebDriver 的 `/execute/sync` 端點**自動等待** Promise resolve 後才回傳結果給 R。
+
+## JavaScript 正規表達式
+
+JS 用 `/pattern/flags` 語法（不需要像 R 雙重跳脫 `\\\\`）：
+
+```js
+// 建立正規表達式
+var re = /^[a-zA-Z0-9]+$/;
+
+// .test()：回傳 true/false
+re.test("abc123")    // true
+re.test("abc 123")   // false
+
+// .match()：回傳匹配結果
+"2026-04-13".match(/(\d{4})-(\d{2})-(\d{2})/)
+// → ["2026-04-13", "2026", "04", "13"]
+
+// .replace()：替換
+"abc 123".replace(/\d+/, "***")
+// → "abc ***"
+```
+
+- R 的 `grepl` ≈ JS 的 `.test()`
+- R 的 `regmatches` ≈ JS 的 `.match()`
+- R 的 `gsub` ≈ JS 的 `.replace(/pattern/g, ...)`
+
+## `this` 與方法呼叫
+
+JavaScript 的 `this` 指向**呼叫方法的物件**：
+
+```js
+var el = document.querySelector("#btn");
+
+// el.click() — this 指向 el
+el.click();
+
+// el.addEventListener 中的 this
+el.addEventListener("load", function() {
+  console.log(this.tagName);  // "IMG"
+  // this === el
+});
+
+// 箭頭函式中 this 繼承外層
+el.addEventListener("load", () => {
+  console.log(this);  // ⚠ 不是 el！
+});
+```
+
+- `el.method()` 模式：`this` = `.` 前面的物件
+- `thsr.R` 中 `el.focus()`、`el.click()`、`el.dispatchEvent(...)` 都依賴這個機制
+
+## 習題：JSON、Promise、正規表達式
+
+1. `JSON.stringify({a: 1, b: "hello"})` 的結果？
+2. Promise 被 `resolve` 兩次（如 `resolve(1); resolve(2)`），最終值是什麼？
+3. 把以下 Promise 鏈改寫為 async/await：
+
+```js
+fetch(url)
+  .then(function(r) { return r.json(); })
+  .then(function(d) { return d.name; });
+```
+
+4. JavaScript 的 `/\d+/` 相當於 R 的什麼 pattern？
+5. `"abc123".match(/[a-z]+/)` 的結果？
+
+## 解答：JSON、Promise、正規表達式
+
+1. `'{"a":1,"b":"hello"}'`（JSON 字串）。
+2. `1`。Promise 只能 resolve **一次**，第二次被忽略。
+3.
+
+```js
+async function getName(url) {
+  var r = await fetch(url);
+  var d = await r.json();
+  return d.name;
+}
+```
+
+4. `"\\d+"`（R 中正規表達式的反斜線需要雙重跳脫）。
+5. `["abc"]`（匹配第一個連續小寫字母序列）。
+
 
 # DevTools 實戰
 
@@ -1581,6 +1928,50 @@ setwd(dirname(
 
 # thsr.R 逐段解析：chromedriver 自動下載
 
+## detect\_chrome\_version()：為什麼需要？
+
+- chromedriver 必須與 Chrome 的**主版本號 (milestone)** 一致
+- 例：Chrome 136.x → 需要 chromedriver 136.x
+- 程式先偵測本機 Chrome 版本，再下載對應 chromedriver
+
+```r
+detect_chrome_version <- function() {
+  sysname <- Sys.info()[["sysname"]]
+  ver <- NULL
+  if (sysname == "Windows") {
+    # 從 Registry BLBeacon\version 讀取
+    for (hive in c("HKLM", "HKCU")) {
+      out <- tryCatch(system2("reg",
+        args = c("query", paste0(hive,
+          "\\SOFTWARE\\Google\\Chrome",
+          "\\BLBeacon"), "/v", "version"),
+        stdout = TRUE, stderr = NULL),
+        error = function(e) NULL)
+      ...
+```
+
+## detect\_chrome\_version()：macOS / Linux
+
+```r
+  } else if (sysname == "Darwin") {
+    out <- tryCatch(system2(paste0(
+      "/Applications/Google Chrome.app/",
+      "Contents/MacOS/Google Chrome"),
+      args = "--version", stdout = TRUE,
+      stderr = NULL), error = function(e) NULL)
+  } else {
+    for (cmd in c("google-chrome", "google-chrome-stable",
+        "chromium-browser", "chromium")) {
+      out <- tryCatch(system2(cmd,
+        args = "--version", stdout = TRUE,
+        stderr = NULL), error = function(e) NULL)
+      if (!is.null(out)) break
+    }
+  }
+```
+
+- 統一用 `regexpr()` 提取版本號；偵測失敗回傳 `NULL` → 退回最新 Stable
+
 ## ensure\_chromedriver()：函式簽名
 
 ```r
@@ -1619,25 +2010,47 @@ ensure_chromedriver <- function(
 - `.Machine$sizeof.pointer == 8L`：64 位元系統
 - macOS 區分 Intel (`mac-x64`) 和 Apple Silicon (`mac-arm64`)
 
-## ensure\_chromedriver()：查詢版本與下載
+## ensure\_chromedriver()：偵測 Chrome 並查詢對應版本
 
 ```r
-  api_url <- paste0(
-    "https://googlechromelabs.github.io/",
-    "chrome-for-testing/",
-    "last-known-good-versions-",
-    "with-downloads.json")
-  info <- fromJSON(content(
-    GET(api_url), "text", encoding = "UTF-8"))
-  stable <- info$channels$Stable
-  urls   <- stable$downloads$chromedriver
-  dl <- urls[urls$platform == platform, "url"]
-  if (length(dl) == 0L)
-    stop(sprintf(
-      "找不到平台 %s 的下載連結", platform))
+  chrome_ver <- detect_chrome_version()
+  if (!is.null(chrome_ver)) {
+    major <- sub("\\..*", "", chrome_ver)
+    api_url <- paste0(
+      "https://googlechromelabs.github.io/",
+      "chrome-for-testing/",
+      "latest-versions-per-milestone-",
+      "with-downloads.json")
+    info <- fromJSON(content(
+      GET(api_url), "text", encoding = "UTF-8"))
+    milestone <- info$milestones[[major]]
+    urls <- milestone$downloads$chromedriver
+    dl   <- urls[urls$platform == platform, "url"]
+  }
 ```
 
-- Google 提供 JSON API 查詢最新 Stable 版本
+- `sub("\\..*", "", "136.0.7103.92")` → `"136"`（主版本號）
+- **per-milestone API**：查詢該 milestone 最新的 chromedriver
+
+## ensure\_chromedriver()：退回機制與下載
+
+```r
+  if (length(dl) == 0L) {
+    api_url <- paste0(
+      "https://googlechromelabs.github.io/",
+      "chrome-for-testing/",
+      "last-known-good-versions-",
+      "with-downloads.json")
+    info   <- fromJSON(content(
+      GET(api_url), "text", encoding = "UTF-8"))
+    stable <- info$channels$Stable
+    urls <- stable$downloads$chromedriver
+    dl <- urls[urls$platform == platform, "url"]
+  }
+```
+
+- 偵測失敗或主版本無對應 → 退回最新 **Stable** 版
+- 兩層 API：**per-milestone**（精確）→ **last-known-good**（退回）
 
 ## ensure\_chromedriver()：解壓縮與安裝
 
@@ -1650,13 +2063,11 @@ ensure_chromedriver <- function(
   found <- list.files(tmp_dir,
     pattern = "^chromedriver(\\.exe)?$",
     recursive = TRUE, full.names = TRUE)
-  if (length(found) == 0L)
-    stop("解壓縮後找不到 chromedriver")
+  if (!length(found)) stop("找不到 chromedriver")
   file.copy(found[1], exe, overwrite = TRUE)
   if (.Platform$OS.type != "windows")
     Sys.chmod(exe, "755")
-  unlink(zip_file)
-  unlink(tmp_dir, recursive = TRUE)
+  unlink(c(zip_file, tmp_dir), recursive = TRUE)
   invisible(exe)
 }
 ```
@@ -1667,23 +2078,23 @@ ensure_chromedriver <- function(
 CHROMEDRIVER_PATH <- ensure_chromedriver()
 ```
 
-- 首次執行：自動偵測平台 → 下載 → 解壓 → 安裝
+- 首次執行：偵測 Chrome 版本 → 比對平台 → 下載 → 解壓 → 安裝
 - 之後執行：檔案已存在，直接回傳路徑
 - 回傳值存入 `CHROMEDRIVER_PATH` 供 `start_driver()` 使用
 
-## 習題：ensure\_chromedriver()
+## 習題：chromedriver 自動下載
 
-1. `tempfile()` 回傳什麼？為什麼不用固定路徑？
-2. `download.file(..., mode = "wb")` 中 `"wb"` 的 `b` 是什麼意思？
-3. `Sys.chmod(exe, "755")` 做什麼？為什麼只在非 Windows 執行？
-4. 為什麼最後要 `unlink(zip_file)` 和 `unlink(tmp_dir, recursive = TRUE)`？
+1. `detect_chrome_version()` 為什麼要嘗試多種偵測方式（Registry、PowerShell、`--version`）？
+2. `sub("\\..*", "", "136.0.7103.92")` 回傳什麼？為什麼用主版本號而非完整版本號查詢？
+3. `download.file(..., mode = "wb")` 中 `"wb"` 的 `b` 是什麼意思？
+4. 為什麼需要「退回機制」（fallback）？什麼情況下 per-milestone API 會查不到？
 
-## 解答：ensure\_chromedriver()
+## 解答：chromedriver 自動下載
 
-1. 唯一的臨時檔案路徑。用 `tempfile()` 避免覆蓋使用者檔案，且不需手動處理命名衝突。
-2. `b` = binary。ZIP 是二進位檔案，Windows 上不加 `b` 可能被當文字處理而損壞。
-3. 設定檔案權限：擁有者可讀寫執行 (7)，其他人可讀和執行 (5)。Linux/macOS 需要**執行權限**才能跑 chromedriver；Windows 不用 `chmod`。
-4. 清理臨時檔案，避免殘留在磁碟佔空間。
+1. 不同系統和安裝方式，Chrome 存放位置不同。Registry 是最標準的 Windows 做法，但企業環境可能只有 `chrome.exe` 路徑可用。Linux 則有多個可能的指令名稱。
+2. 回傳 `"136"`。chromedriver 以**主版本號 (milestone)** 為單位發布——只要主版本號相同即可相容，不需精確到 patch 號。
+3. `b` = binary。ZIP 是二進位檔案，Windows 上不加 `b` 可能被當文字處理而損壞。
+4. Chrome Canary / Dev 版本的主版本號可能尚未有對應 chromedriver；或偵測到的 Chrome 已過時。此時退回最新 Stable 版是安全的預設。
 
 # thsr.R 逐段解析：設定值
 
@@ -2765,27 +3176,6 @@ js_select(sess,
 page_screenshot(sess, "demo.png")
 stop_driver(sess)
 ```
-
-# 總結
-
-## 本堂課學到了什麼
-
-1. **HTML / DOM**：網頁用標籤描述結構，瀏覽器建立活的 DOM 樹
-2. **CSS Selector**：用 `#id`、`.class`、`[name='x']` 精確定位元素
-3. **JavaScript**：`querySelector`、事件機制、`dispatchEvent`
-4. **HTTP**：GET / POST 請求與回應
-5. **WebDriver**：ChromeDriver → Session → 遠端控制 Chrome
-6. **thsr.R**：從環境設定、DOM 操作、到完整的訂票 / 取消流程
-
-## 延伸方向
-
-- **自動驗證碼辨識**：Python `ddddocr` + R `reticulate`
-- **排程執行**：`taskscheduleR`（Windows）/ `cron`（Linux）
-- **其他網站自動化**：同樣的 WebDriver 技術可應用於任何網站
-
-\bigskip
-
-`thsr.R` 雖然只有 480 行，但串起了 HTML、CSS、JavaScript、HTTP、WebDriver 五大技術。讀懂這支程式，你就具備了瀏覽器自動化的完整知識基礎。
 
 # 附錄
 
