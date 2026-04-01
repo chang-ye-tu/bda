@@ -1,0 +1,178 @@
+---
+title: "YouBike 2.0 站點資料分析"
+subtitle: "期中專題 — 第 00 組"
+author: "D1345001 甄聰明、D1345002 甄愛明、D1345003 甄岳明、D1345004 甄新明"
+date: today
+format:
+  pdf:
+    pdf-engine: xelatex
+    mainfont: "Noto Serif CJK TC"
+    sansfont: "Noto Sans CJK TC"
+    monofont: "Noto Sans Mono"
+    CJKmainfont: "Noto Serif CJK TC"
+    documentclass: article
+    geometry: "margin=2.5cm"
+    toc: true
+    number-sections: true
+    colorlinks: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# 資料蒐集與整理
+
+## 資料來源說明
+
+本報告使用**政府資料開放平臺**所提供之 YouBike 2.0 臺北市公共自行車即時資訊。資料以 JSON 格式提供，每筆包含站名、行政區、經緯度、總停車格、可借車輛數、可還空位數及更新時間等欄位。
+
+- 下載網址：`https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json`
+- 格式：JSON
+- 無須申請金鑰
+
+## 資料取得
+
+```{r}
+#| label: setup
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+
+theme_set(
+  theme_minimal(base_size = 11) +
+    theme(text = element_text(family = "Noto Sans CJK TC"))
+)
+knitr::opts_chunk$set(dev = "cairo_pdf")
+```
+
+```{r}
+#| label: fetch-data
+url <- "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json"
+raw <- fromJSON(url)
+df  <- as_tibble(raw)
+glimpse(df)
+```
+
+## 資料清理
+
+```{r}
+#| label: clean-data
+df_clean <- df |>
+  rename(
+    total = Quantity,
+    sbi   = available_rent_bikes,
+    bemp  = available_return_bikes,
+    lat   = latitude,
+    lng   = longitude
+  ) |>
+  mutate(
+    total = as.integer(total),
+    sbi   = as.integer(sbi),
+    bemp  = as.integer(bemp),
+    act   = as.integer(act),
+    lat   = as.numeric(lat),
+    lng   = as.numeric(lng),
+    mday  = as.POSIXct(mday, format = "%Y-%m-%d %H:%M:%S"),
+    ratio = ifelse(total > 0, sbi / total, NA_real_)
+  ) |>
+  filter(act == 1, total > 0)
+
+cat("清理後筆數：", nrow(df_clean), "\n")
+cat("行政區數　：", n_distinct(df_clean$sarea), "\n")
+```
+
+## 資料儲存
+
+```{r}
+#| label: save-csv
+write.csv(df_clean, "data/youbike_clean.csv", row.names = FALSE)
+```
+
+# 探索分析
+
+## 各行政區站點數量
+
+```{r}
+#| label: fig-district-count
+#| fig-cap: "各行政區 YouBike 2.0 站點數量"
+#| fig-height: 5
+df_clean |>
+  count(sarea, sort = TRUE) |>
+  mutate(sarea = reorder(sarea, n)) |>
+  ggplot(aes(n, sarea)) +
+  geom_col(fill = "steelblue") +
+  labs(x = "站點數", y = NULL, title = "各行政區 YouBike 2.0 站點數量")
+```
+
+@fig-district-count 顯示各行政區站點數量差異明顯，反映各區人口密度與運輸需求。
+
+## 可借車輛比例分布
+
+```{r}
+#| label: fig-ratio-hist
+#| fig-cap: "各站可借車輛比例分布"
+#| fig-height: 4
+ggplot(df_clean, aes(ratio)) +
+  geom_histogram(binwidth = 0.05, fill = "coral", color = "white") +
+  scale_x_continuous(labels = scales::percent) +
+  labs(x = "可借車輛 / 總停車格", y = "站點數",
+       title = "各站可借車輛比例分布")
+```
+
+@fig-ratio-hist 顯示多數站點車輛比例集中在 20%–60% 之間，兩端極值代表供需失衡站點。
+
+## 總停車格 vs 可借車輛
+
+```{r}
+#| label: fig-scatter
+#| fig-cap: "總停車格 vs 可借車輛（以行政區著色）"
+#| fig-height: 5
+top6 <- df_clean |> count(sarea, sort = TRUE) |> slice_head(n = 6) |> pull(sarea)
+
+df_clean |>
+  mutate(sarea_label = ifelse(sarea %in% top6, sarea, "其他")) |>
+  ggplot(aes(total, sbi, color = sarea_label)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  labs(x = "總停車格", y = "可借車輛數", color = "行政區",
+       title = "總停車格 vs 可借車輛") +
+  theme(legend.position = "bottom")
+```
+
+@fig-scatter 中虛線為 45 度線（全滿），大多數站點落在虛線下方，顯示有可還空位。
+
+## 供需失衡站點
+
+```{r}
+#| label: fig-imbalance
+#| fig-cap: "可借比例最低之 10 站（可借 vs 可還數量）"
+#| fig-height: 5
+df_clean |>
+  slice_min(ratio, n = 10, with_ties = FALSE) |>
+  mutate(
+    label = str_remove(sna, "^YouBike2\\.0_"),
+    label = reorder(label, -ratio)
+  ) |>
+  select(label, sbi, bemp) |>
+  pivot_longer(-label, names_to = "type", values_to = "count") |>
+  mutate(type = recode(type, sbi = "可借車輛", bemp = "可還空位")) |>
+  ggplot(aes(count, label, fill = type)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = c("可借車輛" = "steelblue", "可還空位" = "tomato")) +
+  labs(x = "車位數", y = NULL, fill = NULL,
+       title = "車輛最不足之 10 站") +
+  theme(legend.position = "bottom",
+        axis.text.y = element_text(size = 7))
+```
+
+@fig-imbalance 列出可借比例最低之 10 站，紅色為空位、藍色為可借車輛，紅色佔比越高代表供需失衡越嚴重。
+
+# 小結
+
+1. 站點集中於人口稠密之行政區（大安、中山、信義等）
+2. 多數站點可借比例介於 20%–60%，少數站點幾乎全滿或全空
+3. 總停車格與可借車輛呈正相關，但部分大型站點可借數偏低
+4. 識別出若干供需失衡站點，可供調度參考
