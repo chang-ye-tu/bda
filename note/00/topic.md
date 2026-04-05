@@ -1,10 +1,9 @@
-# 第 00 組期中專題：YouBike 2.0 站點資料分析
+# YouBike 2.0 站點資料分析
 
 ## 基本資訊
 
 | 項目 | 內容 |
 |:----:|:-----|
-| 組別 | 第 00 組 |
 | 資料來源 | 政府資料開放平臺（data.gov.tw） |
 | 指定資料集 | YouBike 2.0 即時站點資料 |
 | 資料取得方式 | JSON（免註冊、免金鑰） |
@@ -52,11 +51,11 @@
 
 ### 任務說明
 
-參考 `orig/thsr.R`（高鐵訂票程式）與 `orig/thsr.pdf`（原理介紹），
+參考本課程 GitHub 資料夾 <https://github.com/chang-ye-tu/bda/tree/master/note> 中之 `thsr.R`（高鐵訂票程式）與 `thsr.pdf`（詳細原理介紹），
 撰寫**臺鐵網路訂票**自動化程式，並在 RStudio 中實際展示。
 
-臺鐵訂票網址：<https://www.railway.gov.tw/tra-tip-web/tip/tip001/tip123/query>
-臺鐵退票網址：<https://tip.railway.gov.tw/tra-tip-web/tip/tip001/tip115/query>
+- 臺鐵訂票網址：<https://www.railway.gov.tw/tra-tip-web/tip/tip001/tip123/query>
+- 臺鐵退票網址：<https://tip.railway.gov.tw/tra-tip-web/tip/tip001/tip115/query>
 
 ### 必要功能
 
@@ -81,11 +80,9 @@
 | 1 | `report.qmd` | Quarto 原始檔；請列出所有組員學號與姓名 |
 | 2 | `report.pdf` | 轉換之 PDF（「資料蒐集與整理」部份至少 6 頁） |
 | 3 | `tr.R` | 臺鐵訂票 R 程式碼 |
-| 4 | `data/` | 編譯 report.qmd 所需之其他檔案 |
-| 5 | `screenshots/` | 訂票/退票截圖 |
 
 ## 繳交方式
 
-以 email 附件繳交，命名為 `bda_114_<班別>_<組別>.zip`，郵件標題與壓縮檔檔名（不含 `.zip`）相同，在期中專題當日凌晨 00:00 前寄至 **send.request.to.cytu@gmail.com**。
+以 email 附件繳交，命名為 `bda_1142_<班別>_<組別>.zip`，郵件標題與壓縮檔檔名（不含 `.zip`）相同，在期中專題當日凌晨 00:00 前寄至 **send.request.to.cytu@gmail.com**。
 
-範例：甲班第 8 組為 `bda_114_A_08`；乙班第 1 組為 `bda_114_B_01`；乙班第 12 組為 `bda_114_B_12`。
+範例：甲班第 8 組為 `bda_1142_A_08`；乙班第 1 組為 `bda_1142_B_01`；乙班第 12 組為 `bda_1142_B_12`。
