@@ -5,13 +5,9 @@ author: "D1345001 甄聰明、D1345002 甄愛明、D1345003 甄岳明、D1345004
 date: today
 format:
   pdf:
-    pdf-engine: xelatex
-    mainfont: "Noto Serif CJK TC"
-    sansfont: "Noto Sans CJK TC"
-    monofont: "Noto Sans Mono"
-    CJKmainfont: "Noto Serif CJK TC"
+    CJKmainfont: "Microsoft JhengHei"
     documentclass: article
-    geometry: "margin=2.5cm"
+    geometry: "margin=1.5cm"
     toc: true
     number-sections: true
     colorlinks: true
@@ -43,7 +39,7 @@ library(ggplot2)
 
 theme_set(
   theme_minimal(base_size = 11) +
-    theme(text = element_text(family = "Noto Sans CJK TC"))
+    theme(text = element_text(family = "Microsoft JhengHei"))
 )
 knitr::opts_chunk$set(dev = "cairo_pdf")
 ```
