@@ -1,0 +1,1638 @@
+% Compile pipeline (two steps):
+%   Rscript -e "knitr::knit('lecture.Rnw')"   # produces lecture.tex
+%   xelatex -shell-escape lecture.tex          # run twice to settle the toc
+\documentclass[17pt]{extarticle}
+
+\input{bda_preamble.tex}
+
+% Unit 5 specific
+\fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ 5 Tree-Based Methods}}
+
+\setcounter{theorem}{0}\setcounter{example}{0}
+\renewcommand\thedefinition{5.\arabic{theorem}}
+\renewcommand\thetheorem  {5.\arabic{theorem}}
+\renewcommand\theexample  {5.\arabic{example}}
+\renewcommand\theexercise {5.\arabic{exercise}}
+\renewcommand\thefigure   {5.\arabic{figure}}
+
+\title{\color{hdrBG}\bfseries\Huge Tree-Based Methods}
+\author{}\date{}
+
+\begin{document}
+
+<<setup, include=FALSE>>=
+source("bda_knitr_setup.R")
+knitr::opts_chunk$set(fig.path = "figs/unit05-")
+@
+
+\begin{titlepage}
+\thispagestyle{empty}\vspace*{\fill}
+\begin{center}
+{\color{hdrBG}\bfseries\fontsize{28}{32}\selectfont Unit 5.\ Tree-Based Methods}\\[1em]
+\rule{70mm}{0.8pt}\\[0.8em]
+{\large Business Data Analytics: Introductory Machine Learning}
+\end{center}\vspace*{\fill}
+\end{titlepage}
+
+\setcounter{page}{1}
+
+\begin{motivation}[Splits, not coefficients]
+Linear models fit one hyperplane defined by a coefficient vector. Tree models partition the feature space into rectangular cells defined by a sequence of splits, with a constant prediction per cell. The two geometries fail in different ways.
+\end{motivation}
+
+\begin{suppremark}[Notation reused across this unit]\label{rem:unit5-notation}
+\leavevmode
+A few symbols carry different roles in different sections; each occurrence is locally disambiguated, but the table below records the conventions for non-linear readers.
+\begin{center}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} & \textbf{Where} \\
+\midrule
+$\alpha$         & cost-complexity pruning penalty                              & \S\ref{sec:5.2.3} \\
+$\alpha$         & linearity-axiom scalar in the Shapley value                  & \S\ref{sec:5.3.5} \\
+$\alpha$         & XGBoost L1 leaf-weight penalty                                & \S\ref{sec:5.5.3} \\
+\midrule
+$L$              & left child of an internal split                              & \S\ref{sec:5.2}, throughout \\
+$L$ (subscript)  & parent leaf in the closed-form gain decomposition            & \S\ref{sec:5.5.2} \\
+\midrule
+$\nu$            & shrinkage / learning rate (body math)                        & \S\ref{sec:5.4.3}, \S\ref{sec:5.5} \\
+$\eta$           & row-subsample fraction (body math)                           & \S\ref{sec:5.4.3} \\
+\texttt{eta}     & XGBoost API parameter for shrinkage~$\nu$                    & \S\ref{sec:5.5.3}, \S\ref{sec:5.6} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{suppremark}
+
+\section{Recursive Partitioning Foundations}\label{sec:5.1}
+
+This section fixes the tree function class: axis-aligned partitions of the feature space, with a constant prediction in each cell.
+
+\subsection{Trees as axis-aligned partitions}\label{sec:5.1.1}
+
+A decision tree encodes a recursive partition of the feature space and a constant prediction in each cell. The feature space is $\mathcal{X} = \mathbb{R}^p$ throughout the unit; the prediction space $\mathcal{Y}$ is $\mathbb{R}$ for regression and $\{1, \ldots, K\}$ (or, for probability outputs, the $K$-simplex) for $K$-class classification.
+
+\begin{definition}[Binary decision tree]\label{def:bin-tree}
+A \emph{binary decision tree} is a finite rooted tree $T$ in which every node has either zero children (a \emph{leaf}) or exactly two (an \emph{internal node}); the unique node with no parent is the \emph{root}. The tree carries the following labels:
+\begin{itemize}
+\item every internal node $t$ has a \emph{split rule} $(j_t, s_t)$ with $j_t \in \{1, \ldots, p\}$ and $s_t \in \mathbb{R}$, routing an input $x \in \mathcal{X}$ to the \emph{left} child when $x_{j_t} \leqslant s_t$ and to the \emph{right} child otherwise;
+\item the leaves are enumerated $m = 1, \ldots, M$ where $M = |T|$, and each leaf $m$ has a \emph{leaf value} $c_m \in \mathcal{Y}$.
+\end{itemize}
+\end{definition}
+
+\begin{definition}[Region induced by a leaf]\label{def:induced-partition}
+For each leaf $m$, let $\mathcal{R}_m \subseteq \mathcal{X}$ be the set of inputs that reach $m$ when the split rules of Definition~\ref{def:bin-tree} are applied from the root. Each $\mathcal{R}_m$ is an axis-aligned rectangle (a finite intersection of half-spaces $\{x : x_j \leqslant s\}$ and $\{x : x_j > s\}$); the family $\{\mathcal{R}_m\}_{m=1}^{M}$ partitions $\mathcal{X}$.
+\end{definition}
+
+\begin{definition}[Tree predictor]\label{def:tree-predictor}
+The \emph{predictor} encoded by a tree $T$ with leaf values $\{c_m\}_{m=1}^{M}$ is the piecewise-constant function
+\[
+  f_T(x) \;=\; \sum_{m=1}^{M} c_m \, \indc\{x \in \mathcal{R}_m\}, \qquad x \in \mathcal{X}.
+\]
+The \emph{tree class} on $\mathcal{X}$ is
+\[
+  \mathcal{F}_{\mathrm{tree}} \;=\; \bigl\{f_T : T \text{ is a binary decision tree on } \mathcal{X}\bigr\}.
+\]
+\end{definition}
+
+Three structural facts will recur:
+
+\begin{itemize}
+\item The partition $\{\mathcal{R}_m\}$ is determined by the splits alone; the leaf values $c_m$ play no role in selecting splits.
+\item Once the partition is fixed, leaf values minimize the loss separately in each cell, in closed form for the losses used in this unit.
+\item $\mathcal{F}_{\mathrm{tree}}$ contains every function that is constant on the cells of some axis-aligned rectangular partition of $\mathcal{X}$. Such piecewise-constant functions are dense in $L^2(P)$ for any $P$ with bounded support, and on a finite sample of size $n$ a tree with $n$ leaves interpolates any labels exactly. An unconstrained tree class therefore overfits any finite sample, and some form of capacity control is mandatory.
+\end{itemize}
+
+\begin{example}[A two-feature tree and its partition]\label{ex:two-feature-tree}
+A three-leaf tree on $[0, 1]^2$ with split rules
+\[
+  \text{root: } x_1 \leqslant 0.5 \;\to\; A; \qquad \text{else: } x_2 \leqslant 0.3 \;\to\; B \text{ else } C
+\]
+induces the partition $\mathcal{R}_A = \{x_1 \leqslant 0.5\}$, $\mathcal{R}_B = \{x_1 > 0.5,\; x_2 \leqslant 0.3\}$, $\mathcal{R}_C = \{x_1 > 0.5,\; x_2 > 0.3\}$. The figure below renders the three regions.
+
+<<two-feature-partition, fig.width=4.0, fig.height=3.5, out.width="0.55\\linewidth", echo=FALSE>>=
+par(mar = c(4, 4, 0.5, 0.5))
+plot(NA, xlim = c(0, 1), ylim = c(0, 1),
+     xlab = expression(x[1]), ylab = expression(x[2]), asp = 1)
+rect(0,   0,   0.5, 1,   col = "#EFF6FF", border = NA)
+rect(0.5, 0,   1,   0.3, col = "#FEF3C7", border = NA)
+rect(0.5, 0.3, 1,   1,   col = "#F0FDF4", border = NA)
+abline(v = 0.5); segments(0.5, 0.3, 1, 0.3)
+text(0.25, 0.5, "A"); text(0.75, 0.15, "B"); text(0.75, 0.65, "C")
+@
+\end{example}
+
+\begin{suppremark}[Why axis-aligned]
+Axis-aligned splits are one modeling choice; oblique trees, which split on linear combinations $\beta^\top x \leqslant s$, also fit Definition~\ref{def:bin-tree}. The axis-aligned restriction has two practical consequences. First, the best-split search at a node decomposes into $p$ separate one-dimensional sweeps, which keeps greedy growing tractable for $p$ in the hundreds. Second, the predictor is invariant to monotone feature transformations: training on $\phi(x_j)$ in place of $x_j$ for any monotone increasing $\phi$ yields the same partition and predictions. This invariance is why tree models skip the standardization step that ridge, lasso (Unit~2 \S 2.7.1), logistic regression, and SVM require.
+\end{suppremark}
+
+\subsection{Empirical risk on a partition}\label{sec:5.1.2}
+
+Fix a tree $T$ with regions $\{\mathcal{R}_m\}_{m=1}^{M}$ from Definition~\ref{def:induced-partition}. Given a loss $\ell : \mathcal{Y} \times \mathcal{Y} \to \mathbb{R}_{\geqslant 0}$ (Unit~1 Definition~1.17) and training rows $\{(x_i, y_i)\}_{i=1}^{n}$, write
+\[
+  I_m \;:=\; \{i : x_i \in \mathcal{R}_m\}, \qquad n_m \;:=\; |I_m|
+\]
+for the index set and count of training rows that reach leaf $m$.
+
+\begin{lemma}[Per-leaf decomposition of empirical risk]\label{lem:perleaf-decomp}
+The empirical risk of the tree predictor $f_T$ (Definition~\ref{def:tree-predictor}) on the training sample is
+\[
+  \widehat{\mathcal{R}}_n(f_T) \;=\; \frac{1}{n} \sum_{m=1}^{M} \sum_{i \in I_m} \ell(y_i, c_m).
+\]
+The leaf values $\{c_m\}_{m=1}^{M}$ separate: minimizing $\widehat{\mathcal{R}}_n(f_T)$ over the leaf values reduces to
+\[
+  c_m^* \;\in\; \arg\min_{c \in \mathcal{Y}} \sum_{i \in I_m} \ell(y_i, c)
+\]
+solved independently for each $m$.
+\end{lemma}
+
+\begin{proof}
+By Definition~\ref{def:tree-predictor}, $f_T(x_i) = c_m$ for the unique leaf $m$ with $x_i \in \mathcal{R}_m$ (the regions partition $\mathcal{X}$, Definition~\ref{def:induced-partition}). Each training index $i \in \{1, \ldots, n\}$ therefore lies in exactly one $I_m$, so
+\[
+  \widehat{\mathcal{R}}_n(f_T) \;=\; \frac{1}{n} \sum_{i=1}^{n} \ell(y_i, f_T(x_i)) \;=\; \frac{1}{n} \sum_{m=1}^{M} \sum_{i \in I_m} \ell(y_i, c_m).
+\]
+The double sum has the form $\sum_m g_m(c_m)$ with $g_m(c) := \sum_{i \in I_m} \ell(y_i, c)$; minimization separates over the $c_m$.
+\end{proof}
+
+The per-leaf optimum has a closed form for the three losses used in this unit.
+
+\begin{example}[Closed-form leaf values]\label{ex:closed-form-leaf}
+For a fixed partition with leaf row counts $\{n_m\}_{m=1}^{M}$:
+
+\begin{itemize}
+\item \emph{Squared loss} ($\mathcal{Y} = \mathbb{R}$, $\ell(y, c) = (y - c)^2$). The per-leaf objective $\sum_{i \in I_m}(y_i - c)^2$ is a strictly convex quadratic in $c$, minimized at the leaf mean $\bar y_m := n_m^{-1} \sum_{i \in I_m} y_i$.
+\item \emph{0/1 loss} ($\mathcal{Y} = \{1, \ldots, K\}$, $\ell(y, c) = \indc\{y \neq c\}$). Writing $n_{m, k} := |\{i \in I_m : y_i = k\}|$ for per-leaf class counts, the per-leaf objective is $\sum_{i \in I_m} \indc\{y_i \neq c\} = n_m - n_{m, c}$, minimized at the modal class $c_m^* \in \arg\max_{k} n_{m, k}$ (ties broken arbitrarily).
+\item \emph{Cross-entropy} ($\mathcal{Y} = \Delta^{K-1}$, the probability simplex; $\ell(y, p) = -\sum_{k} \indc\{y = k\} \log p_k$). The per-leaf objective $-\sum_{k} n_{m, k} \log p_k$ is minimized at the empirical class proportions $\hat p_{m, k} = n_{m, k} / n_m$.
+\end{itemize}
+\end{example}
+
+\begin{proof}[Proof of the cross-entropy case in Example~\ref{ex:closed-form-leaf}]
+The objective $-\sum_{k} n_{m, k} \log p_k$ is convex in $p$ on the simplex (taking $0 \log 0 = 0$). The Lagrangian for $\sum_{k} p_k = 1$ is
+\[
+  \mathcal{L}(p, \mu) \;=\; -\sum_{k} n_{m, k} \log p_k \;+\; \mu\Bigl(\sum_{k} p_k - 1\Bigr),
+\]
+and stationarity gives $-n_{m, k} / p_k + \mu = 0$, hence $p_k = n_{m, k} / \mu$. The simplex constraint fixes $\mu = n_m$, yielding $p_k^* = n_{m, k} / n_m$.
+\end{proof}
+
+Lemma~\ref{lem:perleaf-decomp} and Example~\ref{ex:closed-form-leaf} reduce tree learning to choosing the partition; leaf values then follow in closed form. The remaining problem,
+\[
+  \min_{T} \; \frac{1}{n} \sum_{m=1}^{|T|} \min_{c \in \mathcal{Y}} \sum_{i \in I_m} \ell(y_i, c),
+\]
+is over the combinatorial set of binary trees on $\mathcal{X}$.
+
+\subsection{Why greedy splits}\label{sec:5.1.3}
+
+The minimization at the end of \S 5.1.2 has no efficient exact solver: even ``find the smallest tree that fits'' is NP-complete.
+
+\begin{theorem}[Hyafil and Rivest, 1976]\label{thm:hyafil-rivest}
+The decision problem \textsc{Min-Tree} is NP-complete:
+\begin{itemize}
+\item \textsc{Input.} A finite training sample $\{(x_i, y_i)\}_{i=1}^{n} \subset \{0, 1\}^p \times \{0, 1\}$ and a positive integer $K$.
+\item \textsc{Question.} Does there exist a binary decision tree with at most $K$ leaves that correctly classifies every training row?
+\end{itemize}
+\end{theorem}
+
+\begin{proof}
+\textbf{In NP.} Given a candidate tree $T$, verify in time $O(K \cdot n \cdot p)$ that $T$ has at most $K$ leaves and classifies every training row correctly.
+
+\textbf{NP-hard via Set Cover.} \textsc{Set-Cover} is NP-complete (Karp, 1972; Hyafil and Rivest's original reduction used Exact Cover by 3-Sets):
+\begin{itemize}
+\item \textsc{Input.} A universe $U = \{u_1, \ldots, u_q\}$, a sub-collection $\mathcal{S} = \{S_1, \ldots, S_m\}$ of subsets of $U$ with $\bigcup_{j} S_j = U$, and a positive integer $k$.
+\item \textsc{Question.} Does there exist $\mathcal{S}' \subseteq \mathcal{S}$ with $|\mathcal{S}'| \leqslant k$ such that $\bigcup_{S \in \mathcal{S}'} S = U$?
+\end{itemize}
+
+\textbf{Construction.} From $(U, \mathcal{S}, k)$, build a \textsc{Min-Tree} instance with $p = m$ features (one per set), $n = q + 1$ rows, and bound $K = k + 1$:
+\begin{itemize}
+\item For each $u \in U$, one positive row $a_u \in \{0, 1\}^m$ with $(a_u)_j = 1$ iff $u \in S_j$.
+\item One negative row $b = (0, \ldots, 0)$.
+\end{itemize}
+The construction is polynomial in the input size.
+
+\textbf{Cover $\Rightarrow$ tree.} Suppose $\mathcal{S}' = \{S_{j_1}, \ldots, S_{j_{k'}}\}$ covers $U$ with $k' \leqslant k$. Build a \emph{comb tree}: along the leftmost path, test features $j_1, \ldots, j_{k'}$ in order; the right child of each test is a positive leaf, and the left child after $j_{k'}$ is a negative leaf. Leaf count: $k' + 1 \leqslant K$.
+
+Every entry of $b$ is $0$, so $b$ takes left at every test and lands at the negative leaf. For each $a_u$, let $t$ be the smallest index in $\{1, \ldots, k'\}$ with $u \in S_{j_t}$ (such $t$ exists because $\mathcal{S}'$ covers $U$); then $(a_u)_{j_s} = 0$ for $s < t$ and $(a_u)_{j_t} = 1$, so $a_u$ takes left at $j_1, \ldots, j_{t-1}$, right at $j_t$, and lands at a positive leaf.
+
+\textbf{Tree $\Rightarrow$ cover.} Suppose $T$ has $|T| \leqslant K = k+1$ leaves and classifies every training row correctly. Let $j_1, \ldots, j_t$ be the features tested along $b$'s root-to-leaf path. Every $b_j = 0$, so $b$ takes left at every test; its leaf has label $0$.
+
+For each $u \in U$, $a_u$ must reach a positive leaf. From the root, $a_u$ stays with $b$ as long as $u \notin S_{j_s}$ on the tests $j_s$ encountered. If $u \notin S_{j_s}$ for every $s$, then $a_u$ ends at $b$'s (negative) leaf, contradicting $a_u$'s positive label. So some $s$ has $u \in S_{j_s}$, and $\mathcal{S}' := \{S_{j_1}, \ldots, S_{j_t}\}$ (de-duplicated) covers $U$.
+
+Each of the $t$ internal nodes on $b$'s path has a right child rooting a subtree with at least one leaf; with the leaf at the end of $b$'s path, $|T| \geqslant t + 1$. Combined with $|T| \leqslant k + 1$, $t \leqslant k$, so $|\mathcal{S}'| \leqslant t \leqslant k$.
+\end{proof}
+
+\begin{example}[Reduction in action]\label{ex:setcover-reduction}
+Take $U = \{u_1, u_2, u_3\}$ and $\mathcal{S} = \{S_1, S_2, S_3\}$ with $S_1 = \{u_1, u_2\}$, $S_2 = \{u_2, u_3\}$, $S_3 = \{u_1, u_3\}$. The minimum cover has $k = 2$. The reduction sets $K = 3$ and produces
+\[
+  a_{u_1} = (1, 0, 1), \quad a_{u_2} = (1, 1, 0), \quad a_{u_3} = (0, 1, 1), \quad b = (0, 0, 0).
+\]
+The cover $\{S_1, S_2\}$ gives the comb tree of Figure~\ref{fig:setcover-comb}: test $f_1$ then $f_2$ down the leftmost path, positive leaves on each right side, negative leaf at the bottom. Three leaves; all four rows classified. No two-leaf tree (one internal test) works: for any feature $f_j$, the left child of the test on $f_j$ contains $b$ together with the $a_{u_i}$ for which $u_i \notin S_j$.
+\end{example}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[
+    level distance=2.5cm,
+    level 1/.style={sibling distance=6cm},
+    level 2/.style={sibling distance=4cm},
+    % 將原本的 every node 改名為自訂的 treenode，避免干擾線條上的文字標籤
+    treenode/.style={draw, rectangle, rounded corners, align=center, fill=white, minimum width=3cm, minimum height=1cm},
+    edge from parent/.style={draw, -latex, thick},
+    % 讓葉節點繼承 treenode 的大小與框線設定
+    leaf_pos/.style={treenode, fill=green!10, font=\bfseries},
+    leaf_neg/.style={treenode, fill=red!10, font=\bfseries},
+    % 縮小文字標籤，只保留白色底色以增加易讀性
+    edge_label/.style={fill=white, font=\small, inner sep=2pt}
+]
+
+% Root Node
+\node[treenode] (root) {Test $f_1$ (Cover $S_1$)}
+    % Left Child (f1 = 0)
+    child {
+        node[treenode] (f2) {Test $f_2$ (Cover $S_2$)}
+        % Left Child of f2 (f2 = 0)
+        child {
+            node[leaf_neg] {Label = 0 \\[-0.5ex] {\small (Catches $b$)}}
+            edge from parent node[edge_label, left=2pt] {$f_2 = 0$}
+        }
+        % Right Child of f2 (f2 = 1)
+        child {
+            node[leaf_pos] {Label = 1 \\[-0.5ex] {\small (Catches $a_{u_3}$)}}
+            edge from parent node[edge_label, right=2pt] {$f_2 = 1$}
+        }
+        edge from parent node[edge_label, left=2pt] {$f_1 = 0$}
+    }
+    % Right Child (f1 = 1)
+    child {
+        node[leaf_pos] {Label = 1 \\[-0.5ex] {\small (Catches $a_{u_1}, a_{u_2}$)}}
+        edge from parent node[edge_label, right=2pt] {$f_1 = 1$}
+    };
+
+\end{tikzpicture}
+\caption{Comb tree for the cover $\{S_1, S_2\}$ in Example~\ref{ex:setcover-reduction}.}\label{fig:setcover-comb}
+\end{figure}
+
+\begin{example}[Reverse direction in action]\label{ex:reverse-extraction}
+Take $U = \{u_1, u_2, u_3, u_4\}$ and $\mathcal{S} = \{S_1, S_2, S_3, S_4\}$ with $S_1 = \{u_1, u_2\}$, $S_2 = \{u_3, u_4\}$, $S_3 = \{u_1, u_3\}$, $S_4 = \{u_2, u_4\}$. The minimum cover has $k = 2$. The reduction sets $K = 3$ and produces
+\[
+  a_{u_1} = (1, 0, 1, 0), \;\; a_{u_2} = (1, 0, 0, 1), \;\; a_{u_3} = (0, 1, 1, 0), \;\; a_{u_4} = (0, 1, 0, 1), \;\; b = (0, 0, 0, 0).
+\]
+The non-comb 4-leaf tree of Figure~\ref{fig:reverse-tree} classifies all five rows correctly. Tracing $b$: $b_{f_1} = 0$ goes left at the root, $b_{f_2} = 0$ goes left at the next test, lands at the negative leaf. The features along the path give $\mathcal{S}' = \{S_1, S_2\}$, an optimal cover of size 2.
+
+The bound $|T| \geqslant t + 1$ is loose here ($4 \geqslant 3$): the right subtree of the root holds two leaves not on $b$'s path. A comb tree producing the same cover would have $|T| = t + 1 = 3$ leaves.
+\end{example}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[
+    level distance=2.5cm,
+    level 1/.style={sibling distance=8cm},
+    level 2/.style={sibling distance=4cm},
+    treenode/.style={draw, rectangle, rounded corners, align=center, fill=white, minimum width=3cm, minimum height=1cm},
+    edge from parent/.style={draw, -latex, thick},
+    leaf_pos/.style={treenode, fill=green!10, font=\bfseries},
+    leaf_neg/.style={treenode, fill=red!10, font=\bfseries},
+    edge_label/.style={fill=white, font=\small, inner sep=2pt}
+]
+
+\node[treenode] (root) {Test $f_1$}
+    child {
+        node[treenode] {Test $f_2$}
+        child {
+            node[leaf_neg] {Label = 0 \\[-0.5ex] {\small (Catches $b$)}}
+            edge from parent node[edge_label, left=2pt] {$f_2 = 0$}
+        }
+        child {
+            node[leaf_pos] {Label = 1 \\[-0.5ex] {\small (Catches $a_{u_3}, a_{u_4}$)}}
+            edge from parent node[edge_label, right=2pt] {$f_2 = 1$}
+        }
+        edge from parent node[edge_label, left=2pt] {$f_1 = 0$}
+    }
+    child {
+        node[treenode] {Test $f_3$}
+        child {
+            node[leaf_pos] {Label = 1 \\[-0.5ex] {\small (Catches $a_{u_2}$)}}
+            edge from parent node[edge_label, left=2pt] {$f_3 = 0$}
+        }
+        child {
+            node[leaf_pos] {Label = 1 \\[-0.5ex] {\small (Catches $a_{u_1}$)}}
+            edge from parent node[edge_label, right=2pt] {$f_3 = 1$}
+        }
+        edge from parent node[edge_label, right=2pt] {$f_1 = 1$}
+    };
+
+\end{tikzpicture}
+\caption{Non-comb 4-leaf tree for Example~\ref{ex:reverse-extraction}; tracing $b$'s leftmost path extracts the cover $\{S_1, S_2\}$.}\label{fig:reverse-tree}
+\end{figure}
+
+This restricted version (binary features, exact fit) is intractable; the general empirical-risk-minimization problem is no easier. Tree algorithms therefore use a top-down greedy heuristic.
+
+\begin{definition}[Top-down greedy growing]\label{def:greedy-grow}
+\emph{Top-down greedy growing} starts with the training sample at the root, recursively splits each node, and stops when a node-level criterion is met:
+
+\begin{itemize}
+\item \emph{Split rule.} At a node holding rows $I \subseteq \{1, \ldots, n\}$, choose $(j^*, s^*) \in \arg\min_{(j, s)} Q(I; j, s)$, where $Q$ is a per-node objective (e.g., post-split SSE for regression, post-split Gini for classification).
+\item \emph{Recursion.} Send rows with $x_{i, j^*} \leqslant s^*$ to the left child and the remainder to the right child; recurse on each child.
+\item \emph{Stopping.} Halt at a node when a stopping rule fires (zero residual variance, minimum node size, maximum depth); declare it a leaf and assign its leaf value by Lemma~\ref{lem:perleaf-decomp}.
+\end{itemize}
+\end{definition}
+
+Choices of $Q$ and stopping rule define specific algorithms.
+
+\begin{example}[Greedy is not optimal: XOR]\label{ex:xor-greedy}
+Take $n = 4$ rows on $\mathcal{X} = \{0, 1\}^2$ with $y = x_1 \oplus x_2$. At the root, every single-feature split sends one positive and one negative row to each child, leaving the impurity (0/1, Gini, or entropy) unchanged; any greedy rule halting when no split improves $Q$ stops at the root and achieves 50\% accuracy. A depth-2 tree (split on $x_1$, then on $x_2$ inside each child) fits the four rows exactly, so the optimal tree exists in $\mathcal{F}_{\mathrm{tree}}$. Greedy misses it because the first split's payoff is invisible without committing to the second.
+\end{example}
+
+\begin{suppremark}[Why greedy is still standard]
+The XOR pathology is real but rarely dominates real-data error: most problems admit splits whose immediate payoff correlates with their long-run payoff. The success of CART, Random Forest, and gradient boosting on tabular benchmarks rests on that empirical regularity, not on a worst-case guarantee. Two CART-era patches mitigate the worst cases: \emph{look-ahead} evaluates two-level splits per node (expensive, rare in practice), and \emph{surrogate splits} record alternatives whose decision agrees with the chosen split (routine).
+\end{suppremark}
+
+\section{CART}\label{sec:5.2}
+
+CART (Breiman, Friedman, Olshen, and Stone, 1984) instantiates Definition~\ref{def:greedy-grow} with specific objectives for regression and classification, plus a pruning step.
+
+\subsection{Regression trees and SSE splits}\label{sec:5.2.1}
+
+For regression ($\mathcal{Y} = \mathbb{R}$, squared loss $\ell(y, c) = (y - c)^2$), Example~\ref{ex:closed-form-leaf} fixes the leaf value at the leaf mean. The remaining choice is which split $(j^*, s^*)$ to pick at each node. CART picks the split with the largest reduction in within-node sum of squares.
+
+\begin{definition}[Within-node SSE]\label{def:within-sse}
+For an index set $I \subseteq \{1, \ldots, n\}$, write $n_I := |I|$, $\bar y_I := n_I^{-1} \sum_{i \in I} y_i$, and
+\[
+  \mathrm{SSE}(I) \;:=\; \sum_{i \in I} (y_i - \bar y_I)^2.
+\]
+\end{definition}
+
+When $I$ is a leaf, Example~\ref{ex:closed-form-leaf} sets the prediction to $\bar y_I$, making $\mathrm{SSE}(I)$ that leaf's contribution to the empirical risk.
+
+\begin{definition}[SSE split gain]\label{def:sse-gain}
+For a candidate split $(j, s)$ at a node holding rows $I$, let $I_L := \{i \in I : x_{i, j} \leqslant s\}$ and $I_R := I \setminus I_L$, with sizes $n_L, n_R$ and means $\bar y_L, \bar y_R$. The \emph{SSE split gain} is
+\[
+  \Delta(I; j, s) \;:=\; \mathrm{SSE}(I) - \mathrm{SSE}(I_L) - \mathrm{SSE}(I_R).
+\]
+CART picks $(j^*, s^*) \in \arg\max_{(j, s)} \Delta(I; j, s)$, equivalently $\arg\min_{(j, s)} [\mathrm{SSE}(I_L) + \mathrm{SSE}(I_R)]$ since $\mathrm{SSE}(I)$ is constant in the split.
+\end{definition}
+
+\begin{lemma}[Closed form for the SSE split gain]\label{lem:split-gain}
+With the notation of Definition~\ref{def:sse-gain},
+\[
+  \Delta(I; j, s) \;=\; \frac{n_L \, n_R}{n_I}\, (\bar y_L - \bar y_R)^2.
+\]
+The gain is non-negative, with equality iff $\bar y_L = \bar y_R$.
+\end{lemma}
+
+\begin{proof}
+Apply the identity $\sum_{i \in J}(y_i - \bar y_J)^2 = \sum_{i \in J} y_i^2 - n_J \bar y_J^2$ at $J = I, I_L, I_R$. The $\sum y_i^2$ terms cancel since $\{I_L, I_R\}$ partitions $I$:
+\[
+  \Delta(I; j, s) \;=\; n_L \bar y_L^2 + n_R \bar y_R^2 - n_I \bar y_I^2.
+\]
+Substituting $n_I \bar y_I = n_L \bar y_L + n_R \bar y_R$ gives $n_I \bar y_I^2 = (n_L \bar y_L + n_R \bar y_R)^2 / n_I$. Multiplying $\Delta$ by $n_I$ and using $n_I = n_L + n_R$,
+\[
+  n_I \Delta(I; j, s) \;=\; (n_L + n_R)(n_L \bar y_L^2 + n_R \bar y_R^2) - (n_L \bar y_L + n_R \bar y_R)^2 \;=\; n_L n_R (\bar y_L - \bar y_R)^2,
+\]
+where the second equality is by direct expansion. Dividing by $n_I$ gives the formula; non-negativity and the equality condition follow from $(\bar y_L - \bar y_R)^2 \geqslant 0$.
+\end{proof}
+
+\begin{derivation}[Per-feature scan in $O(n \log n)$]
+Sort $I$ by $x_{\cdot, j}$ in $O(n_I \log n_I)$, and let $v_1 < \cdots < v_u$ be the $u \leqslant n_I$ distinct sorted values; the $u - 1$ midpoints $s_k = (v_k + v_{k+1})/2$ are the candidate thresholds (a tie between $r$ rows at value $v_k$ contributes one threshold and $r$ row-updates, not $r$ thresholds). Pre-compute $T_I := \sum_{i \in I} y_i$ in $O(n_I)$. Sweep the candidates left-to-right, maintaining $(n_L, T_L := \sum_{i \in I_L} y_i)$ via $O(1)$ updates per row entering $I_L$. From $(n_L, T_L)$, Lemma~\ref{lem:split-gain} gives $\Delta$ in $O(1)$ via $n_R = n_I - n_L$, $\bar y_L = T_L / n_L$, $\bar y_R = (T_I - T_L) / n_R$. The sweep does $n_I$ updates and $u - 1$ gain evaluations; the sort dominates, so the per-feature cost is $O(n_I \log n_I)$. Across $p$ features, the split search at a node costs $O(p \cdot n_I \log n_I)$.
+\end{derivation}
+
+\subsection{Impurity for classification: Gini and entropy}\label{sec:5.2.2}
+
+For $K$-class classification ($\mathcal{Y} = \{1, \ldots, K\}$, 0/1 loss), Example~\ref{ex:closed-form-leaf} sets the leaf prediction to the modal class. The per-node split criterion measures the impurity of the class distribution at the node; CART picks the split that decreases this impurity most.
+
+\begin{definition}[Impurity function]\label{def:impurity}
+An \emph{impurity function} on the probability simplex $\Delta^{K-1} = \{p \in \mathbb{R}_{\geqslant 0}^K : \sum_k p_k = 1\}$ is a continuous concave function $\phi : \Delta^{K-1} \to \mathbb{R}_{\geqslant 0}$ with $\phi(e_k) = 0$ at every vertex $e_k$ (the unit vector with $1$ in coordinate $k$).
+\end{definition}
+
+For a node holding rows $I$, write $n_{I, k} := |\{i \in I : y_i = k\}|$ for class counts and $p_I := (n_{I, k}/n_I)_{k=1}^{K}$ for the empirical class proportions.
+
+\begin{definition}[Three classification impurities]\label{def:class-impurities}
+For $p \in \Delta^{K-1}$:
+\begin{itemize}
+\item \emph{Misclassification rate}: $M(p) = 1 - \max_k p_k$.
+\item \emph{Gini index}: $G(p) = 1 - \sum_k p_k^2 = \sum_k p_k(1 - p_k)$.
+\item \emph{Entropy}: $H(p) = -\sum_k p_k \log p_k$, with $0 \log 0 := 0$.
+\end{itemize}
+\end{definition}
+
+\begin{lemma}[Concavity]\label{lem:impurity-concavity}
+$M, G, H$ are concave on $\Delta^{K-1}$. Both $G$ and $H$ are strictly concave on the simplex interior; $M$ is concave but not strictly so.
+\end{lemma}
+
+\begin{proof}
+For $G$: $-\sum_k p_k^2$ has Hessian $-2 I_K$, strictly concave on $\mathbb{R}^K$ and so on $\Delta^{K-1}$; adding the constant $1$ preserves strict concavity.
+
+For $H$: $-x \log x$ has second derivative $-1/x < 0$ on $(0, 1]$, so the Hessian of $-\sum_k p_k \log p_k$ is diagonal with entries $-1/p_k < 0$ on the open simplex; $H$ is strictly concave there, with concavity extending to the boundary by continuity.
+
+For $M$: $\max_k p_k$ is a maximum of linear functions, hence convex, so $M = 1 - \max_k p_k$ is concave. On any region of $\Delta^{K-1}$ where one class $k^*$ is the strict modal class, $M(p) = 1 - p_{k^*}$ is linear in $p$, so $M$ fails strict concavity on any segment inside such a region.
+\end{proof}
+
+\begin{definition}[Impurity split gain]\label{def:impurity-gain}
+With $I_L, I_R$ as in Definition~\ref{def:sse-gain}, the \emph{impurity split gain} under impurity $\phi$ is
+\[
+  \Delta_\phi(I; j, s) \;:=\; \phi(p_I) \;-\; \frac{n_L}{n_I}\, \phi(p_L) \;-\; \frac{n_R}{n_I}\, \phi(p_R).
+\]
+The CART classification splitter at node $I$ picks $(j^*, s^*) \in \arg\max_{(j, s)} \Delta_\phi(I; j, s)$.
+\end{definition}
+
+\begin{lemma}[Non-negative split gain]\label{lem:impurity-nonneg}
+For any concave impurity $\phi$, $\Delta_\phi(I; j, s) \geqslant 0$. If $\phi$ is strictly concave and both children are non-empty, $\Delta_\phi = 0$ iff $p_L = p_R$.
+\end{lemma}
+
+\begin{proof}
+The parent class proportions are the size-weighted average of the child proportions: $p_I = (n_L/n_I) p_L + (n_R/n_I) p_R$. Applying Jensen to $\phi$ with weights $n_L/n_I$ and $n_R/n_I$ gives $\phi(p_I) \geqslant (n_L/n_I) \phi(p_L) + (n_R/n_I) \phi(p_R)$, i.e., $\Delta_\phi \geqslant 0$. Strict concavity makes the inequality strict unless $p_L = p_R$.
+\end{proof}
+
+The non-strict concavity of $M$ explains why it ties certain splits.
+
+\begin{example}[Misclassification ties; Gini and entropy break the tie]\label{ex:gini-vs-misclass}
+Take a parent node with class counts $(400, 400)$ ($K = 2$). Two candidate splits:
+\begin{itemize}
+\item Split A: children $(300, 100)$ and $(100, 300)$.
+\item Split B: children $(200, 400)$ and $(200, 0)$.
+\end{itemize}
+Parent and weighted-child impurities under each criterion:
+
+\begin{ctab}
+\begin{tabular}{l c c c}
+\toprule
+& $\phi(p_I)$ & Split A (weighted) & Split B (weighted) \\
+\midrule
+$M$ & $0.500$ & $0.250$ & $0.250$ \\
+$G$ & $0.500$ & $0.375$ & $0.333$ \\
+$H$ & $0.693$ & $0.562$ & $0.477$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent $M$ gives identical reductions for A and B ($0.25$ each); $G$ and $H$ both prefer B ($G$: $0.167$ vs.\ $0.125$; $H$: $0.216$ vs.\ $0.131$). The $(200, 0)$ leaf in B is pure, which is visible to $G$ and $H$ but invisible to $M$.
+\end{example}
+
+\begin{suppremark}[Practical defaults]
+\texttt{rpart} defaults to Gini for classification; so does \texttt{ranger}. Entropy and Gini rarely disagree in practice; the choice between them is mostly historical or implementation-driven.
+\end{suppremark}
+
+\subsection{Cost-complexity pruning}\label{sec:5.2.3}
+
+Greedy growing (Definition~\ref{def:greedy-grow}) with a permissive stopping rule produces an over-grown tree $T_{\max}$ that overfits the training data. Pruning collapses subtrees of $T_{\max}$ into leaves; CART's cost-complexity pruning offers a one-parameter family indexed by $\alpha \geqslant 0$.
+
+\begin{definition}[Pruned subtree]\label{def:pruned-subtree}
+A \emph{pruned subtree} $T \preccurlyeq T_{\max}$ is obtained from $T_{\max}$ by selecting a (possibly empty) set of internal nodes and collapsing the subtree rooted at each into a single leaf. The set of pruned subtrees of $T_{\max}$ is finite.
+\end{definition}
+
+\begin{definition}[Risk and cost-complexity]\label{def:cost-complexity}
+For a tree $T$ with leaves $\{I_m\}_{m=1}^{|T|}$, let $R(T)$ denote its empirical risk under the per-leaf optimal value rule (Lemma~\ref{lem:perleaf-decomp}). For regression, $R(T) = \tfrac{1}{n} \sum_{m} \mathrm{SSE}(I_m)$. For classification, $R(T) = \tfrac{1}{n} \sum_{m} n_m \cdot M(p_m)$ with $M$ from Definition~\ref{def:class-impurities}. The \emph{cost-complexity} of $T$ at $\alpha \geqslant 0$ is
+\[
+  R_\alpha(T) \;:=\; R(T) \;+\; \alpha \, |T|.
+\]
+The \emph{optimal pruned subtree} at $\alpha$ is
+\[
+  T_\alpha \;:=\; \arg\min_{T \preccurlyeq T_{\max}} R_\alpha(T),
+\]
+unique by tie-breaking in favor of the smallest such $T$.
+\end{definition}
+
+The map $\alpha \mapsto T_\alpha$ is piecewise constant with finitely many breakpoints, despite the exponential number of pruned subtrees.
+
+\begin{theorem}[Nested optimal pruning sequence]\label{thm:nested-pruning}
+There exist a finite sequence $0 = \alpha_0 < \alpha_1 < \cdots < \alpha_K$ and a strictly nested sequence $T_{\max} = T_0 \succ T_1 \succ \cdots \succ T_K = \{\mathrm{root}\}$ such that
+\[
+  T_\alpha \;=\; T_k \quad \text{for } \alpha \in [\alpha_k, \alpha_{k+1}),
+\]
+with $T_K$ optimal for $\alpha \geqslant \alpha_K$.
+\end{theorem}
+
+These are produced by \emph{weakest-link pruning}: at each step, collapse the subtree with the smallest per-leaf cost reduction.
+
+\begin{definition}[Weakest-link criterion]\label{def:weakest-link}
+For an internal node $t$ in a tree $T$, let $T_t$ be the subtree of $T$ rooted at $t$ and $\{t\}$ the result of collapsing $T_t$ into a single leaf. The \emph{weakest-link criterion} at $t$ is
+\[
+  g(t; T) \;:=\; \frac{R(\{t\}) - R(T_t)}{|T_t| - 1}.
+\]
+\end{definition}
+
+\begin{lemma}[Weakest link gives the next breakpoint]\label{lem:weakest-link}
+For a tree $T$ with $|T| > 1$ and any internal node $t$, let $T'_t$ denote $T$ with $T_t$ collapsed to $\{t\}$. Then
+\[
+  R_\alpha(T'_t) \leqslant R_\alpha(T) \;\iff\; \alpha \geqslant g(t; T),
+\]
+with equality at $\alpha = g(t; T)$. The smallest $\alpha \geqslant 0$ at which any single prune of $T$ achieves cost-complexity no greater than $R_\alpha(T)$ is $\alpha^*(T) := \min_t g(t; T)$.
+\end{lemma}
+
+\begin{proof}
+Collapsing $T_t$ to $\{t\}$ gives $R(T'_t) - R(T) = R(\{t\}) - R(T_t)$ and $|T'_t| - |T| = -(|T_t| - 1)$, so the cost-complexity change is
+\[
+  R_\alpha(T'_t) - R_\alpha(T) \;=\; (R(\{t\}) - R(T_t)) \;-\; \alpha(|T_t| - 1).
+\]
+By Lemma~\ref{lem:perleaf-decomp}, refining a partition can only lower the sum of per-cell minimal losses, so $R(\{t\}) \geqslant R(T_t)$ and $|T_t| - 1 > 0$. Hence $R_\alpha(T'_t) \leqslant R_\alpha(T)$ iff $\alpha (|T_t| - 1) \geqslant R(\{t\}) - R(T_t)$, iff $\alpha \geqslant g(t; T)$, with equality at $\alpha = g(t; T)$. The conclusion about $\alpha^*(T)$ is immediate.
+\end{proof}
+
+\begin{definition}[Weakest-link pruning algorithm]\label{def:weakest-link-algo}
+Starting at $T_0 = T_{\max}$ and $\alpha_0 = 0$, iterate for $k = 0, 1, 2, \ldots$:
+\begin{itemize}
+\item Compute $\alpha_{k+1} = \alpha^*(T_k)$ (Lemma~\ref{lem:weakest-link}) and pick $t^*_k \in \arg\min_t g(t; T_k)$.
+\item Set $T_{k+1}$ to be $T_k$ with $T_{t^*_k}$ collapsed to $\{t^*_k\}$.
+\item Halt when $|T_{k+1}| = 1$.
+\end{itemize}
+\end{definition}
+
+The output is the nested sequence and breakpoints of Theorem~\ref{thm:nested-pruning}.
+
+\begin{proof}[Proof of Theorem~\ref{thm:nested-pruning}]
+The proof has four parts: modularity of $R_\alpha$ on the pruning lattice, existence of a smallest optimal subtree at each $\alpha$, monotonicity of $T_\alpha$ in $\alpha$, and an induction matching the weakest-link sequence with the optima.
+
+\textbf{Modularity.} Identify each pruned subtree $T \preccurlyeq T_{\max}$ with its set of internal nodes $I(T) \subseteq I(T_{\max})$, which is closed under taking ancestors. The pruning lattice has meet $T_a \wedge T_b$ corresponding to $I(T_a) \cap I(T_b)$ (more pruned) and join $T_a \vee T_b$ corresponding to $I(T_a) \cup I(T_b)$ (less pruned). Let $L_v$ denote the leaf risk of $v \in T_{\max}$ if $v$ were a leaf, so $R(T) = \tfrac{1}{n} \sum_{v \text{ leaf in } T} L_v$. Checking the leaf status of each $v$ across the four trees case by case (whether $v$ is internal, leaf, or absent in each of $T_a, T_b$) verifies
+\[
+  \indc\{v \text{ leaf in } T_a\} + \indc\{v \text{ leaf in } T_b\} \;=\; \indc\{v \text{ leaf in } T_a \vee T_b\} + \indc\{v \text{ leaf in } T_a \wedge T_b\}.
+\]
+Summing $L_v$-weighted contributions: $R(T_a) + R(T_b) = R(T_a \vee T_b) + R(T_a \wedge T_b)$. The identity $|T| = |I(T)| + 1$ for binary trees gives the same modular relation for $|\cdot|$, so $R_\alpha$ is modular: $R_\alpha(T_a) + R_\alpha(T_b) = R_\alpha(T_a \vee T_b) + R_\alpha(T_a \wedge T_b)$.
+
+\textbf{Smallest optimal subtree.} For each $\alpha$, let $\mathcal{O}_\alpha := \{T : R_\alpha(T) = \min\}$. For $T_a, T_b \in \mathcal{O}_\alpha$, modularity gives $R_\alpha(T_a \vee T_b) + R_\alpha(T_a \wedge T_b) = 2 \min R_\alpha$; neither term can fall below the minimum, so both equal it. Thus $\mathcal{O}_\alpha$ is closed under meet and join: a sublattice of the finite pruning lattice. The meet of all its elements is the unique smallest optimal subtree under $\preccurlyeq$; define $T_\alpha$ as this meet.
+
+\textbf{Monotonicity.} Suppose $\alpha_1 < \alpha_2$ and (for contradiction) $T_{\alpha_2} \not\preccurlyeq T_{\alpha_1}$. Set $T^* := T_{\alpha_1} \wedge T_{\alpha_2}$ and $T^+ := T_{\alpha_1} \vee T_{\alpha_2}$. By modularity at any $\alpha$,
+\[
+  R_\alpha(T^*) - R_\alpha(T_{\alpha_2}) \;=\; R_\alpha(T_{\alpha_1}) - R_\alpha(T^+) \;=:\; \Delta_\alpha.
+\]
+Optimality of $T_{\alpha_1}$ at $\alpha_1$ (with $T^+$ as candidate) gives $\Delta_{\alpha_1} \leqslant 0$; optimality of $T_{\alpha_2}$ at $\alpha_2$ (with $T^*$ as candidate) gives $\Delta_{\alpha_2} \geqslant 0$. The function $\alpha \mapsto \Delta_\alpha$ is linear with slope $|T^*| - |T_{\alpha_2}| \leqslant 0$. If the slope is strictly negative, $\Delta_{\alpha_2} < \Delta_{\alpha_1} \leqslant 0$, contradicting $\Delta_{\alpha_2} \geqslant 0$. So the slope is zero: $|T^*| = |T_{\alpha_2}|$. Combined with $T^* \preccurlyeq T_{\alpha_2}$, this forces $T^* = T_{\alpha_2}$, i.e., $T_{\alpha_2} \preccurlyeq T_{\alpha_1}$, contradicting the assumption.
+
+\textbf{Multi-step pruning gain.} Any $T' \prec T_k$ corresponds to collapsing a unique antichain $\{t_1, \ldots, t_m\}$ of internal nodes in $T_k$ (the topmost nodes that become leaves in $T'$). Their subtrees $T_{(k), t_j}$ are pairwise disjoint, so the cost-complexity changes are additive:
+\[
+  R_\alpha(T') - R_\alpha(T_k) \;=\; \sum_{j=1}^{m} \bigl(g(t_j; T_k) - \alpha\bigr)\,\bigl(|T_{(k), t_j}| - 1\bigr).
+\]
+For $\alpha < \alpha_{k+1} = \min_{t \text{ internal in } T_k} g(t; T_k)$, every $g(t_j; T_k) > \alpha$, so each term is strictly positive: $R_\alpha(T') > R_\alpha(T_k)$.
+
+\textbf{Induction.} At $\alpha = 0$: $T_0 = T_{\max}$ minimizes $R$ (refining the partition only lowers per-cell minimal loss; the $\alpha = 0$ minimum is achieved at the finest partition); the smallest optimal subtree at $\alpha = 0$ is $T_{\max}$. Inductively, assume $T_\alpha = T_k$ on $[\alpha_k, \alpha_{k+1})$. By monotonicity, $T_\alpha \preccurlyeq T_k$ for $\alpha \geqslant \alpha_k$. By the multi-step gain, no $T' \prec T_k$ achieves $R_\alpha(T') \leqslant R_\alpha(T_k)$ for $\alpha < \alpha_{k+1}$, so $T_\alpha = T_k$ throughout $[\alpha_k, \alpha_{k+1})$. At $\alpha = \alpha_{k+1}$, $T_{k+1}$ ties with $T_k$ (Lemma~\ref{lem:weakest-link}); tie-breaking in favor of fewer leaves gives $T_{\alpha_{k+1}} = T_{k+1}$. Each weakest-link step strictly reduces leaf count, so the sequence terminates at $T_K = \{\text{root}\}$.
+\end{proof}
+
+The complexity parameter $\alpha$ is chosen by cross-validation: for each fold, generate the pruning sequence on the training portion and evaluate each subtree on the held-out fold. Average held-out risk across folds at corresponding $\alpha$ values (per-fold sequences have different breakpoints; standard practice aligns them via geometric means of consecutive thresholds), then pick $\alpha^*$ minimizing the average. The 1-SE rule (smallest $|T|$ within one standard error of the minimum) is preferred when parsimony matters.
+
+\begin{suppremark}[Where pruning fits]
+CART grows with Gini or entropy (whose strict concavity breaks ties; \S 5.2.2) and prunes with misclassification rate, which optimizes the classification cost directly. \texttt{rpart} follows this convention; its \texttt{cp} parameter is $\alpha$ divided by the root's risk. Ensemble methods (Random Forest, gradient boosting) replace single-tree pruning with depth caps plus averaging or shrinkage, treating each base tree as deliberately under-regularized; cost-complexity remains the standard regularizer for single CART trees.
+\end{suppremark}
+
+\section{Bagging and Random Forests}\label{sec:5.3}
+
+A single CART tree achieves low bias when grown deep but high variance: small perturbations of the training sample produce different trees. Bagging (Breiman, 1996) and Random Forest (Breiman, 2001) reduce that variance by averaging many trees fit on resampled data, with Random Forest adding feature subsampling to lower the correlation between trees.
+
+\subsection{Bootstrap and out-of-bag estimation}\label{sec:5.3.1}
+
+Bagging fits an ensemble of trees on bootstrap resamples of the training set. The same construction yields a free held-out estimate of generalization error: for each row, predict using only the trees whose bootstrap sample excluded that row.
+
+\begin{definition}[Bootstrap sample]\label{def:bootstrap}
+Given a training set of $n$ rows, a \emph{bootstrap sample} $\mathcal{D}^* = (i^*_1, \ldots, i^*_n)$ is drawn by sampling $n$ row indices independently and uniformly with replacement from $\{1, \ldots, n\}$.
+\end{definition}
+
+A training row may appear multiple times in a bootstrap sample, or not at all. Rows excluded from $\mathcal{D}^*$ are the \emph{out-of-bag} (OOB) rows for that sample.
+
+\begin{lemma}[Out-of-bag inclusion probability]\label{lem:oob-prob}
+The probability that a fixed row $i$ is OOB for a single bootstrap sample is
+\[
+  \prb(i \notin \mathcal{D}^*) \;=\; \Bigl(1 - \tfrac{1}{n}\Bigr)^n \;\xrightarrow[n \to \infty]{}\; e^{-1} \;\approx\; 0.368.
+\]
+For $B$ independent bootstrap samples, the expected number of samples for which row $i$ is OOB is $B \cdot (1 - 1/n)^n$.
+\end{lemma}
+
+\begin{proof}
+Each of the $n$ draws excludes row $i$ with probability $1 - 1/n$; mutual independence of the draws gives $\prb(i \notin \mathcal{D}^*) = (1 - 1/n)^n$. The limit $\lim_n (1 - 1/n)^n = e^{-1}$ is elementary calculus. For $B$ samples, the expected count is $B(1 - 1/n)^n$ by linearity of expectation.
+\end{proof}
+
+For an ensemble of $B$ trees $\hat f_1, \ldots, \hat f_B$ trained on bootstrap samples $\mathcal{D}^*_1, \ldots, \mathcal{D}^*_B$, define $\mathcal{B}_i := \{b : i \notin \mathcal{D}^*_b\}$ for each row $i$ (the trees that did not see row $i$).
+
+\begin{definition}[OOB prediction and OOB error]\label{def:oob-error}
+The \emph{OOB prediction} for row $i$ is
+\[
+  \hat y_i^{\mathrm{oob}} \;:=\; \frac{1}{|\mathcal{B}_i|} \sum_{b \in \mathcal{B}_i} \hat f_b(x_i)
+\]
+(or the modal class for classification ensembles). The \emph{OOB error} of the ensemble is
+\[
+  \widehat{\mathcal{R}}_{\mathrm{oob}} \;:=\; \frac{1}{n} \sum_{i=1}^{n} \ell\bigl(y_i,\, \hat y_i^{\mathrm{oob}}\bigr).
+\]
+\end{definition}
+
+\begin{suppremark}[OOB and CV]
+$\hat y_i^{\mathrm{oob}}$ is the average of roughly $0.368 B$ trees that did not see row $i$, a cross-validated estimate at no extra training cost. With $B = 500$, each row's prediction averages $\approx 184$ trees; OOB error converges to the bagged ensemble's test error at the rate of a similarly-sized held-out test set. The estimate is unreliable under distribution shift between training and deployment.
+\end{suppremark}
+
+\subsection{Variance reduction by averaging}\label{sec:5.3.2}
+
+Bagging's value comes from averaging: identically distributed predictors have variance that decreases with the number of replicates, but the decrease has a floor set by their pairwise correlation.
+
+\begin{lemma}[Variance of an average of correlated predictors]\label{lem:avg-variance}
+Let $\hat f_1, \ldots, \hat f_B$ be identically distributed random variables with $\var(\hat f_b) = \sigma^2$ and pairwise correlation $\cor(\hat f_b, \hat f_{b'}) = \rho$ for all $b \neq b'$. Then
+\[
+  \var\Bigl(\frac{1}{B} \sum_{b=1}^{B} \hat f_b\Bigr) \;=\; \rho \sigma^2 \;+\; \frac{(1 - \rho) \sigma^2}{B}.
+\]
+\end{lemma}
+
+\begin{proof}
+By bilinearity of covariance,
+\[
+  \var\Bigl(\frac{1}{B} \sum_b \hat f_b\Bigr) \;=\; \frac{1}{B^2} \sum_{b, b'} \cov(\hat f_b, \hat f_{b'}) \;=\; \frac{1}{B^2} \bigl(B \sigma^2 + B(B - 1) \rho \sigma^2\bigr),
+\]
+where the diagonal contributes $B$ terms of $\sigma^2$ and the off-diagonal contributes $B(B-1)$ terms of $\rho \sigma^2$. Simplifying yields $\rho \sigma^2 + (1 - \rho) \sigma^2 / B$.
+\end{proof}
+
+Two consequences:
+
+\begin{itemize}
+\item As $B \to \infty$, the variance approaches the floor $\rho \sigma^2$. Increasing $B$ alone cannot shrink variance below this floor.
+\item For uncorrelated predictors ($\rho = 0$), variance shrinks as $\sigma^2 / B$; for fully correlated predictors ($\rho = 1$), averaging gives no reduction.
+\end{itemize}
+
+Bagged trees fit on bootstraps of the same data are correlated through the shared data, so $\rho$ is bounded well above zero; $B$ alone runs into the variance floor. Lowering $\rho$ is the next move.
+
+\subsection{Decorrelation by feature subsampling}\label{sec:5.3.3}
+
+Bagged CART trees on bootstraps of the same data tend to make similar early splits: the strongest feature dominates the split criterion on most resamples, so different trees agree on root-level structure and their predictions correlate. Random Forest reduces this correlation by restricting the split search at each node to a random subset of features.
+
+\begin{definition}[Random Forest]\label{def:random-forest}
+A \emph{Random Forest} is an ensemble of $B$ trees, each fit on an independent bootstrap sample of the training set. At each internal node of each tree, the split search of Definition~\ref{def:greedy-grow} is restricted to a random subset of $m$ features ($1 \leqslant m \leqslant p$) drawn uniformly without replacement from $\{1, \ldots, p\}$, with a fresh draw at every node. Trees are grown to maximum depth without pruning; ensemble averaging supplies the regularization.
+\end{definition}
+
+The hyperparameter $m$ (often called \texttt{mtry}) controls the bias--variance trade-off in the ensemble:
+
+\begin{itemize}
+\item Smaller $m$ forces trees to use different features, lowering pairwise correlation $\rho$ and thus the variance floor of Lemma~\ref{lem:avg-variance}.
+\item Smaller $m$ also raises each individual tree's variance: a tree forced to split on suboptimal features grows differently from the optimal CART tree, with higher single-tree error.
+\end{itemize}
+
+The defaults $m = \lceil \sqrt{p} \rceil$ for classification and $m = \lfloor p/3 \rfloor$ for regression (Breiman, 2001) work well across many datasets; cross-validation over $m \in \{2, 4, 8, \ldots, p\}$ is the standard tuning approach.
+
+\begin{suppremark}[Implementation cost]
+A naive implementation re-sorts each candidate feature at every node ($O(n_I \log n_I)$ per feature per node). Production libraries (\texttt{ranger}, \texttt{xgboost}) pre-sort each feature once at the start of training and reuse the sorted indices at every split, reducing the per-feature per-node cost to $O(n_I)$.
+\end{suppremark}
+
+\subsection{Variable importance: MDI and permutation}\label{sec:5.3.4}
+
+Tree ensembles do not produce coefficients, but two scalar summaries quantify each feature's contribution to the ensemble's predictions.
+
+\begin{definition}[Mean decrease in impurity]\label{def:mdi}
+For an ensemble of $B$ trees $\{T_b\}$ and feature $j \in \{1, \ldots, p\}$, the \emph{MDI} of $j$ is
+\[
+  \mathrm{MDI}(j) \;:=\; \frac{1}{B} \sum_{b=1}^{B} \sum_{\text{internal } t \in T_b\,:\, j_t = j} \frac{n_{I_t}}{n} \cdot \Delta\bigl(I_t; j_t, s_t\bigr),
+\]
+where the inner sum runs over internal nodes of $T_b$ that split on feature $j$, $\Delta$ is the relevant split gain (Definition~\ref{def:sse-gain} for regression, Definition~\ref{def:impurity-gain} for classification), and $n_{I_t}$ is the count of rows reaching node $t$.
+\end{definition}
+
+\begin{definition}[Permutation importance]\label{def:perm-importance}
+For each feature $j$, let $\widehat{\mathcal{R}}_{\mathrm{oob}}^{(\pi j)}$ denote the OOB error of the ensemble evaluated after permuting column $j$ uniformly at random across the training rows. The \emph{permutation importance} of $j$ is
+\[
+  \mathrm{PI}(j) \;:=\; \widehat{\mathcal{R}}_{\mathrm{oob}}^{(\pi j)} \;-\; \widehat{\mathcal{R}}_{\mathrm{oob}}.
+\]
+\end{definition}
+
+The two measures answer different questions and have different failure modes:
+
+\begin{itemize}
+\item MDI rewards features with many possible split points: a continuous high-cardinality feature has more candidate thresholds than a low-cardinality categorical one, inflating its impurity-reduction sum even at random.
+\item Correlated features dilute each other's MDI and PI: each tree picks one of several near-equivalent features at each node, splitting the credit.
+\item Permutation importance is reliable only under feature independence; when feature $j$ is correlated with relevant features, permuting $j$ produces row vectors outside the training distribution and PI loses interpretability.
+\end{itemize}
+
+\subsection{SHAP and TreeSHAP}\label{sec:5.3.5}
+
+MDI and permutation importance summarize feature use globally; modern practice often wants per-row attributions: how does each feature contribute to the model's prediction for a specific row $x$? SHAP (Lundberg and Lee, 2017) imports cooperative game theory to answer this, and TreeSHAP (Lundberg et al., 2020) makes the computation polynomial-time on tree ensembles.
+
+\paragraph{Cooperative games and the Shapley value.}
+A cooperative game on a finite set $N$ of \emph{players} assigns a real number to each coalition (subset of players); the question is how to fairly divide the total value $v(N)$ among the players given each player's contributions across coalitions.
+
+\begin{definition}[Cooperative game]\label{def:coop-game}
+A \emph{cooperative game} on a finite player set $N$ is a function $v : 2^N \to \mathbb{R}$ with $v(\emptyset) = 0$. The number $v(S)$ is the \emph{value} of coalition $S \subseteq N$.
+\end{definition}
+
+\begin{definition}[Value function and Shapley axioms]\label{def:shapley-axioms}
+A \emph{value function} assigns to each cooperative game $v$ on $N$ a vector $\phi(v) = (\phi_i(v))_{i \in N} \in \mathbb{R}^N$ of \emph{individual contributions}. The Shapley axioms require, for all games $v, w$ on $N$:
+\begin{itemize}
+\item \emph{Efficiency}: $\sum_{i \in N} \phi_i(v) = v(N)$.
+\item \emph{Symmetry}: if $v(S \cup \{i\}) = v(S \cup \{j\})$ for every $S \subseteq N \setminus \{i, j\}$, then $\phi_i(v) = \phi_j(v)$.
+\item \emph{Dummy player}: if $v(S \cup \{i\}) = v(S)$ for every $S \subseteq N \setminus \{i\}$, then $\phi_i(v) = 0$.
+\item \emph{Linearity}: $\phi(\alpha v + \beta w) = \alpha \phi(v) + \beta \phi(w)$ for all scalars $\alpha, \beta \in \mathbb{R}$, where $(\alpha v + \beta w)(S) := \alpha v(S) + \beta w(S)$.
+\end{itemize}
+\end{definition}
+
+\begin{theorem}[Shapley, 1953]\label{thm:shapley-uniqueness}
+There is a unique value function satisfying all four Shapley axioms; it is given by the \emph{Shapley value}
+\[
+  \phi_i(v) \;=\; \sum_{S \subseteq N \setminus \{i\}} \frac{|S|!\, (|N| - |S| - 1)!}{|N|!} \; \bigl[v(S \cup \{i\}) - v(S)\bigr].
+\]
+Equivalently, summing over permutations $\pi$ of $N$,
+\[
+  \phi_i(v) \;=\; \frac{1}{|N|!} \sum_{\pi \in \Pi_N} \bigl[v(P_\pi^i \cup \{i\}) - v(P_\pi^i)\bigr],
+\]
+where $P_\pi^i$ is the set of players preceding $i$ in $\pi$.
+\end{theorem}
+
+\begin{proof}
+\textbf{Equivalence of the two formulas.} Group the $|N|!$ permutations by $S := P_\pi^i$. For each $S \subseteq N \setminus \{i\}$ of size $k$, exactly $k!\,(|N|-k-1)!$ permutations have $P_\pi^i = S$ ($k!$ orderings of $S$ before $i$, $(|N|-k-1)!$ orderings of $N \setminus (S \cup \{i\})$ after). The marginal contribution depends only on $S$, so
+\[
+  \frac{1}{|N|!} \sum_\pi [v(P_\pi^i \cup \{i\}) - v(P_\pi^i)] \;=\; \sum_{S \subseteq N \setminus \{i\}} \frac{|S|!\,(|N|-|S|-1)!}{|N|!}\, [v(S \cup \{i\}) - v(S)].
+\]
+
+\textbf{Existence.} The closed-form formula satisfies all four axioms.
+
+\emph{Efficiency.} In the permutation form, fix $\pi$ and sum the marginal contributions in the order players appear in $\pi$: this telescopes from $v(\emptyset) = 0$ through $v(N)$, giving $\sum_i [v(P_\pi^i \cup \{i\}) - v(P_\pi^i)] = v(N)$. Averaging over $\pi$ gives $\sum_i \phi_i(v) = v(N)$.
+
+\emph{Symmetry.} Suppose $i, j$ are interchangeable in $v$. Define a bijection $\sigma$ on subsets of $N \setminus \{i\}$: $\sigma(S) = S$ if $j \notin S$, and $\sigma(R \cup \{j\}) = R \cup \{i\}$ for $R \subseteq N \setminus \{i, j\}$. The bijection preserves cardinality, so the Shapley weights $|S|!\,(|N|-|S|-1)!/|N|!$ in $\phi_i(v)$ and $\phi_j(v)$ match summand-for-summand. The marginal contributions also match: for $S \subseteq N \setminus \{i, j\}$, $v(S \cup \{i\}) - v(S) = v(S \cup \{j\}) - v(S)$ by interchangeability; for $S = R \cup \{j\}$, $v(R \cup \{i, j\}) - v(R \cup \{j\}) = v(R \cup \{i, j\}) - v(R \cup \{i\})$ since interchangeability with $S = R$ gives $v(R \cup \{j\}) = v(R \cup \{i\})$. Hence $\phi_i(v) = \phi_j(v)$.
+
+\emph{Dummy.} If $v(S \cup \{i\}) = v(S)$ for every $S \not\ni i$, every summand in the subset form vanishes; so $\phi_i(v) = 0$.
+
+\emph{Linearity.} The formula is linear in $v$ summand-by-summand.
+
+\textbf{Uniqueness.} Let $\psi$ be any value function satisfying the four axioms.
+
+\emph{Step 1 (basis).} For each non-empty $T \subseteq N$, define $u_T(S) := \indc\{T \subseteq S\}$. The space of cooperative games on $N$ (functions $v : 2^N \to \mathbb{R}$ with $v(\emptyset) = 0$) is a real vector space of dimension $2^{|N|} - 1$, matching the count of unanimity games. To show linear independence, suppose $\sum_T c_T u_T = 0$ but some $c_T \neq 0$, and let $T_0$ be a minimal (under inclusion) non-empty subset with $c_{T_0} \neq 0$. Then
+\[
+  0 \;=\; \sum_T c_T \, u_T(T_0) \;=\; \sum_{T \subseteq T_0} c_T \;=\; c_{T_0},
+\]
+the second equality because $u_T(T_0) = 1$ iff $T \subseteq T_0$, and the third because $c_T = 0$ for every $T \subsetneq T_0$ by minimality of $T_0$. This contradicts $c_{T_0} \neq 0$, so the unanimity games are independent and form a basis.
+
+\emph{Step 2 ($\psi$ on $c \, u_T$).} Fix non-empty $T$ and scalar $c$.
+\begin{itemize}
+\item For $i \notin T$: $u_T(S \cup \{i\}) = \indc\{T \subseteq S \cup \{i\}\} = \indc\{T \subseteq S\} = u_T(S)$ since $i \notin T$, so $i$ is a dummy in $c \, u_T$; the dummy axiom gives $\psi_i(c \, u_T) = 0$.
+\item For $i \in T$: any two members of $T$ are interchangeable in $c \, u_T$ (the value depends only on whether $T \subseteq S$); symmetry forces $\psi_i(c \, u_T) = \alpha$ for a common $\alpha$ across all $i \in T$. Efficiency gives $|T| \cdot \alpha = (c \, u_T)(N) = c$, so $\alpha = c/|T|$.
+\end{itemize}
+
+\emph{Step 3 (extension).} Every game $v$ has a unique decomposition $v = \sum_T c_T u_T$ by Step 1. Linearity gives
+\[
+  \psi(v) \;=\; \sum_T c_T \, \psi(u_T),
+\]
+and Step 2 determines $\psi(u_T)$. The same argument applied to $\phi$ (which satisfies the four axioms by Existence) yields the same values, so $\psi = \phi$.
+\end{proof}
+
+\paragraph{SHAP: Shapley values for feature attribution.}
+To attribute a model prediction $f(x)$ at a row $x \in \mathbb{R}^p$ to its features, take $N = \{1, \ldots, p\}$ (the features) as the player set and choose a coalitional value function $v_x$ derived from $f$. The two standard choices are:
+
+\begin{itemize}
+\item \emph{Conditional} (observational): $v_x(S) = \expc[f(X) \mid X_S = x_S]$, the model's expected output given $X_S = x_S$.
+\item \emph{Interventional} (causal-flavored): $v_x(S) = \expc_{X_{N \setminus S}}[f(x_S, X_{N \setminus S})]$, the model's expected output with $S$-features fixed at $x_S$ and the rest drawn from the marginal.
+\end{itemize}
+
+The two coincide when features are independent; under correlation they differ. The interventional form fits causal-style attribution; the conditional form fits descriptive analysis of how the model uses features on observed data.
+
+\begin{definition}[SHAP value]\label{def:shap}
+Given a value function $v_x$ derived from $f$ at row $x$, the \emph{SHAP value} of feature $i$ is the Shapley value $\phi_i(v_x)$ of Theorem~\ref{thm:shapley-uniqueness}.
+\end{definition}
+
+The efficiency axiom gives a per-row decomposition that MDI and PI lack:
+\[
+  f(x) \;=\; \expc[f(X)] \;+\; \sum_{i=1}^{p} \phi_i(v_x).
+\]
+The model's prediction at $x$ equals the dataset baseline plus contributions from each feature, additively; the decomposition is unique under the four axioms.
+
+\begin{example}[SHAP for a linear model]\label{ex:shap-linear}
+For $f(x) = \beta_0 + \sum_{j=1}^{p} \beta_j x_j$ with $\expc[X_j] = \mu_j$, the interventional value function with feature marginals reduces to
+\[
+  v_x(S) \;=\; \beta_0 \;+\; \sum_{j \in S} \beta_j x_j \;+\; \sum_{j \notin S} \beta_j \mu_j.
+\]
+Each marginal contribution $v_x(S \cup \{i\}) - v_x(S) = \beta_i(x_i - \mu_i)$ does not depend on $S$, so the Shapley sum collapses to
+\[
+  \phi_i(v_x) \;=\; \beta_i(x_i - \mu_i).
+\]
+Efficiency reads $f(x) - \expc[f(X)] = \sum_i \beta_i(x_i - \mu_i)$, recovering the linear identity directly.
+\end{example}
+
+\paragraph{TreeSHAP.}
+Computing $\phi_i(v_x)$ from Theorem~\ref{thm:shapley-uniqueness} naively requires iterating over all $2^{p-1}$ subsets $S \subseteq N \setminus \{i\}$, infeasible already at $p = 30$. For tree ensembles a polynomial-time exact algorithm exists.
+
+\begin{theorem}[TreeSHAP, Lundberg et al., 2020]\label{thm:treeshap}
+For a single decision tree with $L$ leaves and depth $D$, the SHAP values $\{\phi_i(v_x)\}_{i=1}^{p}$ under the interventional value function with marginals from the training data can be computed exactly in time $O(L D^2)$ and memory $O(D^2)$. For an ensemble of $B$ trees, the cost scales linearly in $B$.
+\end{theorem}
+
+\begin{proof}[Proof of Theorem~\ref{thm:treeshap}]
+\textbf{Setup.} For each leaf $\ell$ let $f_\ell$ denote the leaf prediction and $\mathrm{path}(\ell) = (v_1, \ldots, v_{D_\ell})$ the sequence of internal nodes from root to $\ell$. For each $v \in \mathrm{path}(\ell)$ with split feature $j_v$ and threshold $s_v$, let
+\[
+  q_v \;:=\; \prb_{X_{j_v}}\{X_{j_v} \text{ on the } \ell\text{-side of } s_v\}, \qquad \tilde a_v(x) \;:=\; \indc\{x_{j_v} \text{ on the } \ell\text{-side at } v\} \in \{0, 1\},
+\]
+and write $\delta_v(x) := \tilde a_v(x) - q_v$. Assume the features along each $\mathrm{path}(\ell)$ are distinct; the algorithm extends to repeated features by combining their constraints, and the bound below is unaffected.
+
+\textbf{Step 1: Path factorization.} Decompose $f(x) = \sum_\ell f_\ell \indc\{x \text{ reaches } \ell\}$ and let $\beta_\ell(S; x) := \prb_{X_{N \setminus S}}\{(x_S, X_{N \setminus S}) \text{ reaches } \ell\}$. Then
+\[
+  v_x(S) \;=\; \expc_{X_{N \setminus S}}[f(x_S, X_{N \setminus S})] \;=\; \sum_\ell f_\ell \cdot \beta_\ell(S; x).
+\]
+The hybrid row reaches $\ell$ iff at every $v \in \mathrm{path}(\ell)$, the active value of $j_v$ lies on the $\ell$-side: $x_{j_v}$ if $j_v \in S$ (deterministic), $X_{j_v}$ if $j_v \notin S$ (random under the marginal). Under the marginal-distribution interventional formulation, $\{X_{j_v} : j_v \notin S\}$ is a collection of mutually independent random variables. With path features distinct, the $\ell$-direction events at distinct $v$ are independent, so
+\[
+  \beta_\ell(S; x) \;=\; \prod_{v \in \mathrm{path}(\ell)} \pi_v(S; x), \qquad \pi_v(S; x) \;:=\; q_v + \indc\{j_v \in S\}\, \delta_v(x).
+\]
+($\pi_v = \tilde a_v$ when $j_v \in S$ and $\pi_v = q_v$ otherwise.)
+
+\textbf{Step 2: Per-leaf SHAP contribution.} Define
+\[
+  \Phi_{\ell, i}(x) \;:=\; \sum_{S \subseteq N \setminus \{i\}} w(|S|) [\beta_\ell(S \cup \{i\}; x) - \beta_\ell(S; x)], \qquad w(k) \;:=\; \frac{k!\,(p-k-1)!}{p!}.
+\]
+For $j_v \neq i$: $\pi_v(S \cup \{i\}; x) = \pi_v(S; x)$. So if $i \notin \{j_v : v \in \mathrm{path}(\ell)\}$, the difference vanishes and $\Phi_{\ell, i}(x) = 0$. Otherwise let $v_i$ be the unique path node with $j_{v_i} = i$; only the $v_i$ factor changes:
+\[
+  \beta_\ell(S \cup \{i\}; x) - \beta_\ell(S; x) \;=\; \bigl[\pi_{v_i}(S \cup \{i\}; x) - \pi_{v_i}(S; x)\bigr] \prod_{v \neq v_i} \pi_v(S; x) \;=\; \delta_{v_i}(x) \prod_{v \neq v_i} \pi_v(S; x).
+\]
+The factor $\delta_{v_i}(x)$ equals $1 - q_{v_i}$ when $x$ takes the $\ell$-direction at $v_i$ and $-q_{v_i}$ otherwise, covering both cases of $\tilde a_{v_i}$. Hence
+\[
+  \Phi_{\ell, i}(x) \;=\; \delta_{v_i}(x) \cdot U_\ell^{(i)}(x), \qquad U_\ell^{(i)}(x) \;:=\; \sum_{S \subseteq N \setminus \{i\}} w(|S|) \prod_{v \neq v_i} \pi_v(S; x).
+\]
+
+\textbf{Step 3: Reducing $U_\ell^{(i)}(x)$ to a generating function.} Let $J_\ell^{(i)} := \{j_v : v \in \mathrm{path}(\ell), v \neq v_i\}$ (size $d := D_\ell - 1$, distinct). Expanding the product:
+\[
+  \prod_{v \neq v_i} \pi_v(S; x) \;=\; \prod_{v \neq v_i} \bigl[q_v + \indc\{j_v \in S\} \delta_v(x)\bigr] \;=\; \sum_{T \subseteq J_\ell^{(i)}} \indc\{T \subseteq S\} \prod_{j \in T} \delta_{v(j)}(x) \prod_{j \in J_\ell^{(i)} \setminus T} q_{v(j)},
+\]
+where $v(j)$ is the path node testing $j$. Substituting and switching the order of summation:
+\[
+  U_\ell^{(i)}(x) \;=\; \sum_{T \subseteq J_\ell^{(i)}} \prod_{j \in T} \delta_{v(j)}(x) \prod_{j \in J_\ell^{(i)} \setminus T} q_{v(j)} \cdot \sum_{S \supseteq T,\, S \subseteq N \setminus \{i\}} w(|S|).
+\]
+The inner sum over $S$ counts how many $S \supseteq T$ have $|S| = |T| + k$, namely $\binom{p - |T| - 1}{k}$ (we choose $k$ additional elements from $N \setminus T \setminus \{i\}$, regardless of whether they lie in $J_\ell^{(i)} \setminus T$ or outside $J_\ell^{(i)}$). Therefore the inner sum equals
+\[
+  \tilde W(|T|) \;:=\; \sum_{k = 0}^{p - |T| - 1} \binom{p - |T| - 1}{k}\, w(|T| + k),
+\]
+depending only on $|T|$. Grouping the outer sum by $|T| = t$:
+\[
+  U_\ell^{(i)}(x) \;=\; \sum_{t = 0}^{d} \tilde W(t) \cdot c_t^{(i)}, \qquad c_t^{(i)} \;:=\; \sum_{T \subseteq J_\ell^{(i)},\, |T| = t} \prod_{j \in T} \delta_{v(j)}(x) \prod_{j \in J_\ell^{(i)} \setminus T} q_{v(j)}.
+\]
+The coefficients $\{c_t^{(i)}\}_{t = 0}^{d}$ are exactly the coefficients of the polynomial
+\[
+  P_\ell^{(i)}(z) \;:=\; \prod_{j \in J_\ell^{(i)}} \bigl(q_{v(j)} + \delta_{v(j)}(x)\, z\bigr) \;=\; \sum_{t = 0}^{d} c_t^{(i)} z^t,
+\]
+since the coefficient of $z^t$ in this product is the sum over choices of $t$ factors contributing $\delta z$ (the rest contributing $q$).
+
+\textbf{Step 4: Polynomial-time DP per leaf.} Build the master polynomial along the entire path:
+\[
+  \bar P_\ell(z) \;:=\; \prod_{v \in \mathrm{path}(\ell)} \bigl(q_v + \delta_v(x)\, z\bigr) \;=\; \sum_{t = 0}^{D_\ell} C_t z^t.
+\]
+Multiply factors one at a time: starting with the constant polynomial $1$, multiplying by one new factor $(q + \delta z)$ updates a degree-$k$ polynomial to a degree-$(k+1)$ polynomial via $C_k^{\mathrm{new}} = q\, C_k + \delta\, C_{k-1}$ (with the convention $C_{-1} = C_{k+1} = 0$ on the boundary), taking $O(k+1)$ scalar operations. The full master polynomial costs $\sum_{k=0}^{D_\ell - 1} O(k+1) = O(D_\ell^2)$ time and $O(D_\ell)$ memory.
+
+For each path feature $i$ (i.e., each path node $v_i$), recover
+\[
+  P_\ell^{(i)}(z) \;=\; \bar P_\ell(z) \,/\, (q_{v_i} + \delta_{v_i}(x)\, z)
+\]
+by synthetic division: a degree-$D_\ell$ polynomial divided by a degree-$1$ polynomial in $O(D_\ell)$ time. (When $\delta_{v_i}(x) = 0$ the divisor is the constant $q_{v_i}$ and the division reduces to scaling; if both are zero, $\delta_{v_i}(x) = 0$ already gives $\Phi_{\ell, i}(x) = 0$, and no division is needed.) Then $U_\ell^{(i)}(x) = \sum_{t = 0}^{d} \tilde W(t) c_t^{(i)}$ takes $O(D_\ell)$ time, and $\Phi_{\ell, i}(x) = \delta_{v_i}(x) \cdot U_\ell^{(i)}(x)$. Across the $D_\ell$ path features at this leaf: $D_\ell \cdot O(D_\ell) = O(D_\ell^2)$ time. Per-leaf total: $O(D_\ell^2)$ time and $O(D_\ell)$ memory.
+
+\textbf{Step 5: Total cost.} The constants $\tilde W(t)$ for $t = 0, \ldots, D$ depend only on $p$ and $D$ (not on the tree or $x$); precompute them in $O(D^2)$ time once and reuse across all leaves and trees. Across $L$ leaves the per-tree cost is $O(L D^2)$ time. The recursive implementation of Lundberg et al.\ (2020) traverses the tree depth-first, sharing the path-state polynomial across siblings; this gives $O(D^2)$ memory at any point. Accumulating $\phi_i(v_x) = \sum_\ell f_\ell\, \Phi_{\ell, i}(x)$ over leaves takes $O(L)$ additions per feature; only path features have nonzero contribution, and the summation cost is dominated by $O(L D^2)$. For an ensemble of $B$ trees: $O(B L D^2)$ time, $O(D^2)$ memory.
+\end{proof}
+
+Implementations are in the \texttt{shap} Python package and the \texttt{treeshap} R package, both supporting \texttt{xgboost}, \texttt{lightgbm}, \texttt{catboost}, and \texttt{ranger}.
+
+\begin{suppremark}[SHAP vs.\ MDI and PI]
+SHAP gives per-row attributions that sum to the prediction; MDI gives a single global score per feature; PI gives a degraded-baseline global score. Under feature correlation, interventional SHAP, MDI, and PI can disagree substantially; conditional SHAP and PI share an independence assumption and the same blind spots. SHAP has become the default for tree-model interpretation pipelines because TreeSHAP makes exact computation cheap and the per-row decomposition supports both local explanations and global summaries (mean $|\phi_i|$ across rows).
+\end{suppremark}
+
+\section{Gradient Boosting}\label{sec:5.4}
+
+Bagging and Random Forest (\S 5.3) build trees in parallel, each fit on a bootstrap sample. Boosting builds trees sequentially: each new tree corrects the residual error of the current ensemble. Gradient boosting (Friedman, 2001) frames this iteration as gradient descent in function space, generalizing AdaBoost (Freund and Schapire, 1997) to arbitrary differentiable losses.
+
+\subsection{Forward stagewise additive modeling}\label{sec:5.4.1}
+
+\textbf{Setup.} Training data $\{(x_i, y_i)\}_{i=1}^{n}$. The loss $\ell(y, F)$ takes a label $y$ and a real-valued raw-score prediction $F$; for classification, $F$ is mapped to a probability by a link function (typically logistic). Empirical risk: $\widehat{\mathcal{R}}(f) := \tfrac{1}{n} \sum_{i} \ell(y_i, f(x_i))$. We minimize $\widehat{\mathcal{R}}$ over an additive class
+\[
+  \mathcal{F}_M \;=\; \Bigl\{\sum_{m=1}^{M} \nu_m h_m : h_m \in \mathcal{H},\, \nu_m \in \mathbb{R}\Bigr\}
+\]
+of $M$-term sums of weak learners (typically shallow trees). Joint optimization over all $M$ terms is intractable; the forward stagewise approximation greedily adds one term per round.
+
+\begin{definition}[Forward stagewise additive modeling]\label{def:fsam}
+Initialize $\hat f^{(0)} := \arg\min_{c} \tfrac{1}{n} \sum_{i} \ell(y_i, c)$ (the constant minimizing empirical risk). For $m = 1, \ldots, M$, solve
+\[
+  (\hat \nu_m, \hat h_m) \;:=\; \arg\min_{\nu \in \mathbb{R},\, h \in \mathcal{H}} \frac{1}{n} \sum_{i=1}^{n} \ell\bigl(y_i,\, \hat f^{(m-1)}(x_i) + \nu\, h(x_i)\bigr),
+\]
+and update $\hat f^{(m)} := \hat f^{(m-1)} + \hat \nu_m \hat h_m$.
+\end{definition}
+
+For squared loss the round-$m$ minimization decouples: $\hat \nu_m \hat h_m$ is the least-squares regressor of the residuals $y_i - \hat f^{(m-1)}(x_i)$ on $x_i$. For other losses the joint optimization in Definition~\ref{def:fsam} remains intractable. Friedman's gradient boosting circumvents this by approximating the descent direction.
+
+\textbf{Functional gradient.} View the empirical risk as a function of the prediction vector $F \in \mathbb{R}^n$ with $F_i := f(x_i)$:
+\[
+  L(F) \;:=\; \sum_{i=1}^{n} \ell(y_i, F_i), \qquad \widehat{\mathcal{R}}(f) \;=\; L(F)/n.
+\]
+The gradient $\nabla L \in \mathbb{R}^n$ has $i$-th component $\partial \ell(y_i, F_i) / \partial F_i$.
+
+\begin{definition}[Pseudo-residual]\label{def:pseudo-residual}
+At round $m$, the \emph{pseudo-residual} at training row $i$ is
+\[
+  r_i^{(m)} \;:=\; -\frac{\partial \ell(y_i, F)}{\partial F}\bigg|_{F = \hat f^{(m-1)}(x_i)}.
+\]
+The vector $r^{(m)} = (r_i^{(m)})_{i=1}^{n}$ equals $-\nabla L(\hat F^{(m-1)})$, the negative functional gradient of empirical risk at the current ensemble's predictions on the training rows.
+\end{definition}
+
+\begin{definition}[Gradient boosting]\label{def:gradient-boosting}
+Initialize $\hat f^{(0)}$ as in Definition~\ref{def:fsam}. For $m = 1, \ldots, M$:
+\begin{enumerate}
+\item Compute pseudo-residuals $r_i^{(m)}$ via Definition~\ref{def:pseudo-residual}.
+\item Fit a weak learner to the residuals: $\hat h_m \in \arg\min_{h \in \mathcal{H}} \sum_{i} (r_i^{(m)} - h(x_i))^2$.
+\item Choose a step size $\hat \nu_m$ by line search ($\arg\min_{\nu} \sum_{i} \ell(y_i, \hat f^{(m-1)}(x_i) + \nu \hat h_m(x_i))$) or by a fixed shrinkage constant.
+\item Update $\hat f^{(m)} := \hat f^{(m-1)} + \hat \nu_m \hat h_m$.
+\end{enumerate}
+\end{definition}
+
+\begin{lemma}[Functional gradient and least squares]\label{lem:steepest-descent}
+The directional derivative of $\widehat{\mathcal{R}}$ at $\hat f^{(m-1)}$ in the direction $h$ equals $-\tfrac{1}{n}\langle r^{(m)}, h \rangle$, where $\langle r, h \rangle := \sum_{i} r_i h(x_i)$. Hence maximizing the rate of empirical-risk decrease over $h \in \mathcal{H}$ amounts to maximizing $\langle r^{(m)}, h \rangle$. Among $h$ in any fixed-radius $\ell_2$-ball, this is achieved by the least-squares fit $\hat h_m \in \arg\min_{h \in \mathcal{H}} \sum_{i} (r_i^{(m)} - h(x_i))^2$.
+\end{lemma}
+
+\begin{proof}
+The directional derivative is
+\[
+  \frac{d}{d\nu}\bigg|_{\nu = 0} \widehat{\mathcal{R}}\bigl(\hat f^{(m-1)} + \nu h\bigr) \;=\; \frac{1}{n} \sum_{i} \frac{\partial \ell}{\partial F}\bigl(y_i, \hat F^{(m-1)}_i\bigr) \cdot h(x_i) \;=\; -\frac{1}{n} \langle r^{(m)}, h \rangle.
+\]
+Expanding the least-squares objective: $\sum_{i} (r_i - h(x_i))^2 = \|r\|_2^2 - 2 \langle r, h \rangle + \|h\|_2^2$. For $h$ in a fixed-radius $\ell_2$-ball, $\|h\|_2$ is held constant, so minimizing this objective is equivalent to maximizing $\langle r, h \rangle$, which by the directional-derivative formula maximizes the rate of empirical-risk decrease.
+\end{proof}
+
+\subsection{Pseudo-residuals for common losses}\label{sec:5.4.2}
+
+The pseudo-residual depends on the loss. Standard cases follow from direct differentiation.
+
+\textbf{Squared loss.} For regression with $\ell(y, F) = \tfrac{1}{2}(y - F)^2$, $\partial \ell / \partial F = -(y - F)$, so the pseudo-residual is the ordinary residual:
+\[
+  r_i^{(m)} \;=\; y_i - \hat f^{(m-1)}(x_i).
+\]
+Squared-loss gradient boosting recovers Definition~\ref{def:fsam} exactly: line search at round $m$ gives $\hat \nu_m = 1$, since the residual fit is already on the right scale.
+
+\textbf{Absolute loss.} For robust regression with $\ell(y, F) = |y - F|$, $\partial \ell / \partial F = -\mathrm{sign}(y - F)$ (with $\mathrm{sign}(0) := 0$ at the kink), so
+\[
+  r_i^{(m)} \;=\; \mathrm{sign}\bigl(y_i - \hat f^{(m-1)}(x_i)\bigr) \in \{-1, 0, 1\}.
+\]
+Each tree fits the sign of the residual: $+1$ for rows the ensemble underpredicts, $-1$ for rows it overpredicts. The line-search step then sets each leaf value of $\hat h_m$ to the median of the original residuals within the leaf (the median minimizes absolute loss over a constant predictor), recovering the median-tree variant of Friedman (2001).
+
+\textbf{Huber loss.} For robust regression, the Huber loss with threshold $\delta > 0$ is
+\[
+  \ell_\delta(y, F) \;=\; \begin{cases} \tfrac{1}{2}(y - F)^2, & |y - F| \leqslant \delta, \\ \delta\bigl(|y - F| - \delta/2\bigr), & |y - F| > \delta. \end{cases}
+\]
+The two branches and their first derivatives match at $|y - F| = \delta$, so $\ell_\delta$ is $C^1$ everywhere. Differentiating,
+\[
+  \frac{\partial \ell_\delta}{\partial F} \;=\; \begin{cases} -(y - F), & |y - F| \leqslant \delta, \\ -\delta\,\mathrm{sign}(y - F), & |y - F| > \delta, \end{cases}
+\]
+so the pseudo-residual is the residual clipped to $[-\delta, \delta]$:
+\[
+  r_i^{(m)} \;=\; \mathrm{sign}\bigl(y_i - \hat f^{(m-1)}(x_i)\bigr) \cdot \min\bigl(|y_i - \hat f^{(m-1)}(x_i)|,\, \delta\bigr).
+\]
+Rows within $\delta$ of the current prediction contribute their full residual (squared-loss regime); rows beyond $\delta$ contribute the clipped magnitude $\pm \delta$ (absolute-loss regime). The threshold $\delta$ interpolates between the two: $\delta \to \infty$ recovers squared loss, $\delta \to 0$ recovers absolute loss (up to scale). The line-search leaf value is the Huber M-estimator of in-leaf residuals, with no closed form; Friedman (2001) approximates it by initializing at the leaf-residual median and taking one Huber-Newton step.
+
+\textbf{Quantile loss.} For quantile regression at level $\tau \in (0, 1)$, the asymmetric pinball loss is
+\[
+  \ell_\tau(y, F) \;=\; \begin{cases} \tau(y - F), & y \geqslant F, \\ (1 - \tau)(F - y), & y < F. \end{cases}
+\]
+Differentiating (with the convention $\partial \ell_\tau / \partial F |_{y = F} := 0$),
+\[
+  \frac{\partial \ell_\tau}{\partial F} \;=\; \indc\{y < F\} - \tau,
+\]
+so the pseudo-residual is constant within each side of the current prediction:
+\[
+  r_i^{(m)} \;=\; \tau - \indc\bigl\{y_i < \hat f^{(m-1)}(x_i)\bigr\} \;\in\; \{\tau,\, \tau - 1\}.
+\]
+Rows above the current prediction contribute $\tau$, rows below contribute $\tau - 1$. The line-search leaf value is the empirical $\tau$-quantile of in-leaf residuals (the global minimizer of $\sum \ell_\tau$ over a constant predictor). Setting $\tau = 0.5$ recovers absolute loss up to a factor of $1/2$; running boosters at $\tau \in \{0.05, 0.5, 0.95\}$ produces a quantile-regression triplet for prediction intervals.
+
+\textbf{Binomial deviance (logistic loss).} For binary classification with $y \in \{0, 1\}$, the model predicts a raw score $F$ that maps to probability $p = \sigma(F) = 1/(1 + e^{-F})$. The negative log-likelihood is
+\[
+  \ell(y, F) \;=\; -y F + \log(1 + e^F).
+\]
+Differentiating: $\partial \ell / \partial F = -y + \sigma(F) = \sigma(F) - y$, so
+\[
+  r_i^{(m)} \;=\; y_i - \sigma\bigl(\hat f^{(m-1)}(x_i)\bigr) \;=\; y_i - \hat p_i^{(m-1)},
+\]
+the difference between the observed label and the current predicted probability, with values in $[-1, 1]$. After fitting $\hat h_m$ to these pseudo-residuals, a single Newton step on the leaf-level binomial likelihood gives the closed-form leaf value
+\[
+  c_{\mathrm{leaf}}^{*} \;=\; \frac{\sum_{i \in \mathrm{leaf}} r_i^{(m)}}{\sum_{i \in \mathrm{leaf}} \hat p_i^{(m-1)} (1 - \hat p_i^{(m-1)})},
+\]
+since $\partial^2 \ell / \partial F^2 = p(1 - p)$ (the Hessian's leaf-restricted Newton-Raphson update; Friedman, 2001).
+
+\textbf{Multinomial deviance.} For $K$-class classification with $y \in \{1, \ldots, K\}$, the model maintains a vector of $K$ raw scores per row, $F = (F_1, \ldots, F_K)$. Predictions are softmax probabilities $p_k = e^{F_k} / \sum_{k'} e^{F_{k'}}$. The negative log-likelihood is
+\[
+  \ell(y, F) \;=\; -F_y + \log \sum_{k=1}^{K} e^{F_k}.
+\]
+Differentiating with respect to each $F_k$:
+\[
+  \frac{\partial \ell}{\partial F_k} \;=\; -\indc\{y = k\} + \frac{e^{F_k}}{\sum_{k'} e^{F_{k'}}} \;=\; \sigma_k(F) - \indc\{y = k\},
+\]
+giving per-class pseudo-residuals
+\[
+  r_{i, k}^{(m)} \;=\; \indc\{y_i = k\} - \sigma_k\bigl(\hat F_i^{(m-1)}\bigr).
+\]
+Each round fits $K$ trees $\hat h_{m, 1}, \ldots, \hat h_{m, K}$ (one per class) to the per-class pseudo-residuals; each per-class score updates independently, $\hat F_k^{(m)} := \hat F_k^{(m-1)} + \nu \hat h_{m, k}$. The leaf-value Newton step uses the multinomial Hessian; Friedman (2001) keeps only the $K$ diagonal entries for tractability.
+
+\subsection{Shrinkage, subsampling, and early stopping}\label{sec:5.4.3}
+
+Boosting fits training risk arbitrarily well as $M$ grows; the ensemble's effective complexity must be controlled. Modern implementations combine three regularizers.
+
+\begin{definition}[Regularizers for gradient boosting]\label{def:gb-regularizers}
+Practical implementations of Definition~\ref{def:gradient-boosting} augment it with:
+\begin{itemize}
+\item \emph{Shrinkage}: replace the round-$m$ step size $\hat \nu_m$ with a fixed constant $\nu \in (0, 1]$.
+\item \emph{Row subsampling}: at round $m$, fit $\hat h_m$ to a uniformly random subset of $\eta n$ rows, $\eta \in (0, 1]$.
+\item \emph{Early stopping}: monitor validation loss as $m$ grows; halt at the first rise (or plateau).
+\end{itemize}
+\end{definition}
+
+\paragraph{Shrinkage ($\nu$).}
+Smaller $\nu$ slows convergence (more rounds are needed to reach a given training loss) but produces a smoother ensemble that generalizes better. The $\nu \to 0$ limit corresponds to gradient flow on the empirical risk; $\nu = 1$ recovers Definition~\ref{def:gradient-boosting}'s line-search variant. Typical values $\nu \in [0.01, 0.3]$.
+
+\paragraph{Row subsampling ($\eta$).}
+Friedman's stochastic gradient boosting (2002) reduces tree-to-tree correlation, lowering ensemble variance via the same mechanism as bagging (Lemma~\ref{lem:avg-variance}). Modern implementations also subsample columns per tree or per node (\texttt{xgboost}'s \texttt{colsample\_bytree} and \texttt{colsample\_bynode}, analogous to RF's \texttt{mtry}; \S 5.3.3). Typical values $\eta \in [0.5, 1.0]$.
+
+\paragraph{Early stopping.}
+Mirrors CV-based $\alpha$ selection in cost-complexity pruning (\S 5.2.3): a held-out validation fold determines when the ensemble's complexity has saturated. With small $\nu$ and a generous $M_{\max}$, validation-tracked early stopping is the standard mechanism for choosing $M$.
+
+The three address distinct overfitting modes: shrinkage limits per-step magnitude, subsampling decorrelates the trees, and early stopping bounds total ensemble complexity. Standard practice combines all three, exploring $\nu \in \{0.01, 0.05, 0.1\}$ and $\eta \in \{0.5, 0.7, 1.0\}$ with $M_{\max}$ effectively infinite (controlled by early stopping).
+
+\section{XGBoost: Second-Order Boosting with Regularization}\label{sec:5.5}
+
+XGBoost (Chen and Guestrin, 2016) refines gradient boosting in two coupled ways: a regularized per-tree objective with explicit penalties on leaf count and leaf-weight magnitude, and a second-order Taylor expansion that yields closed-form leaf weights and a split-gain criterion. The same mathematical core powers LightGBM (Ke et al., 2017) and CatBoost (Prokhorenkova et al., 2018).
+
+\subsection{Second-order Taylor expansion of the per-stage loss}\label{sec:5.5.1}
+
+\textbf{Regularized per-stage objective.} At round $m$, gradient boosting (Definition~\ref{def:gradient-boosting}) chooses the next weak learner $h_m$ to decrease the empirical risk. XGBoost augments the round-$m$ objective with an explicit complexity penalty on the tree itself:
+\[
+  \mathcal{L}^{(m)}(h_m) \;:=\; \sum_{i=1}^{n} \ell\bigl(y_i,\, \hat F_i^{(m-1)} + h_m(x_i)\bigr) \;+\; \Omega(h_m), \qquad \Omega(h_m) \;:=\; \gamma\, T_m + \tfrac{1}{2} \lambda \sum_{j=1}^{T_m} w_{m, j}^2,
+\]
+where $T_m$ is the number of leaves of $h_m$, $w_{m, j}$ is its $j$-th leaf value, and $\gamma, \lambda \geqslant 0$ are hyperparameters penalizing leaf count and squared leaf-weight magnitude.
+
+\textbf{Quadratic approximation.} Expand the loss to second order around $\hat F_i^{(m-1)}$. Write
+\[
+  g_i \;:=\; \frac{\partial \ell(y_i, F)}{\partial F}\bigg|_{F = \hat F_i^{(m-1)}}, \qquad H_i \;:=\; \frac{\partial^2 \ell(y_i, F)}{\partial F^2}\bigg|_{F = \hat F_i^{(m-1)}}
+\]
+for the per-row gradient and Hessian (assumed positive in a neighborhood of the optimum). Then
+\[
+  \ell\bigl(y_i, \hat F_i^{(m-1)} + h_m(x_i)\bigr) \;\approx\; \ell\bigl(y_i, \hat F_i^{(m-1)}\bigr) \;+\; g_i\, h_m(x_i) \;+\; \tfrac{1}{2} H_i\, h_m(x_i)^2.
+\]
+Dropping the constant $\sum_i \ell(y_i, \hat F_i^{(m-1)})$ (independent of $h_m$),
+\[
+  \tilde{\mathcal{L}}^{(m)}(h_m) \;=\; \sum_{i=1}^{n} \bigl[g_i\, h_m(x_i) + \tfrac{1}{2} H_i\, h_m(x_i)^2\bigr] \;+\; \gamma T_m \;+\; \tfrac{1}{2} \lambda \sum_{j=1}^{T_m} w_{m, j}^2.
+\]
+$\tilde{\mathcal{L}}^{(m)}$ is quadratic in the leaf-value vector once $h_m$'s tree structure is fixed and admits a closed-form minimizer.
+
+\subsection{Closed-form leaf weights and split gain}\label{sec:5.5.2}
+
+\textbf{Per-leaf statistics.} A regression tree $h_m$ with $T$ leaves partitions $\mathcal{X}$ into regions $R_1, \ldots, R_T$ and assigns leaf value $w_j$ to $R_j$, so $h_m(x) = \sum_j w_j \indc\{x \in R_j\}$. Let $I_j := \{i : x_i \in R_j\}$ be the rows reaching leaf $j$, and define
+\[
+  G_j \;:=\; \sum_{i \in I_j} g_i, \qquad H_j \;:=\; \sum_{i \in I_j} H_i.
+\]
+Substituting $h_m(x_i) = w_j$ for $i \in I_j$ and grouping by leaf,
+\[
+  \tilde{\mathcal{L}}^{(m)} \;=\; \sum_{j=1}^{T} \Bigl[G_j w_j + \tfrac{1}{2}(H_j + \lambda)\, w_j^2\Bigr] \;+\; \gamma T.
+\]
+
+\begin{lemma}[Closed-form optimal leaf weights]\label{lem:xgb-leaf-weights}
+For a fixed tree structure (leaves $\{R_j\}$), the leaf weights minimizing $\tilde{\mathcal{L}}^{(m)}$ are
+\[
+  w_j^* \;=\; -\frac{G_j}{H_j + \lambda},
+\]
+yielding the structure score
+\[
+  \tilde{\mathcal{L}}^{(m)*} \;=\; -\tfrac{1}{2} \sum_{j=1}^{T} \frac{G_j^2}{H_j + \lambda} \;+\; \gamma T.
+\]
+\end{lemma}
+
+\begin{proof}
+$\tilde{\mathcal{L}}^{(m)}$ is separable in the $w_j$. For each $j$, the per-leaf objective $G_j w + \tfrac{1}{2}(H_j + \lambda) w^2$ is a strictly convex quadratic in $w$ (since $H_j + \lambda > 0$). Setting the derivative to zero: $G_j + (H_j + \lambda) w = 0$, giving $w_j^* = -G_j/(H_j + \lambda)$. Substituting back,
+\[
+  G_j w_j^* + \tfrac{1}{2}(H_j + \lambda)(w_j^*)^2 \;=\; -\frac{G_j^2}{H_j + \lambda} + \frac{G_j^2}{2(H_j + \lambda)} \;=\; -\frac{G_j^2}{2(H_j + \lambda)}.
+\]
+Summing over leaves and adding $\gamma T$ gives the structure score.
+\end{proof}
+
+The structure score is the XGBoost analogue of within-tree SSE for regression CART (Definition~\ref{def:within-sse}), combining the second-order Taylor fit with explicit regularization.
+
+\begin{theorem}[XGBoost split gain]\label{thm:xgb-split-gain}
+Splitting a leaf $L$ (statistics $G_L, H_L$) into children $L_l, L_r$ (statistics $G_l, H_l, G_r, H_r$ with $G_L = G_l + G_r$, $H_L = H_l + H_r$) decreases the structure score by
+\[
+  \mathrm{Gain} \;=\; \tfrac{1}{2}\Bigl[\frac{G_l^2}{H_l + \lambda} + \frac{G_r^2}{H_r + \lambda} - \frac{G_L^2}{H_L + \lambda}\Bigr] \;-\; \gamma.
+\]
+A split is performed iff $\mathrm{Gain} > 0$.
+\end{theorem}
+
+\begin{proof}
+Before the split, leaf $L$ contributes $-\tfrac{1}{2} G_L^2 / (H_L + \lambda) + \gamma$ to $\tilde{\mathcal{L}}^{(m)*}$ (one $\gamma$ per leaf). After the split, the two children together contribute $-\tfrac{1}{2}[G_l^2/(H_l + \lambda) + G_r^2/(H_r + \lambda)] + 2\gamma$. The change in structure score is
+\[
+  \Delta\tilde{\mathcal{L}}^{(m)*} \;=\; -\tfrac{1}{2}\Bigl[\frac{G_l^2}{H_l + \lambda} + \frac{G_r^2}{H_r + \lambda} - \frac{G_L^2}{H_L + \lambda}\Bigr] \;+\; \gamma.
+\]
+Gain is the negative of this change. The split improves the structure score only when Gain $> 0$.
+\end{proof}
+
+\textbf{Recovery of CART's SSE gain.} For squared loss with no regularization ($\lambda = \gamma = 0$): $g_i = -(y_i - \hat F_i^{(m-1)}) = -r_i^{(m)}$ and $H_i = 1$, so $G_j = -\sum_{i \in I_j} r_i^{(m)} = -n_j \bar r_j$ and $H_j = n_j$. Then $G_j^2/(H_j + \lambda) = n_j \bar r_j^{\,2}$, and Gain $= \tfrac{1}{2}[n_l \bar r_l^{\,2} + n_r \bar r_r^{\,2} - n_L \bar r_L^{\,2}]$. The algebraic identity in Lemma~\ref{lem:split-gain}'s proof gives Gain $= \tfrac{1}{2} \cdot n_l n_r (\bar r_l - \bar r_r)^2 / n_L$, the SSE gain of Lemma~\ref{lem:split-gain} up to a factor of $1/2$. XGBoost on squared loss is CART on residuals, with the L1/L2 regularizers turned off.
+
+\subsection{Regularization knobs and modern variants}\label{sec:5.5.3}
+
+The second-order framework exposes structural hyperparameters that complement the \S 5.4.3 regularizers.
+
+\paragraph{$\lambda$ (L2 leaf-weight penalty).}
+Appears in the denominator of $w_j^* = -G_j / (H_j + \lambda)$ and in every term of the structure score. Larger $\lambda$ shrinks every leaf weight toward zero and lowers the per-leaf structure-score contribution, making splits less attractive. Acts as ridge regularization on the boosted ensemble's per-leaf adjustments.
+
+\paragraph{$\alpha$ (L1 leaf-weight penalty).}
+Adds $\alpha \sum_j |w_j|$ to $\Omega$. The optimal leaf weight becomes the soft-thresholded $w_j^* = -\mathrm{soft}_\alpha(G_j) / (H_j + \lambda)$ with $\mathrm{soft}_\alpha(x) = \mathrm{sign}(x) \cdot \max(|x| - \alpha,\, 0)$ (compare Unit~2 \S 2.3.3 for soft-thresholding under Lasso). Promotes sparse leaf weights: leaves with $|G_j| < \alpha$ are zeroed out.
+
+\paragraph{$\gamma$ (per-leaf complexity penalty).}
+Acts as a minimum-gain threshold on splits. By Theorem~\ref{thm:xgb-split-gain}, a split is accepted iff $\tfrac{1}{2}[G_l^2/(H_l+\lambda) + G_r^2/(H_r+\lambda) - G_L^2/(H_L+\lambda)] > \gamma$. Larger $\gamma$ blocks marginal splits, producing shallower trees.
+
+\paragraph{Depth and \texttt{min\_child\_weight}.}
+\texttt{max\_depth} caps tree depth directly, bounding model flexibility per tree. \texttt{min\_child\_weight} requires $H_l, H_r \geqslant w_{\min}$ for any candidate split. For squared loss $H_i = 1$, so this is a minimum sample-count constraint per child; for other losses it weights samples by their Hessian (the per-row second-order information), preventing splits that isolate confidently-classified rows.
+
+\paragraph{Carry-overs from \S 5.4.3.}
+\texttt{eta} is XGBoost's name for the shrinkage $\nu$; \texttt{subsample} is the row fraction $\eta$; \texttt{colsample\_bytree} and \texttt{colsample\_bynode} extend RF-style feature subsampling (\S 5.3.3) to boosting. Validation-tracked early stopping picks $M$.
+
+\begin{suppremark}[LightGBM and CatBoost]
+LightGBM (Ke et al., 2017) bins continuous features into integer histograms with per-bin gradient and Hessian sums, plus gradient-based one-sided sampling (GOSS: keep large-gradient rows) and exclusive feature bundling (EFB: pack sparse mutually-exclusive features). CatBoost (Prokhorenkova et al., 2018) prevents target leakage in mean target encoding via \emph{ordered boosting}: each row's target statistic uses only rows preceding it in a random permutation. Both build on Theorem~\ref{thm:xgb-split-gain}'s objective; the differences lie in the splitting search, sampling, and categorical handling, not the objective itself.
+\end{suppremark}
+
+\subsection{Practical extensions to XGBoost-family boosting}\label{sec:5.5.4}
+
+XGBoost, LightGBM, and CatBoost share Theorem~\ref{thm:xgb-split-gain}'s gain formula but diverge in candidate-split search, missing-value routing, and categorical handling. The first three extensions below appear in every production tabular pipeline; the rest are situational.
+
+\paragraph{Histogram-based splitting.}
+Exact splitting sorts each feature in a node and scores all $n_I - 1$ cuts in $O(n_I \log n_I)$. Histogram methods bin each feature once into $B \approx 256$ integer bins and consider only bin-boundary cuts; per-feature per-node cost falls to $O(n_I + B)$. XGBoost's \texttt{tree\_method="hist"} is the default; LightGBM is histogram-only. The gain formula is unchanged.
+
+\begin{lemma}[Histogram split gain]\label{lem:xgb-hist-gain}
+Partition feature $X^{(j)}$ into bins $b = 1, \ldots, B$ with per-bin sums
+\[
+  G^{(b)} \;:=\; \sum_{i \in I_L,\, x_i^{(j)} \in b} g_i, \qquad H^{(b)} \;:=\; \sum_{i \in I_L,\, x_i^{(j)} \in b} H_i.
+\]
+For each boundary $b$, the cumulative sums $G_l = \sum_{b' \leqslant b} G^{(b')}$, $H_l = \sum_{b' \leqslant b} H^{(b')}$ substitute into Theorem~\ref{thm:xgb-split-gain}. All $B - 1$ gains follow in $O(B)$ after one $O(n_I)$ pass to populate $\{G^{(b)}, H^{(b)}\}$.
+\end{lemma}
+
+\begin{proof}
+Cumulative bin sums equal the row sums up to a boundary, so plugging them into Theorem~\ref{thm:xgb-split-gain} yields the gain at that boundary. Cumulative sums update incrementally in $b$.
+\end{proof}
+
+\paragraph{Missing-value handling.}
+XGBoost's \emph{default-direction} trick (Chen and Guestrin, 2016, \S 3.4) learns the routing of missing rows instead of imputing in preprocessing. For each candidate split, scan non-missing rows as usual; route all missing rows to the side that yields the larger gain.
+
+\begin{lemma}[Default-direction split gain]\label{lem:xgb-missing-gain}
+Let $(G_l^\circ, H_l^\circ)$, $(G_r^\circ, H_r^\circ)$ be the left/right sums over non-missing rows on the candidate feature, and $(G_M, H_M)$ the sums over missing rows in $I_L$. The optimal default-direction gain is $\max\{\mathrm{Gain}_l, \mathrm{Gain}_r\}$ with
+\[
+  \mathrm{Gain}_l \;:=\; \tfrac{1}{2}\Bigl[\frac{(G_l^\circ + G_M)^2}{H_l^\circ + H_M + \lambda} + \frac{(G_r^\circ)^2}{H_r^\circ + \lambda} - \frac{G_L^2}{H_L + \lambda}\Bigr] - \gamma,
+\]
+and $\mathrm{Gain}_r$ symmetric (sending $(G_M, H_M)$ to the right child).
+\end{lemma}
+
+\begin{proof}
+Fix a default direction; the child sums are as stated, so the gain is an instance of Theorem~\ref{thm:xgb-split-gain}. The optimum over the two directions is the larger of the two.
+\end{proof}
+
+\noindent Cost: two evaluations of Theorem~\ref{thm:xgb-split-gain} per candidate, plus one $O(|I_L|)$ pass to accumulate $(G_M, H_M)$.
+
+\paragraph{Native categorical handling.}
+One-hot encoding a $K$-level categorical creates $K$ binary features and forces axis-aligned splits to peel one level at a time, underfitting when the optimal split groups several levels into one leaf. The three majors handle categoricals natively:
+
+\begin{ctab}[0.9]
+\begin{tabular}{l p{0.65\linewidth}}
+\toprule
+\textbf{Library} & \textbf{Strategy} \\
+\midrule
+LightGBM & Sort levels by $G_k / (H_k + \lambda)$ and scan as continuous (Fisher's optimal partitioning). \\
+CatBoost & Ordered target statistics: per-row target encoding using only rows preceding it in a random permutation (the same device as ordered boosting). \\
+XGBoost ($\geqslant$ 2.0) & Sort levels by gradient ratio and scan as continuous (\texttt{enable\_categorical=TRUE}). \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent Sorting by gradient ratio reduces a $K$-level categorical to a continuous scan, recovering the $O(B)$ per-node cost of Lemma~\ref{lem:xgb-hist-gain}. CatBoost's permutation alone defends against target leakage in the encoding itself; the sort-by-gradient strategies in LightGBM and XGBoost still need an external CV-aware split for safe target encoding.
+
+\begin{suppremark}[Further extensions]
+\textbf{Monotonic constraints} (\texttt{monotone\_constraints}) reject splits whose optimal leaf weights $w_j^*$ violate user-specified per-feature monotonicity; required in regulated settings such as credit scoring and insurance pricing.
+\textbf{DART} (Rashmi and Gilad-Bachrach, 2015) replaces shrinkage with random tree dropout during boosting; available as \texttt{booster="dart"} in XGBoost and natively in LightGBM.
+\textbf{NGBoost} (Duan et al., 2020) predicts a parametric conditional distribution rather than a point estimate, supplying calibrated uncertainty for downstream decisions; implemented in the separate \texttt{ngboost} package.
+\textbf{Survival objectives} (\texttt{objective="survival:cox"}, \texttt{"survival:aft"}) extend XGBoost to right-censored time-to-event outcomes; standard in biostatistics and insurance loss modeling.
+\end{suppremark}
+
+\section{Implementation Tour}\label{sec:5.6}
+
+The theory of \S\S\ref{sec:5.2}--\ref{sec:5.5} maps onto four production libraries (\texttt{rpart}, \texttt{ranger}, \texttt{xgboost}, the \texttt{tidymodels} unified API) and a from-scratch CART. All chunks use \texttt{modeldata::credit\_data} (13 predictors, mixed numeric and categorical) so library comparisons hold the data fixed.
+
+\subsection{CART with rpart}\label{sec:5.6.1}
+
+\texttt{rpart} (Therneau and Atkinson) implements CART with cost-complexity pruning, defaulting to Gini for classification and residual SSE for regression (\S\S\ref{sec:5.2.1}--\ref{sec:5.2.2}). Grow to a permissive size (\texttt{cp = 0}), then prune at the complexity selected from the built-in 10-fold CV table (\texttt{xval = 10}); pick the \texttt{xerror} minimizer or the smaller 1-SE tree.
+
+<<rpart-tour, fig.width=9, fig.height=4.5, out.width="0.88\\linewidth">>=
+library(rpart); library(rpart.plot)
+data("credit_data", package = "modeldata")
+credit <- na.omit(credit_data)
+
+set.seed(1)
+fit_full <- rpart(Status ~ ., data = credit, method = "class",
+                  control = rpart.control(cp = 0, xval = 10, maxdepth = 4))
+
+# Cost-complexity table: each row is a pruned subtree; xerror is
+# cross-validated relative error (root error normalized to 1)
+cptab <- fit_full$cptable
+print(cptab)
+
+# Prune at the complexity minimizing xerror
+cp_best    <- cptab[which.min(cptab[, "xerror"]), "CP"]
+fit_pruned <- prune(fit_full, cp = cp_best)
+
+rpart.plot(fit_pruned, type = 5, extra = 2, faclen = 3)
+@
+
+\begin{suppremark}[\texttt{cp} normalization and the 1-SE rule]
+\texttt{rpart}'s \texttt{cp} is the cost-complexity penalty $\alpha$ divided by the root risk $R(T_0)$ (\S\ref{sec:5.2.3}), and \texttt{xerror} reports cross-validated risk on the same normalization, so both columns are dimensionless. The 1-SE rule picks the simplest tree with \texttt{xerror} within \texttt{xstd} of the minimum, trading a small upward bias in CV error for a substantially smaller tree; \texttt{xstd} sits in the same table column for the lookup.
+\end{suppremark}
+
+\subsection{Random Forest with ranger}\label{sec:5.6.2}
+
+\texttt{ranger} (Wright and Ziegler, 2017) is a C++ Random Forest implementation with native OOB error (Lemma~\ref{lem:oob-prob}) and permutation importance (\S\ref{sec:5.3.4}). The two primary hyperparameters are \texttt{mtry} (per-split feature subsample size $m$, \S\ref{sec:5.3.3}) and \texttt{num.trees} (ensemble size $B$, default 500); OOB error stabilizes after a few hundred trees and acts as a free held-out estimate.
+
+<<ranger-tour>>=
+library(ranger)
+data("credit_data", package = "modeldata")
+credit <- na.omit(credit_data)
+
+set.seed(1)
+fit_rf <- ranger(Status ~ ., data = credit, num.trees = 500,
+                 mtry = floor(sqrt(ncol(credit) - 1)),
+                 importance = "permutation")
+
+fit_rf$prediction.error                            # OOB classification error
+sort(importance(fit_rf), decreasing = TRUE)[1:6]   # top permutation-importance features
+@
+
+\begin{suppremark}[Tuning \texttt{mtry}]
+The defaults $m = \lceil\sqrt{p}\rceil$ (classification) and $m = \lfloor p/3 \rfloor$ (regression) (\S\ref{sec:5.3.3}) work well as starting points; sweep $m \in \{2, 4, 8, \ldots, p\}$ and select on OOB error for further gains. Larger $m$ reduces tree-to-tree decorrelation, returning toward bagging's variance reduction; smaller $m$ trades single-tree quality for stronger averaging.
+\end{suppremark}
+
+\subsection{Gradient boosting with xgboost}\label{sec:5.6.3}
+
+\texttt{xgboost} implements \S\ref{sec:5.5}'s regularized second-order objective (Theorem~\ref{thm:xgb-split-gain}) with histogram-based splitting (Lemma~\ref{lem:xgb-hist-gain}) as the default. The data.frame is passed directly: factor columns become categorical (\S\ref{sec:5.5.4}) and \texttt{NA} values trigger Lemma~\ref{lem:xgb-missing-gain}'s default-direction routing, both without any preprocessing step. Standard pattern: fix conservative defaults (\texttt{eta = 0.05}, \texttt{max\_depth = 6}, \texttt{subsample = 0.8}), call \texttt{xgb.cv} with early stopping to pick the number of trees $M$, and refit on the full training data.
+
+<<xgboost-tour>>=
+library(xgboost)
+data("credit_data", package = "modeldata")
+sum(is.na(credit_data))                            # 455 NAs across 4454 rows
+
+# Pass the data.frame directly: factors become categorical and NA values
+# route via the default-direction trick. No na.omit, no model.matrix.
+X <- credit_data[, setdiff(names(credit_data), "Status")]
+y <- as.integer(credit_data$Status == "good")      # 1 = good, 0 = bad
+
+set.seed(1)
+dtrain <- xgb.DMatrix(data = X, label = y)
+params <- list(objective = "binary:logistic", eval_metric = "logloss",
+               tree_method = "hist", eta = 0.05, max_depth = 6,
+               subsample = 0.8, colsample_bytree = 0.8,
+               lambda = 1, gamma = 0)
+
+cv <- xgb.cv(params = params, data = dtrain, nrounds = 500, nfold = 5,
+             early_stopping_rounds = 20, verbose = 0)
+M_best <- cv$early_stop$best_iteration             # selected by validation logloss
+
+fit <- xgb.train(params = params, data = dtrain, nrounds = M_best)
+@
+
+\begin{suppremark}[Reading the CV log]
+\texttt{xgb.cv} tracks mean and standard deviation of training and validation logloss per round; \texttt{best\_iteration} is the validation-minimum round. \texttt{early\_stopping\_rounds = 20} halts training after 20 consecutive rounds without validation improvement. The final \texttt{xgb.train} refits on \texttt{dtrain} for $M$ = \texttt{M\_best} rounds; the validation curve picked $M$ but is not the final-fit metric.
+\end{suppremark}
+
+\subsection{Tidymodels integration}\label{sec:5.6.4}
+
+\texttt{parsnip} unifies the three libraries: \texttt{decision\_tree()} (\texttt{rpart} engine), \texttt{rand\_forest()} (\texttt{ranger} engine), \texttt{boost\_tree()} (\texttt{xgboost} engine; \texttt{lightgbm} and \texttt{catboost} via \texttt{bonsai}). A shared \texttt{recipe} handles preprocessing in-fold; \texttt{tune\_grid} sweeps hyperparameters by cross-validation.
+
+<<tidymodels-tour>>=
+library(tidymodels); library(xgboost)
+data("credit_data", package = "modeldata")
+credit <- na.omit(credit_data)
+
+set.seed(1)
+split <- initial_split(credit, prop = 0.8, strata = Status)
+train <- training(split); test <- testing(split)
+folds <- vfold_cv(train, v = 5, strata = Status)
+
+rec <- recipe(Status ~ ., data = train) |>
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+mod <- boost_tree(trees = tune(), learn_rate = tune(),
+                  tree_depth = 6, sample_size = 0.8) |>
+  set_engine("xgboost") |> set_mode("classification")
+
+wf  <- workflow() |> add_recipe(rec) |> add_model(mod)
+
+grid <- grid_regular(trees(range = c(50, 500)),
+                     learn_rate(range = c(-2, -1)), levels = c(5, 4))
+
+res <- tune_grid(wf, resamples = folds, grid = grid,
+                 metrics = metric_set(roc_auc))
+
+final_wf  <- finalize_workflow(wf, select_best(res, metric = "roc_auc"))
+final_res <- last_fit(final_wf, split)
+collect_metrics(final_res)
+@
+
+\begin{suppremark}[The in-fold preprocessing guarantee]
+\texttt{step\_dummy} fits its level mapping on each training fold and applies it to the validation fold; \texttt{last\_fit} is the only call that touches the test split. Encoding outside the workflow (e.g., \texttt{model.matrix} on the full data before \texttt{initial\_split}) leaks test-fold information and inflates CV performance, the same trap as Lasso standardization (Unit~2 \S 2.7.2). \texttt{step\_dummy} is needed here because \texttt{parsnip}'s \texttt{xgboost} engine routes data through a numeric matrix and forfeits native categorical handling; for the native path call \texttt{xgb.train} directly (\S\ref{sec:5.6.3}), or use \texttt{bonsai}'s \texttt{lightgbm}/\texttt{catboost} engines, which preserve factors.
+\end{suppremark}
+
+\begin{suppremark}[Beyond grid search]
+\texttt{tune\_grid} evaluates a fixed Cartesian product. \texttt{tune::tune\_bayes} (Gaussian-process surrogate over hyperparameters) and \texttt{finetune::tune\_race\_anova} (ANOVA racing prunes weak combinations after a few resamples) drop in for \texttt{tune\_grid} without changing the workflow.
+\end{suppremark}
+
+\subsection{From-scratch CART}\label{sec:5.6.5}
+
+A from-scratch implementation makes Definition~\ref{def:greedy-grow}'s recursion concrete: a Gini computation (Definition~\ref{def:class-impurities}), a per-node best-split scan over $(j, v)$ pairs, and a recursive grower with depth and minimum-node-size stopping rules.
+
+<<cart-scratch>>=
+gini <- function(y) {
+  p <- prop.table(table(y))
+  1 - sum(p^2)
+}
+
+best_split <- function(X, y, min_n) {
+  n <- length(y); best <- list(gain = 0)
+  g_parent <- gini(y)
+  for (j in seq_len(ncol(X))) {
+    vals <- sort(unique(X[, j]))
+    for (v in vals[-length(vals)]) {                  # candidate threshold
+      left <- X[, j] <= v
+      if (sum(left) < min_n || sum(!left) < min_n) next
+      gain <- g_parent -
+        (sum(left)  / n) * gini(y[ left]) -
+        (sum(!left) / n) * gini(y[!left])
+      if (gain > best$gain) best <- list(gain = gain, j = j, v = v)
+    }
+  }
+  best
+}
+
+build_tree <- function(X, y, depth = 0, max_depth = 4, min_n = 5) {
+  if (depth >= max_depth || length(unique(y)) == 1)
+    return(list(leaf = TRUE, pred = names(which.max(table(y)))))
+  s <- best_split(X, y, min_n)
+  if (is.null(s$j) || s$gain == 0)
+    return(list(leaf = TRUE, pred = names(which.max(table(y)))))
+  left <- X[, s$j] <= s$v
+  list(leaf = FALSE, j = s$j, v = s$v,
+       l = build_tree(X[ left, , drop = FALSE], y[ left], depth + 1, max_depth, min_n),
+       r = build_tree(X[!left, , drop = FALSE], y[!left], depth + 1, max_depth, min_n))
+}
+
+predict_tree <- function(tree, x) {
+  if (tree$leaf) return(tree$pred)
+  if (x[tree$j] <= tree$v) predict_tree(tree$l, x) else predict_tree(tree$r, x)
+}
+
+# Smoke test on credit_data (numeric features only)
+data("credit_data", package = "modeldata")
+credit   <- na.omit(credit_data)
+num_cols <- sapply(credit, is.numeric)
+X <- as.matrix(credit[, num_cols]); y <- credit$Status
+
+set.seed(1)
+tree <- build_tree(X, y, max_depth = 4, min_n = 20)
+pred <- apply(X, 1, function(x) predict_tree(tree, x))
+mean(pred == y)                                       # training accuracy
+@
+
+\begin{suppremark}[What the toy implementation omits]
+The scan re-sorts each feature's unique values at every node ($O(n_I \log n_I)$ per feature per node), and \texttt{predict\_tree} loops row-by-row through R's \texttt{apply}. Production libraries pre-sort each feature once and reuse sorted indices for splits (\S\ref{sec:5.3.3}, $O(n_I)$ per feature per node), and dispatch the entire test-set index array down the tree in one vectorized predict pass. Other omissions: regression splits (Definition~\ref{def:sse-gain}), surrogate splits for missing values (\texttt{rpart}'s standard mechanism), and cost-complexity pruning (\S\ref{sec:5.2.3}). The grower's purpose is to make Definition~\ref{def:greedy-grow}'s recursion legible, not to replace \texttt{rpart}.
+\end{suppremark}
+
+\subsection{Explaining boosted trees with SHAP}\label{sec:5.6.6}
+
+TreeSHAP (\S\ref{sec:5.3.5}) is implemented natively in \texttt{xgboost} via \texttt{predcontrib = TRUE}: \texttt{predict} returns an $n \times (p+1)$ matrix whose first $p$ columns are per-row SHAP values for each feature and whose last column is the bias term. Aggregations of this matrix produce the standard interpretability views.
+
+<<shap-tour, fig.width=6, fig.height=3>>=
+# Reuse fit and dtrain from the xgboost-tour chunk; recover X
+data("credit_data", package = "modeldata")
+X_xgb <- credit_data[, setdiff(names(credit_data), "Status")]
+
+shap <- predict(fit, dtrain, predcontrib = TRUE)
+shap <- shap[, -ncol(shap), drop = FALSE]              # drop bias column
+sort(colMeans(abs(shap)), decreasing = TRUE)[1:6]      # global importance
+
+# Dependence plot: SHAP(Income) versus Income
+plot(X_xgb$Income, shap[, "Income"], pch = 16, col = "grey",
+     xlab = "Income", ylab = "SHAP(Income)")
+abline(h = 0, lty = 2)
+@
+
+\begin{suppremark}[Naive Shapley vs.\ TreeSHAP]
+Naive Shapley evaluates $2^p$ feature subsets per row; TreeSHAP exploits the tree structure (\S\ref{sec:5.3.5}) to compute the same expected-conditional values in $O(\sum_t L_t \cdot D_t^2)$ across the ensemble, where $L_t$ and $D_t$ are tree $t$'s leaf count and depth. The R packages \texttt{treeshap} (model-agnostic; supports \texttt{xgboost}, \texttt{lightgbm}, \texttt{catboost}, \texttt{ranger}) and \texttt{shapviz} (visualization layer) wrap this functionality.
+\end{suppremark}
+
+\subsection{Practitioner's cheat sheet}\label{sec:5.6.7}
+
+The hyperparameter discussions of \S\S\ref{sec:5.4.3}--\ref{sec:5.5.3} produce a long list of knobs. The tour above shows their syntax; this section gives the order in which to reach for them.
+
+\begin{suppremark}[Picking the family]
+\begin{ctab}[0.95]
+\begin{tabular}{l p{0.7\linewidth}}
+\toprule
+\textbf{Family} & \textbf{When to choose} \\
+\midrule
+Single CART (\texttt{rpart}) & The model itself is the deliverable: a transparent decision rule for clinical or regulatory review. Accept lower predictive accuracy. \\
+Random Forest (\texttt{ranger}) & Strong baseline with minimal tuning. OOB error gives a free CV estimate; the default starting point when there is no clear reason to do otherwise. \\
+Gradient boosting (\texttt{xgboost}, \texttt{lightgbm}, \texttt{catboost}) & Predictive accuracy is the priority and there is budget for a hyperparameter sweep. Pair early stopping with a small \texttt{eta}. \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+\end{suppremark}
+
+\begin{suppremark}[Tuning priority when boosting overfits]
+Train loss falls well below validation loss; address in this order:
+\begin{enumerate}[leftmargin=2em, itemsep=2pt, topsep=1pt]
+\item Reduce \texttt{eta} (e.g., $0.3 \to 0.05$) and let early stopping pick more rounds.
+\item Cap \texttt{max\_depth} (e.g., $6 \to 4$) and raise \texttt{min\_child\_weight} (e.g., $1 \to 5$--$10$).
+\item Subsample rows (\texttt{subsample} $= 0.7$--$0.9$) and columns (\texttt{colsample\_bytree} $= 0.5$--$0.8$).
+\item Increase the L2 leaf-weight penalty \texttt{lambda} (e.g., $1 \to 5$); only after that reach for L1 (\texttt{alpha}) or the split-gain threshold (\texttt{gamma}).
+\end{enumerate}
+The first three items handle most overfitting; \texttt{lambda} / \texttt{alpha} / \texttt{gamma} are second-line.
+\end{suppremark}
+
+\section{Pitfalls and Misapplications}\label{sec:5.7}
+
+Each entry pairs a misuse with a diagnostic and a runnable demo. Importance metrics, extrapolation, early stopping, encoding, and class imbalance dominate the list because uncalibrated splits and ensemble averaging mask the failure modes from casual inspection.
+
+\subsection{High-cardinality bias in MDI}\label{sec:5.7.1}
+
+MDI (mean decrease in impurity, \S\ref{sec:5.3.4}) inflates the importance of features with many distinct values: each extra candidate split gives the feature another chance to find an apparent reduction, even when the feature is independent of the response. MDI is the default in \texttt{ranger(..., importance = "impurity")} and \texttt{randomForest::importance(..., type = 2)}, hiding the bias from tutorial readers.
+
+<<pitfall-mdi-cardinality>>=
+library(ranger); set.seed(1)
+n <- 500
+df <- data.frame(
+  x_binary     = sample(0:1, n, replace = TRUE),
+  x_continuous = runif(n),                    # 500 distinct values
+  y            = rnorm(n)                     # independent of both
+)
+fit_imp  <- ranger(y ~ ., data = df, importance = "impurity")
+fit_perm <- ranger(y ~ ., data = df, importance = "permutation")
+rbind(MDI = importance(fit_imp), Permutation = importance(fit_perm))
+@
+
+MDI inflates \texttt{x\_continuous} ($\approx 50$) over \texttt{x\_binary} ($\approx 3$) although both are independent of $y$; permutation returns near-zero for both.
+
+\textbf{Diagnostic.} Compare MDI against permutation.
+
+\textbf{Fix.} Use permutation importance as the primary metric.
+
+\subsection{Correlated features dilute importance}\label{sec:5.7.2}
+
+When two near-identical features sit in the model, both MDI and permutation importance split the credit between them; either alone gets the full signal.
+
+<<pitfall-correlation>>=
+library(ranger); set.seed(1)
+n <- 500
+x1 <- rnorm(n); x2 <- x1 + rnorm(n, sd = 0.05)         # near-copy
+y  <- 2 * x1 + rnorm(n)
+both  <- ranger(y ~ ., data = data.frame(y, x1, x2), importance = "permutation")
+alone <- ranger(y ~ ., data = data.frame(y, x1),     importance = "permutation")
+importance(both); importance(alone)
+@
+
+\texttt{x1} alone scores $\approx 7.6$; with \texttt{x2} added, the credit splits to $4.0$ and $3.0$.
+
+\textbf{Diagnostic.} Drop one of a near-correlated pair and refit; a jump in the survivor's importance signals shared credit.
+
+\textbf{Fix.} Cluster correlated features and report a grouped permutation, or drop the redundant copy before fitting.
+
+\subsection{ID-like columns rank top in importance}\label{sec:5.7.3}
+
+A near-unique column (a row identifier, a timestamp at second resolution, an account number) lets the tree split rows individually until every leaf is pure. The training fit looks excellent and the column climbs the importance ranking, but the tree has memorized rows rather than learned a pattern.
+
+<<pitfall-id-column>>=
+library(ranger); set.seed(1)
+data("credit_data", package = "modeldata")
+credit <- na.omit(credit_data)
+credit$row_id <- seq_len(nrow(credit))                  # injected near-unique column
+fit <- ranger(Status ~ ., data = credit, importance = "impurity")
+sort(importance(fit), decreasing = TRUE)[1:5]
+@
+
+\texttt{row\_id} appears in the top five alongside genuine predictors such as \texttt{Income} and \texttt{Amount}, despite carrying no information.
+
+\textbf{Diagnostic.} Any top-ranked feature whose ranking is unreasonable in domain terms.
+
+\textbf{Fix.} Remove identifiers before fitting; the modeling frame should contain only features whose values are reproducible at prediction time.
+
+\subsection{Random Forests extrapolate poorly}\label{sec:5.7.4}
+
+Tree predictions are constant within each leaf, so any test prediction is a convex combination of training-leaf averages. For a test point beyond the training range, every relevant leaf is the boundary leaf, and the prediction flatlines.
+
+<<pitfall-extrapolation, fig.width=6, fig.height=3>>=
+library(ranger); set.seed(1)
+x_train <- runif(200, 0, 5)
+y_train <- 2 * x_train + rnorm(200)
+x_test  <- seq(0, 10, length.out = 200)
+rf  <- ranger(y ~ x, data = data.frame(y = y_train, x = x_train))
+ols <- lm(y_train ~ x_train)
+plot(x_train, y_train, xlim = c(0, 10), pch = 16, col = "grey")
+lines(x_test, predict(rf, data.frame(x = x_test))$predictions, col = "red", lwd = 2)
+lines(x_test, predict(ols, data.frame(x_train = x_test)),      col = "blue", lwd = 2, lty = 2)
+legend("topleft", c("ranger", "OLS"), col = c("red", "blue"), lty = c(1, 2))
+@
+
+The RF curve is flat for $x > 5$ at the maximum-leaf training prediction; OLS continues linearly.
+
+\textbf{Diagnostic.} Range-check test inputs against the training range before deploying.
+
+\textbf{Fix.} Monitor input range; if inputs systematically extend beyond training, supplement with a parametric model or restrict the deployment scope.
+
+\subsection{Boosting overfits without early stopping}\label{sec:5.7.5}
+
+Gradient boosting reduces training loss monotonically by construction: every new tree fits the residual gradient. Without a held-out validation curve, the iteration count $M$ has no upper bound and the model overfits.
+
+<<pitfall-boosting-overfit, fig.width=6, fig.height=3>>=
+library(xgboost); set.seed(1)
+data("credit_data", package = "modeldata")
+credit <- na.omit(credit_data)
+X <- model.matrix(Status ~ . - 1, data = credit)
+y <- as.integer(credit$Status == "good")
+dtrain <- xgb.DMatrix(X, label = y)
+cv <- xgb.cv(params = list(objective = "binary:logistic", eval_metric = "logloss",
+                           eta = 0.3, max_depth = 8),
+             data = dtrain, nrounds = 200, nfold = 5, verbose = 0)
+log <- cv$evaluation_log
+plot(log$iter, log$train_logloss_mean, type = "l", col = "blue", ylim = c(0, 0.6),
+     xlab = "round", ylab = "logloss")
+lines(log$iter, log$test_logloss_mean, col = "red", lwd = 2)
+abline(v = which.min(log$test_logloss_mean), lty = 2)
+legend("topright", c("train", "test"), col = c("blue", "red"), lty = 1)
+@
+
+Train logloss falls toward zero; test logloss bottoms out near round 7 and then rises.
+
+\textbf{Diagnostic.} The validation curve.
+
+\textbf{Fix.} \texttt{early\_stopping\_rounds} on \texttt{xgb.cv} (\S\ref{sec:5.6.3}) selects $M$ at the validation minimum.
+
+\subsection{Trees do not need scaling}\label{sec:5.7.6}
+
+Splits are evaluated by impurity reduction at each candidate threshold (\S\S\ref{sec:5.2.1}--\ref{sec:5.2.2}); rescaling a feature linearly preserves the order of its values, so the same splits emerge with rescaled thresholds. \texttt{step\_normalize} in a tree workflow is harmless but useless; spend the time on encoding and imputation instead.
+
+<<pitfall-no-scaling>>=
+library(rpart); set.seed(1)
+n <- 200
+df <- data.frame(x1 = runif(n, 0, 1),
+                 x2 = runif(n, 0, 1000),                # 1000x scale gap
+                 y  = factor(sample(c("a", "b"), n, replace = TRUE)))
+fit_raw <- rpart(y ~ x1 + x2, data = df, control = rpart.control(cp = 0.01))
+df$x1   <- as.numeric(scale(df$x1)); df$x2 <- as.numeric(scale(df$x2))
+fit_sc  <- rpart(y ~ x1 + x2, data = df, control = rpart.control(cp = 0.01))
+identical(fit_raw$frame$var, fit_sc$frame$var)        # same split sequence
+@
+
+\subsection{One-hot vs native categorical handling}\label{sec:5.7.7}
+
+A categorical with $K$ levels under one-hot encoding produces $K$ binary columns; each split tests one level against the rest, peeling levels one at a time. Native handling sorts levels by mean response (\S\ref{sec:5.5.4}) and isolates the optimal subset in one split.
+
+<<pitfall-categorical>>=
+library(ranger); set.seed(1)
+n <- 1000
+city <- factor(sample(paste0("c", 1:20), n, replace = TRUE))
+y    <- (as.integer(city) %% 2) + rnorm(n, sd = 0.1)   # even-indexed cities are signal
+df_f <- data.frame(y = y, city = city)
+df_o <- data.frame(y = y, model.matrix(~ city - 1, df_f))
+oh  <- ranger(y ~ ., data = df_o, num.trees = 200)
+nat <- ranger(y ~ ., data = df_f, num.trees = 200,
+              respect.unordered.factors = "order")     # sort by mean response
+c(one_hot = oh$prediction.error, native = nat$prediction.error)
+@
+
+Native handling reduces OOB MSE by roughly 40\% (\(0.011\) vs \(0.018\)): one split isolates the relevant level subset, while one-hot needs many sparse splits for the same partition.
+
+\textbf{Diagnostic.} Count distinct levels per categorical; for $K \gtrsim 10$ prefer native handling.
+
+\textbf{Fix.} \texttt{respect.unordered.factors = "order"} for \texttt{ranger}, \texttt{categorical\_feature} for LightGBM, or CatBoost's ordered target statistics.
+
+\subsection{Class imbalance defaults to predicting the majority}\label{sec:5.7.8}
+
+Trees split to minimize impurity; on imbalanced data the impurity-minimizing leaf prediction is the majority class. The default classifier predicts the majority for every row, achieving high accuracy and zero recall on the minority.
+
+<<pitfall-imbalance>>=
+library(rpart); set.seed(1)
+n <- 1000
+df <- data.frame(x = rnorm(n),
+                 y = factor(sample(c(0, 1), n, replace = TRUE,
+                                   prob = c(0.95, 0.05))))
+fit_raw <- rpart(y ~ x, data = df, method = "class")
+fit_w   <- rpart(y ~ x, data = df, method = "class",
+                 parms = list(prior = c(0.5, 0.5)))
+table(pred = predict(fit_raw, type = "class"), actual = df$y)
+table(pred = predict(fit_w,   type = "class"), actual = df$y)
+@
+
+The unweighted tree predicts \texttt{0} for every row; the prior-weighted tree recovers a non-degenerate confusion matrix.
+
+\textbf{Diagnostic.} Confusion matrix on the validation fold.
+
+\textbf{Fix.} \texttt{parms = list(prior = ...)} for \texttt{rpart}, \texttt{class.weights} for \texttt{ranger}, \texttt{scale\_pos\_weight} for \texttt{xgboost}, or threshold tuning post hoc (Unit~3 \S 3.7).
+
+\subsection{Target-encoding leakage}\label{sec:5.7.9}
+
+Mean target encoding replaces a categorical level with the in-level mean of $y$, turning a $K$-level factor into one numeric column (\S\ref{sec:5.5.4}). The naive implementation computes level means on the full dataset and joins them to every row, so each test row's encoding contains its own $y$. CV scores look great; deployment collapses.
+
+<<pitfall-target-leak>>=
+library(rpart); set.seed(1)
+n <- 2000
+df <- data.frame(city = factor(sample(paste0("c", 1:200), n, replace = TRUE)),
+                 y    = rnorm(n))                    # city carries no signal
+
+# Leaky: encode on the full dataset before splitting
+df$city_te <- ave(df$y, df$city, FUN = mean)
+sp <- sample(n, 0.8 * n)
+trn <- df[sp, ]; tst <- df[-sp, ]
+fit_leaky <- rpart(y ~ city_te, data = trn, control = rpart.control(cp = 0.005))
+r2_leaky  <- 1 - mean((tst$y - predict(fit_leaky, tst))^2) / var(tst$y)
+
+# Safe: encode using only training rows, apply the mapping to the test fold
+enc <- tapply(trn$y, trn$city, mean)
+trn$city_te <- enc[as.character(trn$city)]
+tst$city_te <- enc[as.character(tst$city)]
+tst$city_te[is.na(tst$city_te)] <- mean(trn$y)        # unseen levels: training mean
+fit_safe <- rpart(y ~ city_te, data = trn, control = rpart.control(cp = 0.005))
+r2_safe  <- 1 - mean((tst$y - predict(fit_safe, tst))^2) / var(tst$y)
+
+c(leaky = r2_leaky, safe = r2_safe)
+@
+
+The leaky encoding gives a noticeably positive test $R^2$ on a noise feature; the in-fold encoding returns near-zero (a slightly negative $R^2$ is expected from a noiseless null).
+
+\textbf{Diagnostic.} Target-encode on the full dataset, then permute $y$ and refit; any positive $R^2$ implicates the encoding.
+
+\textbf{Fix.} Encode inside CV folds (\texttt{recipes::step\_lencode\_mixed} from \texttt{embed}, or the training-fold join shown above), or use CatBoost's ordered target statistics (\S\ref{sec:5.5.4}).
+
+\end{document}

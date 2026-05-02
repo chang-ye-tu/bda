@@ -1,0 +1,1916 @@
+% Compile pipeline:
+%   Rscript -e "knitr::knit('lecture.Rnw')"   # produces lecture.tex
+%   xelatex -shell-escape lecture.tex
+%   bibtex lecture
+%   xelatex -shell-escape lecture.tex
+%   xelatex -shell-escape lecture.tex          # final pass to settle refs
+\documentclass[17pt]{extarticle}
+
+\input{bda_preamble.tex}
+
+% Unit 7 specific
+\fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ 7 Unsupervised Learning}}
+
+\setcounter{theorem}{0}\setcounter{example}{0}
+\renewcommand\thedefinition{7.\arabic{theorem}}
+\renewcommand\thetheorem  {7.\arabic{theorem}}
+\renewcommand\theexample  {7.\arabic{example}}
+\renewcommand\theexercise {7.\arabic{exercise}}
+\renewcommand\thefigure   {7.\arabic{figure}}
+
+\title{\color{hdrBG}\bfseries\Huge Unsupervised Learning}
+\author{}\date{}
+
+\begin{document}
+
+<<setup, include=FALSE>>=
+source("bda_knitr_setup.R")
+knitr::opts_chunk$set(fig.path = "figs/unit07-")
+@
+
+\begin{titlepage}
+\thispagestyle{empty}\vspace*{\fill}
+\begin{center}
+{\color{hdrBG}\bfseries\fontsize{28}{32}\selectfont Unit 7.\ Unsupervised Learning}\\[1em]
+\rule{70mm}{0.8pt}\\[0.8em]
+{\large Business Data Analytics: Introductory Machine Learning}
+\end{center}\vspace*{\fill}
+\end{titlepage}
+
+\setcounter{page}{1}
+
+\begin{motivation}[Without labels]
+Units~2--6 fit functions $f(x) \approx y$ from labeled pairs $(x_i, y_i)$. Unit~7 starts from $X \in \mathbb{R}^{n \times p}$ alone, no $y$, and asks two questions: which low-dimensional view of the rows is most informative (PCA, t-SNE, UMAP), and which rows belong together (K-means, hierarchical clustering). Without a target, every method is judged by what its output reveals, not by held-out accuracy. The pitfalls section is correspondingly the largest in the course.
+\end{motivation}
+
+\section{Preliminaries}\label{sec:7.1}
+
+\subsection{Spectral theorem and Courant--Fischer min-max}\label{subsec:7.1.1}
+
+Unit~2 \S 2.1.1 proved the spectral theorem and its Rayleigh-quotient corollary. PCA reuses both; the Eckart--Young proof in \S\ref{subsec:7.1.3} additionally needs the subspace generalization due to Courant and Fischer.
+
+\begin{definition}[Eigenvalue, eigenvector, orthogonal matrix]\label{def:eigen}
+For symmetric $A \in \mathbb{R}^{p \times p}$, a scalar $\lambda \in \mathbb{R}$ is an \textbf{eigenvalue} with \textbf{eigenvector} $v \in \mathbb{R}^p \setminus \{\mathbf{0}\}$ when $A v = \lambda v$. (Reality of every eigenvalue of a real symmetric $A$ is part of the spectral theorem stated below; for non-symmetric real $A$, eigenvalues and eigenvectors may be complex.) A matrix $Q \in \mathbb{R}^{p \times p}$ is \textbf{orthogonal} when $Q^\top Q = I_p$; equivalently, its columns are orthonormal. For square $Q$, orthonormal columns force orthonormal rows (Unit~2 Lemma~2.4), so $Q^{-1} = Q^\top$.
+\end{definition}
+
+\begin{theorem}[Spectral theorem; Unit~2 \S 2.1.1, Theorem~2.6]\label{thm:spectral-recap}
+Every symmetric $A \in \mathbb{R}^{p \times p}$ admits an orthogonal diagonalization
+\[
+A \;=\; Q \Lambda Q^\top, \qquad \Lambda = \diag(\lambda_1, \ldots, \lambda_p), \quad \lambda_1 \geqslant \lambda_2 \geqslant \cdots \geqslant \lambda_p,
+\]
+with real eigenvalues and orthonormal eigenvectors $q_1, \ldots, q_p$ in the columns of $Q$.
+\end{theorem}
+
+The Unit~2 proof constructs each $q_j$ as the argmax of $x^\top A x$ over $\{x \in W_j : \|x\| = 1\}$ with $W_j = \mathrm{span}(q_1, \ldots, q_{j-1})^\perp$, starting from $W_1 = \mathbb{R}^p$. The Rayleigh-quotient corollary (Unit~2 Theorem~2.7) reads this off: $\lambda_k$ is the maximum of $x^\top A x$ over unit vectors orthogonal to $q_1, \ldots, q_{k-1}$, attained at $q_k$. The next theorem replaces the orthogonal-complement constraint with a min-max over arbitrary $k$-dimensional subspaces, needed for the Eckart--Young proof of \S\ref{subsec:7.1.3}.
+
+\begin{theorem}[Courant--Fischer min-max]\label{thm:courant-fischer}
+For symmetric $A \in \mathbb{R}^{p \times p}$ with eigenvalues $\lambda_1 \geqslant \cdots \geqslant \lambda_p$,
+\[
+\lambda_k \;=\; \max_{\substack{T \subseteq \mathbb{R}^p \\ \dim T = k}} \;\min_{\substack{x \in T \\ \|x\| = 1}} x^\top A x \;=\; \min_{\substack{T \subseteq \mathbb{R}^p \\ \dim T = p - k + 1}} \;\max_{\substack{x \in T \\ \|x\| = 1}} x^\top A x.
+\]
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:courant-fischer}]
+Write the spectral decomposition $A = Q \Lambda Q^\top$ as in Theorem~\ref{thm:spectral-recap}. We prove the first equality; the second follows by applying the first to $-A$ (whose eigenvalues are $-\lambda_p \geqslant \cdots \geqslant -\lambda_1$) and reading off $-\lambda_{p - k + 1}$.
+
+\textbf{Lower bound.} Choose $T = \mathrm{span}(q_1, \ldots, q_k)$, dimension $k$. For unit $x \in T$, $x = \sum_{j = 1}^{k} c_j q_j$ with $\sum_{j} c_j^2 = 1$, so
+\[
+x^\top A x \;=\; \sum_{j = 1}^{k} c_j^2 \lambda_j \;\geqslant\; \lambda_k \sum_{j = 1}^{k} c_j^2 \;=\; \lambda_k.
+\]
+Hence $\min_{x \in T,\,\|x\| = 1} x^\top A x \geqslant \lambda_k$, and the maximum over $k$-subspaces is at least $\lambda_k$.
+
+\textbf{Upper bound.} Let $T \subseteq \mathbb{R}^p$ be any $k$-dimensional subspace. Set $L = \mathrm{span}(q_k, q_{k+1}, \ldots, q_p)$, dimension $p - k + 1$ (a different letter from the sample covariance $S$ that will appear in \S\ref{subsec:7.1.4} onward). By the dimension formula
+\[
+\dim(T \cap L) \;=\; \dim T + \dim L - \dim(T + L) \;\geqslant\; k + (p - k + 1) - p \;=\; 1,
+\]
+so $T \cap L$ contains a unit vector $x$. Expand $x = \sum_{j \geqslant k} c_j q_j$ with $\sum_{j \geqslant k} c_j^2 = 1$:
+\[
+x^\top A x \;=\; \sum_{j \geqslant k} c_j^2 \lambda_j \;\leqslant\; \lambda_k.
+\]
+Hence $\min_{x \in T,\,\|x\| = 1} x^\top A x \leqslant \lambda_k$. Since $T$ was arbitrary, the maximum over $k$-subspaces is at most $\lambda_k$.
+
+The two bounds give equality. $\blacksquare$
+\end{derivation}
+
+\subsection{Singular value decomposition}\label{subsec:7.1.2}
+
+The spectral theorem applies to symmetric matrices. PCA's data matrix $X \in \mathbb{R}^{n \times p}$ is rectangular. The singular value decomposition extends the spectral picture to rectangular matrices using two orthogonal frames, one in $\mathbb{R}^n$ and one in $\mathbb{R}^p$.
+
+\begin{definition}[Singular value decomposition]\label{def:svd}
+A \textbf{(full) singular value decomposition} of $X \in \mathbb{R}^{n \times p}$ is a factorization
+\[
+X \;=\; U \Sigma V^\top,
+\]
+where $U \in \mathbb{R}^{n \times n}$ and $V \in \mathbb{R}^{p \times p}$ are orthogonal and $\Sigma \in \mathbb{R}^{n \times p}$ is diagonal with nonnegative entries $\sigma_1 \geqslant \sigma_2 \geqslant \cdots \geqslant \sigma_{\min(n, p)} \geqslant 0$ on the leading diagonal and zeros elsewhere. The $\sigma_j$ are the \textbf{singular values}; the columns of $U$ and $V$ are the \textbf{left} and \textbf{right singular vectors}.
+\end{definition}
+
+\begin{theorem}[Existence of the SVD]\label{thm:svd}
+Every $X \in \mathbb{R}^{n \times p}$ admits a singular value decomposition. The singular values are uniquely determined; they coincide with $\sqrt{\lambda_j(X^\top X)}$ where $\lambda_j(\cdot)$ denotes the $j$-th largest eigenvalue.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:svd}]
+The Gram matrix $X^\top X \in \mathbb{R}^{p \times p}$ is symmetric. For any $v \in \mathbb{R}^p$, $v^\top X^\top X v = \|X v\|^2 \geqslant 0$, so $X^\top X \succcurlyeq 0$ (Unit~1 \S 1.9.6). Apply Theorem~\ref{thm:spectral-recap}: there exist orthonormal $v_1, \ldots, v_p \in \mathbb{R}^p$ and $\lambda_1 \geqslant \cdots \geqslant \lambda_p \geqslant 0$ with $X^\top X v_j = \lambda_j v_j$. Set $\sigma_j = \sqrt{\lambda_j}$ and let $r$ be the largest index with $\sigma_r > 0$, so $\sigma_{r + 1} = \cdots = \sigma_p = 0$.
+
+\textbf{Construct $U$.} For $j = 1, \ldots, r$, define $u_j = X v_j / \sigma_j \in \mathbb{R}^n$. These are orthonormal: for $1 \leqslant i, j \leqslant r$,
+\[
+u_i^\top u_j \;=\; \frac{(X v_i)^\top (X v_j)}{\sigma_i \sigma_j} \;=\; \frac{v_i^\top X^\top X v_j}{\sigma_i \sigma_j} \;=\; \frac{\sigma_j^2 v_i^\top v_j}{\sigma_i \sigma_j} \;=\; \delta_{ij}.
+\]
+Extend $\{u_1, \ldots, u_r\}$ to an orthonormal basis $\{u_1, \ldots, u_n\}$ of $\mathbb{R}^n$ (Gram--Schmidt on any complementary basis).
+
+\textbf{Verify the factorization.} Set $U = [u_1\ \cdots\ u_n]$, $V = [v_1\ \cdots\ v_p]$, and $\Sigma$ the $n \times p$ matrix with $\Sigma_{jj} = \sigma_j$ for $j = 1, \ldots, \min(n, p)$ and $0$ elsewhere. For $j \leqslant r$, $X v_j = \sigma_j u_j$ by construction. For $j > r$, $X^\top X v_j = \mathbf{0}$ implies $\|X v_j\|^2 = v_j^\top X^\top X v_j = 0$, so $X v_j = \mathbf{0} = \sigma_j u_j$. The columnwise identity $X V = U \Sigma$ then holds (with the appropriate column-index alignment in $\Sigma$), and right-multiplying by $V^\top$ gives $X = U \Sigma V^\top$.
+
+\textbf{Uniqueness of $\sigma_j$.} Any SVD $X = U \Sigma V^\top$ gives $X^\top X = V \Sigma^\top \Sigma V^\top = V \diag(\sigma_1^2, \ldots, \sigma_p^2) V^\top$, so each $\sigma_j^2$ equals the $j$-th eigenvalue of $X^\top X$ and is determined by $X$ alone. The convention $\sigma_j \geqslant 0$ in Definition~\ref{def:svd} then selects $\sigma_j = +\sqrt{\sigma_j^2}$ from the two square roots, so $\sigma_j$ is determined by $X$.\ $\blacksquare$
+\end{derivation}
+
+\begin{suppremark}[Reduced and thin SVD]
+When $n > p$, the last $n - p$ columns of $U$ contribute nothing: the corresponding rows of $\Sigma$ are zero. Dropping them gives the \textbf{reduced} SVD $X = U_p \Sigma_p V^\top$ with $U_p \in \mathbb{R}^{n \times p}$, $\Sigma_p = \diag(\sigma_1, \ldots, \sigma_p)$, $V \in \mathbb{R}^{p \times p}$. PCA implementations (\texttt{prcomp} in R) compute the reduced form. Whenever the distinction is irrelevant, the text writes $X = U \Sigma V^\top$ without specifying full or reduced.
+\end{suppremark}
+
+\begin{lemma}[Frobenius norm in singular values]\label{lem:frob-svd}
+For $X \in \mathbb{R}^{n \times p}$ with singular values $\sigma_1 \geqslant \cdots \geqslant \sigma_{\min(n, p)} \geqslant 0$,
+\[
+\|X\|_F^2 \;:=\; \sum_{i, j} X_{ij}^2 \;=\; \tr(X^\top X) \;=\; \sum_j \sigma_j^2.
+\]
+\end{lemma}
+
+\begin{proof}
+$\sum_{i,j} X_{ij}^2 = \sum_j \|X_{\cdot,j}\|^2 = \sum_j (X^\top X)_{jj} = \tr(X^\top X)$. The trace is invariant under similarity, so $\tr(X^\top X) = \tr(V \diag(\sigma_j^2) V^\top) = \tr(\diag(\sigma_j^2)) = \sum_j \sigma_j^2$.
+\end{proof}
+
+\subsection{Eckart--Young low-rank approximation}\label{subsec:7.1.3}
+
+Among all matrices of rank at most $k$, the one closest to $X$ in Frobenius distance is the truncated SVD that retains the $k$ largest singular values.
+
+\begin{definition}[Truncated SVD]\label{def:trunc-svd}
+For $X = U \Sigma V^\top$ as in Definition~\ref{def:svd} and $k \leqslant \min(n, p)$, the \textbf{rank-$k$ truncated SVD} of $X$ is
+\[
+X_k \;:=\; \sum_{j = 1}^{k} \sigma_j u_j v_j^\top \;=\; U_k \Sigma_k V_k^\top,
+\]
+where $U_k = [u_1\ \cdots\ u_k]$, $V_k = [v_1\ \cdots\ v_k]$, $\Sigma_k = \diag(\sigma_1, \ldots, \sigma_k)$.
+\end{definition}
+
+\begin{theorem}[Eckart--Young, Frobenius norm]\label{thm:eckart-young}
+For $X \in \mathbb{R}^{n \times p}$ with singular values $\sigma_1 \geqslant \cdots \geqslant \sigma_{\min(n, p)} \geqslant 0$ and any $k \leqslant \min(n, p)$,
+\[
+\min_{\substack{B \in \mathbb{R}^{n \times p} \\ \rk B \leqslant k}} \|X - B\|_F^2 \;=\; \sum_{j > k} \sigma_j^2,
+\]
+attained at $B^\star = X_k$, the rank-$k$ truncated SVD of $X$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:eckart-young}]
+\textbf{Achievability.} Direct expansion gives
+\[
+X - X_k \;=\; \sum_{j > k} \sigma_j u_j v_j^\top, \qquad \|X - X_k\|_F^2 \;=\; \sum_{j > k} \sigma_j^2,
+\]
+the second equality by Lemma~\ref{lem:frob-svd} applied to $X - X_k$ (whose singular values are $\sigma_{k+1}, \ldots, \sigma_{\min(n, p)}, 0, \ldots, 0$).
+
+\textbf{Lower bound: singular-value interlacing.} Let $B \in \mathbb{R}^{n \times p}$ with $\rk B \leqslant k$. We claim $\sigma_i(X - B) \geqslant \sigma_{i + k}(X)$ for every $i$ such that $i + k \leqslant \min(n, p)$ (with the convention $\sigma_j(\cdot) = 0$ when $j$ exceeds the matrix size).
+
+Set $M = X - B$. Since $M^\top M$ is symmetric PSD, by Theorem~\ref{thm:courant-fischer}
+\[
+\sigma_i(M)^2 \;=\; \lambda_i(M^\top M) \;=\; \max_{\substack{T \subseteq \mathbb{R}^p \\ \dim T = i}} \;\min_{\substack{x \in T \\ \|x\| = 1}} \|M x\|^2.
+\]
+We exhibit a specific $i$-dimensional $T$ on which $\|M x\|^2 \geqslant \sigma_{i+k}(X)^2$ for every unit $x \in T$.
+
+Let $\mathcal{V}_{i+k} = \mathrm{span}(v_1, \ldots, v_{i+k})$ (a subspace, distinct from any $V$-matrix), where $v_j$ are right singular vectors of $X$, $\dim \mathcal{V}_{i + k} = i + k$. The kernel of $B$ has dimension $\geqslant p - k$. By the dimension formula,
+\[
+\dim\big(\mathcal{V}_{i + k} \cap \ker B\big) \;\geqslant\; (i + k) + (p - k) - p \;=\; i.
+\]
+Pick any $i$-dimensional subspace $T \subseteq \mathcal{V}_{i + k} \cap \ker B$. For unit $x \in T$, $B x = \mathbf{0}$, so
+\[
+\|M x\|^2 \;=\; \|X x - B x\|^2 \;=\; \|X x\|^2.
+\]
+Expand $x = \sum_{j = 1}^{i + k} c_j v_j$ with $\sum c_j^2 = 1$. Using $X v_j = \sigma_j u_j$ and orthonormality of $u_j$,
+\[
+\|X x\|^2 \;=\; \sum_{j = 1}^{i + k} c_j^2 \sigma_j^2 \;\geqslant\; \sigma_{i + k}^2 \sum_{j = 1}^{i + k} c_j^2 \;=\; \sigma_{i + k}^2.
+\]
+Hence $\min_{x \in T,\,\|x\| = 1} \|M x\|^2 \geqslant \sigma_{i + k}^2$, so $\sigma_i(M)^2 \geqslant \sigma_{i + k}^2$, proving the claim.
+
+\textbf{Sum over $i$.} By Lemma~\ref{lem:frob-svd},
+\[
+\|X - B\|_F^2 \;=\; \sum_{i \geqslant 1} \sigma_i(X - B)^2 \;\geqslant\; \sum_{i \geqslant 1} \sigma_{i + k}(X)^2 \;=\; \sum_{j > k} \sigma_j(X)^2,
+\]
+matching the achieved value. $\blacksquare$
+\end{derivation}
+
+\begin{suppremark}[Beyond Frobenius]
+Eckart--Young also holds in the spectral norm $\|\cdot\|_2$ and in every unitarily invariant norm; this generalization is Mirsky's theorem \citep{mirsky-1960}. PCA only uses the Frobenius statement, which is what Theorem~\ref{thm:eckart-young} delivers.
+\end{suppremark}
+
+\subsection{Sample mean, centering matrix, sample covariance}\label{subsec:7.1.4}
+
+PCA is computed on the centered data matrix; centering is a linear operation worth recording in matrix form.
+
+\begin{definition}[Sample mean]\label{def:sample-mean}
+For a data matrix $X \in \mathbb{R}^{n \times p}$ with rows $x_1^\top, \ldots, x_n^\top$, the \textbf{sample mean} is
+\[
+\bar x \;:=\; \frac{1}{n} \sum_{i = 1}^{n} x_i \;=\; \frac{1}{n} X^\top \mathbf{1}_n \;\in\; \mathbb{R}^p,
+\]
+where $\mathbf{1}_n \in \mathbb{R}^n$ is the all-ones vector.
+\end{definition}
+
+\begin{definition}[Centering matrix]\label{def:centering}
+The \textbf{centering matrix} of order $n$ is
+\[
+\mathbf{M}_0 \;:=\; I_n - \frac{1}{n} \mathbf{1}_n \mathbf{1}_n^\top \;\in\; \mathbb{R}^{n \times n}.
+\]
+\end{definition}
+
+\begin{lemma}[Properties of $\mathbf{M}_0$]\label{lem:centering}
+\leavevmode
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $\mathbf{M}_0 = \mathbf{M}_0^\top$ (symmetric).
+\item $\mathbf{M}_0^2 = \mathbf{M}_0$ (idempotent).
+\item $\mathbf{M}_0 \mathbf{1}_n = \mathbf{0}$ and $\mathbf{1}_n^\top \mathbf{M}_0 = \mathbf{0}^\top$.
+\item Eigenvalues of $\mathbf{M}_0$ are $0$ (multiplicity $1$, eigenvector $\mathbf{1}_n / \sqrt{n}$) and $1$ (multiplicity $n - 1$); $\rk \mathbf{M}_0 = n - 1$.
+\item For any $X \in \mathbb{R}^{n \times p}$, the rows of $\mathbf{M}_0 X$ are $x_i - \bar x$:
+\[
+\mathbf{M}_0 X \;=\; X - \mathbf{1}_n \bar x^\top.
+\]
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+(i) Both $I_n$ and $\mathbf{1}_n \mathbf{1}_n^\top$ are symmetric. (ii) Compute
+\[
+\mathbf{M}_0^2 \;=\; \big(I_n - \tfrac{1}{n} \mathbf{1}_n \mathbf{1}_n^\top\big)^2 \;=\; I_n - \tfrac{2}{n} \mathbf{1}_n \mathbf{1}_n^\top + \tfrac{1}{n^2} \mathbf{1}_n \mathbf{1}_n^\top \mathbf{1}_n \mathbf{1}_n^\top \;=\; I_n - \tfrac{1}{n} \mathbf{1}_n \mathbf{1}_n^\top \;=\; \mathbf{M}_0,
+\]
+using $\mathbf{1}_n^\top \mathbf{1}_n = n$. (iii) $\mathbf{M}_0 \mathbf{1}_n = \mathbf{1}_n - \tfrac{1}{n} \mathbf{1}_n (\mathbf{1}_n^\top \mathbf{1}_n) = \mathbf{1}_n - \mathbf{1}_n = \mathbf{0}$. (iv) Idempotents have eigenvalues in $\{0, 1\}$; $\mathbf{1}_n / \sqrt{n}$ is the unique-up-to-sign eigenvector with eigenvalue $0$ by (iii); the orthogonal complement (dimension $n - 1$) is the eigenspace for $1$. (v) $\mathbf{M}_0 X = X - \tfrac{1}{n} \mathbf{1}_n \mathbf{1}_n^\top X$, and $\mathbf{1}_n^\top X / n = \bar x^\top$ by Definition~\ref{def:sample-mean}, so $\mathbf{M}_0 X = X - \mathbf{1}_n \bar x^\top$, whose row $i$ is $x_i - \bar x$.
+\end{proof}
+
+\begin{definition}[Sample covariance matrix]\label{def:sample-cov}
+The \textbf{sample covariance matrix} of $X \in \mathbb{R}^{n \times p}$ is
+\[
+S \;:=\; \frac{1}{n - 1} \sum_{i = 1}^{n} (x_i - \bar x)(x_i - \bar x)^\top \;=\; \frac{1}{n - 1} (\mathbf{M}_0 X)^\top (\mathbf{M}_0 X) \;=\; \frac{1}{n - 1} X^\top \mathbf{M}_0 X,
+\]
+the last equality using $\mathbf{M}_0^\top \mathbf{M}_0 = \mathbf{M}_0^2 = \mathbf{M}_0$ (Lemma~\ref{lem:centering}). $S$ is symmetric and PSD.
+\end{definition}
+
+\begin{suppremark}[$n$ versus $n - 1$]
+The denominator $n - 1$ makes $S$ unbiased for $\cov(x_1)$ when the $x_i$ are i.i.d.\ from a distribution with finite second moments. PCA derivations are insensitive to the choice: scaling $S$ by a positive constant rescales eigenvalues but does not move eigenvectors, so the principal directions are identical for the $n$ and $n - 1$ versions. The course uses $n - 1$ throughout to match \texttt{var}, \texttt{cov}, and \texttt{prcomp} in R.
+\end{suppremark}
+
+\subsection{KL divergence and fuzzy cross-entropy}\label{subsec:7.1.5}
+
+Unit~3 \S 3.1.1 introduced the Kullback--Leibler divergence and cross-entropy for probability mass functions on a finite outcome set; logistic regression was the first application. t-SNE reuses both verbatim. UMAP needs a generalization in which each pair of data points carries its own Bernoulli pair of probabilities, applied to fuzzy-set membership values rather than probability mass functions.
+
+\begin{definition}[KL divergence; Unit~3 Definition~3.5]\label{def:kl-7}
+For pmfs $p, q$ on a finite set $\mathcal{Y}$ with $q(y) > 0$ wherever $p(y) > 0$,
+\[
+D_{\mathrm{KL}}(p \,\|\, q) \;:=\; \sum_{y \in \mathcal{Y}} p(y) \log \frac{p(y)}{q(y)}, \qquad 0 \log 0 := 0.
+\]
+\end{definition}
+
+\begin{lemma}[Gibbs's inequality; Unit~3 Lemma~3.6]\label{lem:gibbs-7}
+$D_{\mathrm{KL}}(p \,\|\, q) \geqslant 0$, with equality iff $p = q$.
+\end{lemma}
+
+\begin{proof}
+Let $\mathrm{supp}(p) = \{y : p(y) > 0\}$. By Jensen's inequality (Unit~1 \S 1.9.9) for the concave $\log$,
+\[
+-D_{\mathrm{KL}}(p \,\|\, q) \;=\; \sum_{y \in \mathrm{supp}(p)} p(y) \log \frac{q(y)}{p(y)} \;\leqslant\; \log \sum_{y \in \mathrm{supp}(p)} q(y) \;\leqslant\; \log 1 \;=\; 0.
+\]
+Equality in Jensen's requires $q(y) / p(y)$ constant on $\mathrm{supp}(p)$; combined with both sums equaling $1$, this forces $p = q$.
+\end{proof}
+
+\begin{definition}[Cross-entropy; Unit~3 Definition~3.7]\label{def:cross-entropy-7}
+For pmfs $p, q$ on $\mathcal{Y}$, the \textbf{cross-entropy} from $p$ to $q$ is $H(p, q) := -\sum_y p(y) \log q(y)$, and the \textbf{Shannon entropy} of $p$ is $H(p) := H(p, p)$. Algebraic manipulation gives $H(p, q) = H(p) + D_{\mathrm{KL}}(p \,\|\, q)$. With $p$ fixed, $\arg\min_q H(p, q) = \arg\min_q D_{\mathrm{KL}}(p \,\|\, q)$, since $H(p)$ does not depend on $q$.
+\end{definition}
+
+UMAP needs a finer object than a probability distribution. The pairwise membership matrix carries one number $\mu_{ij} \in [0, 1]$ for each pair of points; these numbers do not sum to $1$ and are not jointly normalized. Each $\mu_{ij}$ is treated as the success probability of an independent Bernoulli trial; the natural divergence between two such matrices sums per-pair Bernoulli KL divergences.
+
+\begin{definition}[Bernoulli KL]\label{def:bernoulli-kl}
+For $\mu, \nu \in (0, 1)$, the \textbf{Bernoulli KL divergence} between $\mathrm{Ber}(\mu)$ and $\mathrm{Ber}(\nu)$ is
+\[
+d_{\mathrm{B}}(\mu, \nu) \;:=\; \mu \log \frac{\mu}{\nu} \;+\; (1 - \mu) \log \frac{1 - \mu}{1 - \nu}.
+\]
+This is Definition~\ref{def:kl-7} applied to the two-point distributions $p = (\mu, 1 - \mu)$ and $q = (\nu, 1 - \nu)$ on $\{1, 0\}$.
+\end{definition}
+
+\begin{lemma}[Properties of $d_{\mathrm{B}}$]\label{lem:bernoulli-kl-props}
+\leavevmode
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $d_{\mathrm{B}}(\mu, \nu) \geqslant 0$, with equality iff $\mu = \nu$.
+\item $d_{\mathrm{B}}(\mu, \nu) \neq d_{\mathrm{B}}(\nu, \mu)$ in general.
+\item For each fixed $\mu \in (0, 1)$, the map $\nu \mapsto d_{\mathrm{B}}(\mu, \nu)$ is strictly convex on $(0, 1)$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+(i) is Lemma~\ref{lem:gibbs-7} with $|\mathcal{Y}| = 2$. (ii) by example: $d_{\mathrm{B}}(0.1, 0.5) = 0.1 \log 0.2 + 0.9 \log 1.8 \approx 0.368$ while $d_{\mathrm{B}}(0.5, 0.1) = 0.5 \log 5 + 0.5 \log(5/9) \approx 0.510$. (iii) Differentiate twice in $\nu$:
+\[
+\frac{\partial d_{\mathrm{B}}}{\partial \nu} \;=\; -\frac{\mu}{\nu} + \frac{1 - \mu}{1 - \nu}, \qquad \frac{\partial^2 d_{\mathrm{B}}}{\partial \nu^2} \;=\; \frac{\mu}{\nu^2} + \frac{1 - \mu}{(1 - \nu)^2} \;>\; 0
+\]
+on $(0, 1)$.
+\end{proof}
+
+\begin{definition}[Fuzzy cross-entropy]\label{def:fuzzy-ce}
+Let $A$ be a finite set and $\mu, \nu : A \to (0, 1)$. The \textbf{fuzzy cross-entropy} of $\mu$ relative to $\nu$ is
+\[
+C(\mu, \nu) \;:=\; \sum_{a \in A} d_{\mathrm{B}}(\mu(a), \nu(a)) \;=\; \sum_{a \in A} \Big[\mu(a) \log \frac{\mu(a)}{\nu(a)} \;+\; (1 - \mu(a)) \log \frac{1 - \mu(a)}{1 - \nu(a)}\Big].
+\]
+$C(\mu, \nu) \geqslant 0$ by Lemma~\ref{lem:bernoulli-kl-props}(i), with equality iff $\mu = \nu$ pointwise.
+\end{definition}
+
+When $A$ is the set of unordered pairs $\{i, j\}$ in $\{1, \ldots, n\}$ and $\mu, \nu$ are interpreted as edge-strength functions on the complete graph $K_n$, the sum $C(\mu, \nu)$ is the UMAP optimization target derived in \S 7.5.7.
+
+\begin{suppremark}[Why fuzzy cross-entropy and not KL]
+A pairwise membership $\mu_{ij}$ is not the probability of "selecting edge $\{i, j\}$"; it is the probability that the edge "exists". The natural model is one Bernoulli per edge. The KL divergence between two product Bernoulli laws over independent edges decomposes as a sum of per-edge $d_{\mathrm{B}}$, which is exactly $C(\mu, \nu)$. Independence across pairs is a UMAP modeling assumption, not a derived fact.
+\end{suppremark}
+
+\subsection{Simplicial complexes}\label{subsec:7.1.6}
+
+UMAP describes the data as a discrete shape whose vertices are the data points and whose higher faces encode local neighborhood relations.
+
+\begin{definition}[Abstract simplicial complex]\label{def:abstract-simp}
+Let $V$ be a finite set. An \textbf{abstract simplicial complex} on $V$ is a collection $K \subseteq 2^V \setminus \{\varnothing\}$ closed under taking nonempty subsets:
+\[
+\sigma \in K \text{ and } \varnothing \neq \tau \subseteq \sigma \;\Longrightarrow\; \tau \in K.
+\]
+Each $\sigma \in K$ is a \textbf{simplex} (or \textbf{face}); $|\sigma| - 1$ is its \textbf{dimension}. The dimension of $K$ is $\max_{\sigma \in K} (|\sigma| - 1)$.
+\end{definition}
+
+A $0$-simplex is a vertex, a $1$-simplex an edge, a $2$-simplex a (filled) triangle, a $3$-simplex a (filled) tetrahedron.
+
+\begin{example}\label{ex:triangle-complex}
+Take $V = \{1, 2, 3\}$. The collection
+\[
+K \;=\; \{\{1\}, \{2\}, \{3\}, \{1, 2\}, \{2, 3\}, \{1, 3\}, \{1, 2, 3\}\}
+\]
+is an abstract simplicial complex of dimension $2$: the closed triangle. Removing $\{1, 2, 3\}$ yields the boundary, dimension $1$.
+\end{example}
+
+The geometric counterpart fills each simplex with a Euclidean simplex.
+
+\begin{definition}[Affine independence; geometric simplex]\label{def:geom-simp}
+Points $w_0, \ldots, w_n \in \mathbb{R}^N$ are \textbf{affinely independent} when the differences $w_1 - w_0, \ldots, w_n - w_0$ are linearly independent in $\mathbb{R}^N$. The \textbf{geometric $n$-simplex} they span is the convex hull
+\[
+[w_0, \ldots, w_n] \;:=\; \Big\{\textstyle\sum_{i = 0}^{n} t_i w_i : t_i \geqslant 0,\; \sum_{i = 0}^{n} t_i = 1\Big\}.
+\]
+The \textbf{standard $n$-simplex} is
+\[
+\Delta^n \;:=\; \big\{(t_0, \ldots, t_n) \in \mathbb{R}^{n + 1} : t_i \geqslant 0,\; \textstyle\sum_i t_i = 1\big\}.
+\]
+\end{definition}
+
+The $\Delta^n$ inherit two families of structural maps. The \textbf{coface} maps $d^i : \Delta^{n - 1} \to \Delta^n$ include $\Delta^{n - 1}$ as the boundary face opposite the $i$-th vertex; the \textbf{codegeneracy} maps $s^i : \Delta^{n + 1} \to \Delta^n$ collapse the edge between the $i$-th and $(i + 1)$-th vertices:
+\[
+d^i(t_0, \ldots, t_{n - 1}) \;=\; (t_0, \ldots, t_{i - 1}, 0, t_i, \ldots, t_{n - 1}),
+\]
+\[
+s^i(t_0, \ldots, t_{n + 1}) \;=\; (t_0, \ldots, t_{i - 1}, t_i + t_{i + 1}, t_{i + 2}, \ldots, t_{n + 1}).
+\]
+These satisfy a fixed list of identities, the \textbf{simplicial identities}, recorded in \S\ref{subsec:7.1.7} once the categorical language is in place.
+
+\begin{definition}[Geometric realization]\label{def:geom-real}
+Let $K$ be an abstract simplicial complex on $V = \{v_0, \ldots, v_m\}$. Choose any affinely independent $w_0, \ldots, w_m$ in some $\mathbb{R}^N$; e.g.\ take $w_i = e_{i + 1}$, the $(i + 1)$-th standard basis vector in $\mathbb{R}^{m + 1}$. The \textbf{geometric realization} of $K$ is
+\[
+|K| \;:=\; \bigcup_{\sigma \in K} \big[\,w_i : v_i \in \sigma\,\big] \;\subseteq\; \mathbb{R}^{N},
+\]
+the union of geometric simplices over all faces of $K$. The combinatorial structure of $K$ determines $|K|$ up to homeomorphism.
+\end{definition}
+
+UMAP works with a more flexible variant in which each simplex carries a numerical weight in $(0, 1]$, the strength of its membership.
+
+\subsection{Categories, functors, and adjunctions}\label{subsec:7.1.7}
+
+UMAP's mathematical foundation \citep{spivak-2009, mcinnes-healy-melville-2018} describes a metric space and a fuzzy simplicial set as objects of two categories related by an adjoint pair of functors.
+
+\begin{definition}[Category]\label{def:category}
+A \textbf{category} $\mathcal{C}$ consists of:
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item a class $\mathrm{Ob}(\mathcal{C})$ of \textbf{objects};
+\item for each ordered pair $(A, B)$ of objects, a set $\hom_{\mathcal{C}}(A, B)$ of \textbf{morphisms} from $A$ to $B$ (also written $f : A \to B$);
+\item for each triple $(A, B, C)$, a \textbf{composition} map
+\[
+\circ : \hom_{\mathcal{C}}(B, C) \times \hom_{\mathcal{C}}(A, B) \to \hom_{\mathcal{C}}(A, C), \qquad (g, f) \mapsto g \circ f;
+\]
+\item for each $A$, an \textbf{identity} morphism $1_A \in \hom_{\mathcal{C}}(A, A)$;
+\end{enumerate}
+satisfying \textbf{associativity} ($h \circ (g \circ f) = (h \circ g) \circ f$ whenever defined) and the \textbf{unit laws} ($f \circ 1_A = f$ and $1_B \circ f = f$ for $f : A \to B$).
+\end{definition}
+
+\begin{example}[Standard categories]\label{ex:cats}
+\leavevmode
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=3pt, topsep=2pt]
+\item $\mathbf{Set}$: objects are sets, morphisms are functions; composition is function composition; identities are identity functions.
+\item $\mathbf{Vec}_{\mathbb{R}}$: objects are real vector spaces, morphisms are linear maps.
+\item $\mathbf{Top}$: objects are topological spaces, morphisms are continuous functions.
+\item Any partially ordered set $(P, \leqslant)$ becomes a category $\mathcal{P}$ with $\mathrm{Ob}(\mathcal{P}) = P$ and $|\hom_{\mathcal{P}}(a, b)| = 1$ when $a \leqslant b$, $0$ otherwise. Associativity is transitivity; the identity is reflexivity.
+\item $\mathbf{Met}$: objects are metric spaces, morphisms are short maps ($d(f(x), f(y)) \leqslant d(x, y)$).
+\end{enumerate}
+\end{example}
+
+\begin{definition}[Opposite category]\label{def:opposite}
+The \textbf{opposite category} $\mathcal{C}^{\mathrm{op}}$ has the same objects as $\mathcal{C}$, with $\hom_{\mathcal{C}^{\mathrm{op}}}(A, B) := \hom_{\mathcal{C}}(B, A)$ and composition $g \circ_{op} f := f \circ_{\mathcal{C}} g$. Identities are identical to those of $\mathcal{C}$. The construction is involutive: $(\mathcal{C}^{\mathrm{op}})^{\mathrm{op}} = \mathcal{C}$.
+\end{definition}
+
+\begin{definition}[The simplex category]\label{def:simplex-cat}
+The \textbf{simplex category} $\Delta$ has:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item objects $[n] := \{0, 1, \ldots, n\}$ for $n \geqslant 0$, treated as totally ordered sets;
+\item morphisms $[m] \to [n]$ the order-preserving maps $f : [m] \to [n]$ (so $i \leqslant j \Rightarrow f(i) \leqslant f(j)$);
+\item composition is composition of maps; identities are identity maps.
+\end{itemize}
+The geometric maps $d^i, s^i$ from \S\ref{subsec:7.1.6} correspond to morphisms in $\Delta$:
+\[
+d^i : [n - 1] \to [n], \qquad d^i(j) = \begin{cases} j & j < i \\ j + 1 & j \geqslant i \end{cases} \qquad (\text{skip } i),
+\]
+\[
+s^i : [n + 1] \to [n], \qquad s^i(j) = \begin{cases} j & j \leqslant i \\ j - 1 & j > i \end{cases} \qquad (\text{double } i).
+\]
+Every morphism in $\Delta$ factors as a composition of these face inclusions and degeneracy surjections; the relations among them are the simplicial identities \citep[\S VII.5]{mac-lane-1971}.
+\end{definition}
+
+\begin{definition}[Functor]\label{def:functor}
+A \textbf{functor} $F : \mathcal{C} \to \mathcal{D}$ assigns:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item to each $A \in \mathrm{Ob}(\mathcal{C})$ an object $F A \in \mathrm{Ob}(\mathcal{D})$;
+\item to each morphism $f : A \to B$ in $\mathcal{C}$ a morphism $F f : F A \to F B$ in $\mathcal{D}$;
+\end{itemize}
+preserving composition ($F(g \circ f) = F g \circ F f$) and identities ($F 1_A = 1_{F A}$). A functor $\mathcal{C}^{\mathrm{op}} \to \mathcal{D}$ is a \textbf{contravariant functor}; explicitly, it sends $f : A \to B$ in $\mathcal{C}$ to $F f : F B \to F A$ in $\mathcal{D}$ and reverses the composition order.
+\end{definition}
+
+\begin{example}[Standard functors]\label{ex:functors}
+\leavevmode
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=3pt, topsep=2pt]
+\item Identity: $1_{\mathcal{C}} : \mathcal{C} \to \mathcal{C}$.
+\item Forgetful: $U : \mathbf{Vec}_{\mathbb{R}} \to \mathbf{Set}$ sends a vector space to its underlying set, a linear map to its underlying function.
+\item Free: $F : \mathbf{Set} \to \mathbf{Vec}_{\mathbb{R}}$ sends a set $A$ to the free vector space $\mathbb{R}^A$ and a function $f : A \to B$ to its unique linear extension $F f$.
+\item Hom-functor: For fixed $A \in \mathcal{C}$, $\hom_{\mathcal{C}}(A, -) : \mathcal{C} \to \mathbf{Set}$ sends $B \mapsto \hom_{\mathcal{C}}(A, B)$ and $f : B \to B'$ to post-composition $f \circ - : \hom_{\mathcal{C}}(A, B) \to \hom_{\mathcal{C}}(A, B')$.
+\item Presheaf: a functor $\mathcal{C}^{\mathrm{op}} \to \mathbf{Set}$ is a \textbf{presheaf on $\mathcal{C}$}; the category of presheaves is $\mathbf{PSh}(\mathcal{C}) := \mathbf{Set}^{\mathcal{C}^{\mathrm{op}}}$. \textbf{Simplicial sets} are presheaves on $\Delta$: $\mathbf{sSet} := \mathbf{Set}^{\Delta^{\mathrm{op}}}$.
+\end{enumerate}
+\end{example}
+
+A simplicial set $X \in \mathbf{sSet}$ assigns to each $[n]$ a set $X_n := X([n])$ of \textbf{$n$-simplices}, and to each order-preserving $f : [m] \to [n]$ a map $X(f) : X_n \to X_m$ (note the reversal: $X$ is contravariant on $\Delta$). The face and degeneracy operators $d_i := X(d^i) : X_n \to X_{n - 1}$ and $s_i := X(s^i) : X_n \to X_{n + 1}$ are the data the abstract simplicial complex of \S\ref{subsec:7.1.6} carries when reformulated functorially.
+
+\begin{definition}[Natural transformation]\label{def:natural}
+For functors $F, G : \mathcal{C} \to \mathcal{D}$, a \textbf{natural transformation} $\eta : F \Rightarrow G$ is a family of morphisms $\eta_A : F A \to G A$ in $\mathcal{D}$, indexed by $A \in \mathrm{Ob}(\mathcal{C})$, such that for every $f : A \to B$ in $\mathcal{C}$ the square
+\[
+\begin{array}{ccc}
+F A & \xrightarrow{\eta_A} & G A \\
+{\scriptstyle F f}\downarrow & & \downarrow{\scriptstyle G f} \\
+F B & \xrightarrow{\eta_B} & G B
+\end{array}
+\]
+commutes: $G f \circ \eta_A = \eta_B \circ F f$. The morphisms $\eta_A$ are the \textbf{components} of $\eta$.
+\end{definition}
+
+The composition of natural transformations and the identity $1_F$ (with $(1_F)_A = 1_{F A}$) make functors $\mathcal{C} \to \mathcal{D}$ into a category $[\mathcal{C}, \mathcal{D}]$ or $\mathcal{D}^{\mathcal{C}}$. In particular $\mathbf{sSet} = \mathbf{Set}^{\Delta^{\mathrm{op}}}$ is a category whose morphisms are natural transformations of presheaves.
+
+\begin{definition}[Adjunction, hom-set form]\label{def:adjunction}
+Functors $F : \mathcal{C} \to \mathcal{D}$ and $G : \mathcal{D} \to \mathcal{C}$ form an \textbf{adjoint pair} ($F$ \textbf{left adjoint to} $G$, written $F \dashv G$) when there exists a family of bijections
+\[
+\phi_{A, B} : \hom_{\mathcal{D}}(F A, B) \;\xrightarrow{\;\cong\;}\; \hom_{\mathcal{C}}(A, G B)
+\]
+indexed by $(A, B)$, \textbf{natural in $A$ and $B$}: for every $f : A' \to A$ in $\mathcal{C}$, $g : B \to B'$ in $\mathcal{D}$, and $h : F A \to B$,
+\[
+\phi_{A', B'}(g \circ h \circ F f) \;=\; G g \circ \phi_{A, B}(h) \circ f.
+\]
+\end{definition}
+
+The next theorem gives the equivalent presentation that the Spivak adjunction (\S 7.5.4) uses directly.
+
+\begin{theorem}[Adjunction, unit-counit form]\label{thm:adjunction-unit-counit}
+$F \dashv G$ in the sense of Definition~\ref{def:adjunction} if and only if there exist natural transformations
+\[
+\eta : 1_{\mathcal{C}} \Rightarrow G F \quad (\textbf{unit}), \qquad \varepsilon : F G \Rightarrow 1_{\mathcal{D}} \quad (\textbf{counit}),
+\]
+satisfying the \textbf{triangle identities}
+\[
+\varepsilon_{F A} \circ F \eta_A \;=\; 1_{F A} \;\text{ in } \mathcal{D}, \qquad G \varepsilon_B \circ \eta_{G B} \;=\; 1_{G B} \;\text{ in } \mathcal{C},
+\]
+for every $A \in \mathrm{Ob}(\mathcal{C})$, $B \in \mathrm{Ob}(\mathcal{D})$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:adjunction-unit-counit}]
+We prove the two directions in turn.
+
+\textbf{(Hom-set form $\Rightarrow$ unit-counit form).} Given the natural bijections $\phi$, define
+\[
+\eta_A \;:=\; \phi_{A, F A}(1_{F A}) \;\in\; \hom_{\mathcal{C}}(A, G F A), \qquad \varepsilon_B \;:=\; \phi_{G B, B}^{-1}(1_{G B}) \;\in\; \hom_{\mathcal{D}}(F G B, B).
+\]
+
+\textbf{Naturality of $\eta$.} For $f : A' \to A$, set $h = 1_{F A}$ in the naturality identity of Definition~\ref{def:adjunction} with $g = 1_{F A}$ (and the identity $1_{F A} \circ 1_{F A} \circ F f = F f$):
+\[
+\phi_{A', F A}(F f) \;=\; G 1_{F A} \circ \phi_{A, F A}(1_{F A}) \circ f \;=\; \eta_A \circ f.
+\]
+Now apply the naturality identity with $A' = A'$, $B = F A'$, $B' = F A$, $g = F f$, and $h = 1_{F A'}$:
+\[
+\phi_{A', F A}(F f \circ 1_{F A'}) \;=\; \phi_{A', F A}(F f) \;=\; G F f \circ \phi_{A', F A'}(1_{F A'}) \circ 1_{A'} \;=\; G F f \circ \eta_{A'}.
+\]
+Equating the two expressions for $\phi_{A', F A}(F f)$:
+\[
+\eta_A \circ f \;=\; G F f \circ \eta_{A'},
+\]
+the naturality square for $\eta : 1_{\mathcal{C}} \Rightarrow G F$.
+
+\textbf{Naturality of $\varepsilon$.} For $g : B \to B'$ in $\mathcal{D}$, we show $\varepsilon_{B'} \circ F G g = g \circ \varepsilon_B$. Apply $\phi_{G B, B'}$ to each side. Naturality in the second argument (with $g' = g$, $h = \varepsilon_B$) gives
+\[
+\phi_{G B, B'}(g \circ \varepsilon_B) \;=\; G g \circ \phi_{G B, B}(\varepsilon_B) \;=\; G g \circ 1_{G B} \;=\; G g,
+\]
+using $\phi_{G B, B}(\varepsilon_B) = 1_{G B}$. Naturality in the first argument (with $f = G g$, starting hom $\varepsilon_{B'} \in \hom(F G B', B')$) gives
+\[
+\phi_{G B, B'}(\varepsilon_{B'} \circ F G g) \;=\; \phi_{G B', B'}(\varepsilon_{B'}) \circ G g \;=\; 1_{G B'} \circ G g \;=\; G g.
+\]
+Both expressions equal $G g$; bijectivity of $\phi_{G B, B'}$ gives $\varepsilon_{B'} \circ F G g = g \circ \varepsilon_B$.
+
+\textbf{Triangle identity 2: $G \varepsilon_B \circ \eta_{G B} = 1_{G B}$.} By definition $\phi_{G B, B}(\varepsilon_B) = 1_{G B}$. Naturality in the second argument with $g = \varepsilon_B$, $h = 1_{F G B}$ gives
+\[
+\phi_{G B, B}(\varepsilon_B \circ 1_{F G B}) \;=\; G \varepsilon_B \circ \phi_{G B, F G B}(1_{F G B}) \;=\; G \varepsilon_B \circ \eta_{G B},
+\]
+using $\phi_{G B, F G B}(1_{F G B}) = \eta_{G B}$. The left side is $\phi_{G B, B}(\varepsilon_B) = 1_{G B}$, hence $G \varepsilon_B \circ \eta_{G B} = 1_{G B}$.
+
+\textbf{Triangle identity 1: $\varepsilon_{F A} \circ F \eta_A = 1_{F A}$.} Apply $\phi_{A, F A}$ to both sides; bijectivity reduces the claim to $\phi_{A, F A}(\varepsilon_{F A} \circ F \eta_A) = \phi_{A, F A}(1_{F A}) = \eta_A$. Naturality in the second argument (with $g = \varepsilon_{F A}$, $h = F \eta_A$) gives
+\[
+\phi_{A, F A}(\varepsilon_{F A} \circ F \eta_A) \;=\; G \varepsilon_{F A} \circ \phi_{A, F G F A}(F \eta_A).
+\]
+Naturality in the first argument (with $f = \eta_A$, starting hom $1_{F G F A}$) gives
+\[
+\phi_{A, F G F A}(F \eta_A) \;=\; \phi_{A, F G F A}(1_{F G F A} \circ F \eta_A) \;=\; \phi_{G F A, F G F A}(1_{F G F A}) \circ \eta_A \;=\; \eta_{G F A} \circ \eta_A.
+\]
+Substitute and apply Triangle identity 2 at $B = F A$:
+\[
+\phi_{A, F A}(\varepsilon_{F A} \circ F \eta_A) \;=\; G \varepsilon_{F A} \circ \eta_{G F A} \circ \eta_A \;=\; 1_{G F A} \circ \eta_A \;=\; \eta_A.
+\]
+
+\textbf{(Unit-counit form $\Rightarrow$ hom-set form).} Given $(\eta, \varepsilon)$ satisfying the triangle identities, define
+\[
+\phi_{A, B} : \hom_{\mathcal{D}}(F A, B) \to \hom_{\mathcal{C}}(A, G B), \qquad h \mapsto G h \circ \eta_A,
+\]
+\[
+\psi_{A, B} : \hom_{\mathcal{C}}(A, G B) \to \hom_{\mathcal{D}}(F A, B), \qquad k \mapsto \varepsilon_B \circ F k.
+\]
+
+\textbf{$\psi$ inverts $\phi$.} For $h : F A \to B$,
+\begin{align*}
+\psi(\phi(h)) \;&=\; \varepsilon_B \circ F(G h \circ \eta_A) \;=\; \varepsilon_B \circ F G h \circ F \eta_A \\
+&\stackrel{(\text{nat.\ } \varepsilon)}{=}\; h \circ \varepsilon_{F A} \circ F \eta_A \;\stackrel{(\text{triangle 1})}{=}\; h \circ 1_{F A} \;=\; h.
+\end{align*}
+For $k : A \to G B$,
+\begin{align*}
+\phi(\psi(k)) \;&=\; G(\varepsilon_B \circ F k) \circ \eta_A \;=\; G \varepsilon_B \circ G F k \circ \eta_A \\
+&\stackrel{(\text{nat.\ } \eta)}{=}\; G \varepsilon_B \circ \eta_{G B} \circ k \;\stackrel{(\text{triangle 2})}{=}\; 1_{G B} \circ k \;=\; k.
+\end{align*}
+$\phi$ and $\psi$ are mutually inverse.
+
+\textbf{Naturality of $\phi$.} For $f : A' \to A$, $g : B \to B'$, $h : F A \to B$,
+\begin{align*}
+\phi_{A', B'}(g \circ h \circ F f) \;&=\; G(g \circ h \circ F f) \circ \eta_{A'} \\
+&=\; G g \circ G h \circ G F f \circ \eta_{A'} \\
+&\stackrel{(\text{nat.\ } \eta)}{=}\; G g \circ G h \circ \eta_A \circ f \\
+&=\; G g \circ \phi_{A, B}(h) \circ f. \qquad \blacksquare
+\end{align*}
+\end{derivation}
+
+\begin{example}[Free-forgetful adjunction]\label{ex:free-forgetful}
+For $F : \mathbf{Set} \to \mathbf{Vec}_{\mathbb{R}}$ and $U : \mathbf{Vec}_{\mathbb{R}} \to \mathbf{Set}$ as in Example~\ref{ex:functors}(ii)--(iii), $F \dashv U$. The hom-set bijection
+\[
+\phi_{A, V} : \hom_{\mathbf{Vec}}(\mathbb{R}^A, V) \;\xrightarrow{\;\cong\;}\; \hom_{\mathbf{Set}}(A, U V)
+\]
+sends a linear map $T$ to its restriction $a \mapsto T(e_a)$ on the basis $\{e_a\}$, with inverse the linear extension. The unit $\eta_A : A \to U F A = U(\mathbb{R}^A)$ is $a \mapsto e_a$; the counit $\varepsilon_V : F U V \to V$ is the linear extension of $\mathrm{id}_V$, summing formal $\mathbb{R}$-combinations.
+\end{example}
+
+\begin{suppremark}[Adjoints determine each other]
+A functor admits at most one right adjoint up to natural isomorphism (and likewise for left). The Spivak adjunction (\S 7.5.4) is therefore canonical: given the geometric realization $|\cdot| : \mathbf{sFuzz} \to \mathbf{FinEPMet}$, its right adjoint $\mathrm{Sing}$ is determined up to natural isomorphism. UMAP exploits this canonicity to declare its optimization target unambiguously.
+\end{suppremark}
+
+\subsection{Fuzzy sets and fuzzy simplicial sets}\label{subsec:7.1.8}
+
+UMAP replaces the binary "edge present / absent" of a graph with a strength of membership in $(0, 1]$. The categorical machinery of \S\ref{subsec:7.1.7} extends to this setting: replace $\mathbf{Set}$ with the category of fuzzy sets, then take presheaves on $\Delta$ valued in fuzzy sets.
+
+\begin{definition}[Fuzzy set]\label{def:fuzzy-set}
+A \textbf{fuzzy set} on a (non-fuzzy) ground set $A$ is a function $\mu : A \to [0, 1]$ assigning to each $a \in A$ a \textbf{strength of membership} $\mu(a)$. The \textbf{support} is $\mathrm{supp}(\mu) := \{a : \mu(a) > 0\}$. A fuzzy set is \textbf{strict} when $\mu : A \to (0, 1]$ (every element has positive strength).
+\end{definition}
+
+\begin{definition}[Category $\mathbf{Fuzz}$]\label{def:fuzz-cat}
+$\mathbf{Fuzz}$ has:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item objects: pairs $(A, \mu)$ with $A$ a set and $\mu : A \to [0, 1]$;
+\item morphisms $(A, \mu) \to (B, \nu)$: functions $f : A \to B$ such that $\mu(a) \leqslant \nu(f(a))$ for every $a \in A$;
+\item composition: composition of underlying functions; identities: identity functions.
+\end{itemize}
+The condition $\mu(a) \leqslant \nu(f(a))$ records that membership is preserved (or strengthened) along $f$. Associativity and unit laws follow from those of $\mathbf{Set}$.
+\end{definition}
+
+A second presentation reuses the unit interval as a poset.
+
+\begin{definition}[Unit interval as a category]\label{def:unit-interval-cat}
+$\mathbb{I} := (0, 1]$ is a poset under $\leqslant$. Treated as a category $\mathcal{I}$ via Example~\ref{ex:cats}(iv), $\mathcal{I}$ has objects $a \in (0, 1]$ and a unique morphism $a \to b$ when $a \leqslant b$. The opposite category $\mathcal{I}^{\mathrm{op}}$ has the unique morphism $b \to a$ when $a \leqslant b$.
+\end{definition}
+
+\begin{lemma}[Fuzzy sets as $\mathcal{I}^{\mathrm{op}}$-presheaves; finite ground sets]\label{lem:fuzzy-presheaf}
+The category $\mathbf{Fuzz}^{\mathrm{fin}}$ of strict fuzzy sets on finite ground sets is equivalent to the full subcategory of $\mathbf{Set}^{\mathcal{I}^{\mathrm{op}}}$ whose objects are presheaves $X : \mathcal{I}^{\mathrm{op}} \to \mathbf{Set}$ taking values in finite sets, with every restriction map $X(b) \to X(a)$ (for $a \leqslant b$) an injection.
+\end{lemma}
+
+\begin{proof}
+\textbf{Object correspondence.} Given a strict fuzzy set $\mu : A \to (0, 1]$ on finite $A$, define $X_\mu(a) := \{x \in A : \mu(x) \geqslant a\}$ for $a \in (0, 1]$. Each $X_\mu(a)$ is a finite subset of $A$, and for $a \leqslant b$ the inclusion $X_\mu(b) \hookrightarrow X_\mu(a)$ is the (manifestly injective) restriction map of the resulting presheaf.
+
+Conversely, given an injective presheaf $X$ valued in finite sets, take $A$ to be the eventual stable value of $X(a)$ as $a \to 0^+$; this set is finite by the assumption that each $X(a)$ is finite, and the chain has finitely many distinct values since $|X(a)|$ is monotone non-increasing in $a$ and integer-valued. For $x \in A$, the set $\{a \in (0, 1] : x \in X(a)\}$ is downward-closed, takes finitely many values, and admits a maximum (the chain stabilizes at finite steps), so $\mu_X(x) := \max\{a : x \in X(a)\}$ is attained. Then $X(a) = \{x : \mu_X(x) \geqslant a\}$ holds exactly for every $a \in (0, 1]$.
+
+\textbf{Morphism correspondence.} A morphism of fuzzy sets $f : (A, \mu) \to (B, \nu)$ satisfies $\mu(a) \leqslant \nu(f(a))$ iff for every threshold $\alpha$, $X_\mu(\alpha) \subseteq f^{-1}(X_\nu(\alpha))$, equivalently $f$ restricts to a function $X_\mu(\alpha) \to X_\nu(\alpha)$ commuting with the inclusion structure as $\alpha$ varies. This is exactly a natural transformation between the corresponding presheaves.
+
+The two assignments are mutually inverse on objects and on morphisms.
+\end{proof}
+
+The lemma lets the categorical formalism handle fuzzy sets uniformly with simplicial sets. The next definition combines the two.
+
+\begin{definition}[Fuzzy simplicial set]\label{def:fuzzy-ssset}
+A \textbf{fuzzy simplicial set} is a functor
+\[
+X : \Delta^{\mathrm{op}} \times \mathcal{I}^{\mathrm{op}} \to \mathbf{Set}
+\]
+such that for each $[n] \in \Delta$, the restriction $X([n], -) : \mathcal{I}^{\mathrm{op}} \to \mathbf{Set}$ is an injective presheaf in the sense of Lemma~\ref{lem:fuzzy-presheaf}. Equivalently, $X$ is a functor $\Delta^{\mathrm{op}} \to \mathbf{Fuzz}$. The category of fuzzy simplicial sets and natural transformations is denoted $\mathbf{sFuzz}$.
+
+An element of $X([n], a)$ is an \textbf{$n$-simplex of strength $a$}; injectivity in $\mathcal{I}^{\mathrm{op}}$ means that an $n$-simplex of strength $b$ has membership $\geqslant a$ for every $a \leqslant b$ via the restriction map.
+\end{definition}
+
+A fuzzy simplicial set is therefore a system of simplicial sets $X^a := X(-, a) \in \mathbf{sSet}$ for $a \in (0, 1]$, with inclusions $X^b \hookrightarrow X^a$ whenever $a \leqslant b$ (stronger simplices are weaker simplices too).
+
+The objects on the metric side come next.
+
+\begin{definition}[Extended-pseudo-metric space]\label{def:epmet}
+An \textbf{extended-pseudo-metric space} is a pair $(X, d)$ with $X$ a set and $d : X \times X \to [0, \infty]$ satisfying, for every $x, y, z \in X$:
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $d(x, x) = 0$ (reflexivity);
+\item $d(x, y) = d(y, x)$ (symmetry);
+\item $d(x, z) \leqslant d(x, y) + d(y, z)$ (triangle inequality, with $\infty + a := \infty$).
+\end{enumerate}
+The "pseudo" qualifier drops the implication $d(x, y) = 0 \Rightarrow x = y$; the "extended" qualifier admits $d(x, y) = \infty$.
+\end{definition}
+
+\begin{definition}[Category $\mathbf{FinEPMet}$]\label{def:finepmet}
+$\mathbf{FinEPMet}$ has:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item objects: extended-pseudo-metric spaces $(X, d)$ with $X$ a finite set;
+\item morphisms $(X, d_X) \to (Y, d_Y)$: short maps, $d_Y(f(x), f(x')) \leqslant d_X(x, x')$ for every $x, x'$;
+\item composition: composition of functions; identities: identity functions.
+\end{itemize}
+\end{definition}
+
+The two categories $\mathbf{sFuzz}$ and $\mathbf{FinEPMet}$ are linked by an adjunction \citep{spivak-2009}, used by UMAP. The full statement and proof appear in \S 7.5.4 once the manifold-modeling motivation is in place.
+
+\section{Principal Component Analysis}\label{sec:7.2}
+
+\subsection{The two PCA problems}\label{subsec:7.2.1}
+
+Let $X \in \mathbb{R}^{n \times p}$ be a data matrix with rows $x_1^\top, \ldots, x_n^\top$, centered so that $\bar x = \mathbf{0}$ (achieved by left-multiplying by the centering matrix $\mathbf{M}_0$ of \S\ref{subsec:7.1.4}). The sample covariance is $S = \frac{1}{n - 1} X^\top X$.
+
+\begin{definition}[Variance-maximization formulation]\label{def:pca-var}
+The \textbf{$k$-th principal direction} is the unit vector $u_k \in \mathbb{R}^p$ solving
+\[
+u_k \;=\; \arg\max_{\substack{u \in \mathbb{R}^p,\, \|u\| = 1 \\ u \perp u_1, \ldots, u_{k - 1}}} u^\top S u, \qquad k = 1, 2, \ldots, p.
+\]
+The \textbf{$k$-th principal score} of observation $i$ is $z_{ik} = u_k^\top x_i$. The directions $u_k$ are the \textbf{loadings}; the scores are the coordinates of the data in the principal frame.
+\end{definition}
+
+The objective $u^\top S u$ equals the sample variance of the projections $\{u^\top x_i\}_{i = 1}^n$ when $X$ is centered:
+\[
+\frac{1}{n - 1}\sum_{i = 1}^{n} (u^\top x_i)^2 \;=\; u^\top \Big(\frac{1}{n - 1} X^\top X\Big) u \;=\; u^\top S u.
+\]
+
+\begin{definition}[Reconstruction-error formulation]\label{def:pca-recon}
+For $k \leqslant p$, let $V \in \mathbb{R}^{p \times k}$ have orthonormal columns spanning a subspace $\mathcal{V} \subseteq \mathbb{R}^p$. The orthogonal projection of $x_i$ onto $\mathcal{V}$ is $V V^\top x_i$, with reconstruction error $\|x_i - V V^\top x_i\|^2$. The \textbf{rank-$k$ PCA subspace} is the $\mathcal{V}$ minimizing
+\[
+R_k(\mathcal{V}) \;=\; \sum_{i = 1}^{n} \|x_i - V V^\top x_i\|^2 \;=\; \|X - X V V^\top\|_F^2.
+\]
+\end{definition}
+
+\subsection{Variance-maximization solution via Rayleigh}\label{subsec:7.2.2}
+
+\begin{theorem}[Principal directions are eigenvectors of $S$]\label{thm:pca-eigen}
+Let $\lambda_1 \geqslant \cdots \geqslant \lambda_p \geqslant 0$ be the eigenvalues of $S$ with orthonormal eigenvectors $q_1, \ldots, q_p$ (Theorem~\ref{thm:spectral-recap}). The choice $u_k := q_k$ satisfies Definition~\ref{def:pca-var}, with maximized objective
+\[
+u_k^\top S u_k \;=\; \lambda_k.
+\]
+\end{theorem}
+
+\begin{proof}
+$S = \frac{1}{n-1} X^\top X$ is symmetric, and $v^\top S v = \frac{1}{n-1}\|X v\|^2 \geqslant 0$, so PSD; the eigenvalues are real and nonnegative.
+
+Show $u_k = q_k$ satisfies Definition~\ref{def:pca-var} by induction on $k$. Unit~2 Theorem~2.7 with $A = S$ states
+\[
+\lambda_k \;=\; \max\{u^\top S u : \|u\| = 1,\; u \perp q_1, \ldots, q_{k-1}\},
+\]
+attained at $q_k$. Definition~\ref{def:pca-var} differs only by replacing $q_1, \ldots, q_{k-1}$ in the orthogonality constraint with the inductively-defined $u_1, \ldots, u_{k-1}$. The base case $k = 1$ has empty constraint in both, so $u_1 = q_1$ with maximum $\lambda_1$. The inductive step substitutes $u_j = q_j$ for $j < k$ (hypothesis), making the two constraint sets identical; $u_k = q_k$ remains a valid choice with $u_k^\top S u_k = q_k^\top S q_k = \lambda_k$.
+\end{proof}
+
+\begin{lemma}[Variance decomposition]\label{lem:pca-var-account}
+Total sample variance $\tr(S)$ decomposes as
+\[
+\tr(S) \;=\; \sum_{k=1}^{p} \lambda_k \;=\; \sum_{k=1}^{p} u_k^\top S u_k.
+\]
+The first $k$ principal directions capture $\sum_{j=1}^{k} \lambda_j$ of the total.
+\end{lemma}
+
+\begin{proof}
+$\tr(S) = \tr(Q \Lambda Q^\top) = \tr(\Lambda Q^\top Q) = \tr(\Lambda) = \sum_k \lambda_k$ by cyclicity of the trace and $Q^\top Q = I_p$. The second equality is Theorem~\ref{thm:pca-eigen}.
+\end{proof}
+
+\subsection{Reconstruction-error formulation and equivalence}\label{subsec:7.2.3}
+
+\begin{theorem}[Equivalence of variance-max and reconstruction-min]\label{thm:pca-equivalence}
+With $S$, $\lambda_j$, $q_j$ as in Theorem~\ref{thm:pca-eigen},
+\[
+\mathcal{V}^\star \;=\; \mathrm{span}(q_1, \ldots, q_k)
+\]
+minimizes the rank-$k$ reconstruction error of Definition~\ref{def:pca-recon}, with minimum value
+\[
+R_k(\mathcal{V}^\star) \;=\; (n - 1) \sum_{j > k} \lambda_j.
+\]
+\end{theorem}
+
+\begin{proof}
+The singular values of $X$ satisfy $\sigma_j^2 = \lambda_j(X^\top X) = (n - 1) \lambda_j$ (Theorem~\ref{thm:svd} and $X^\top X = (n - 1) S$). Set $Q_k = [q_1\ \cdots\ q_k] \in \mathbb{R}^{p \times k}$; $Q_k Q_k^\top$ is the orthogonal projection onto $\mathcal{V}^\star$.
+
+\textbf{Step 1: Reconstruction error at $\mathcal{V}^\star$.} With $\|M\|_F^2 = \tr(M^\top M)$ and $Q_k Q_k^\top$ symmetric idempotent,
+\[
+\|X - X Q_k Q_k^\top\|_F^2 \;=\; \tr\big((I - Q_k Q_k^\top) X^\top X (I - Q_k Q_k^\top)\big) \;=\; \tr\big(X^\top X (I - Q_k Q_k^\top)\big),
+\]
+the second equality by trace cyclicity and $(I - Q_k Q_k^\top)^2 = I - Q_k Q_k^\top$. Using the outer-product form $X^\top X = (n - 1) \sum_{j} \lambda_j q_j q_j^\top$ and $\tr(u v^\top) = v^\top u$,
+\[
+\tr\big(X^\top X (I - Q_k Q_k^\top)\big) \;=\; (n - 1) \sum_{j = 1}^{p} \lambda_j \, q_j^\top (I - Q_k Q_k^\top) q_j.
+\]
+The vector $Q_k^\top q_j$ has $i$-th entry $q_i^\top q_j = \delta_{ij}$ for $i \leqslant k$, so $q_j^\top Q_k Q_k^\top q_j = \|Q_k^\top q_j\|^2$ equals $1$ if $j \leqslant k$ and $0$ if $j > k$. Hence $q_j^\top (I - Q_k Q_k^\top) q_j = \indc[j > k]$, and
+\[
+\|X - X Q_k Q_k^\top\|_F^2 \;=\; (n - 1) \sum_{j > k} \lambda_j.
+\]
+
+\textbf{Step 2: Eckart--Young lower bound.} For any orthonormal $V \in \mathbb{R}^{p \times k}$ spanning a subspace $\mathcal{V}$, the matrix $X V V^\top$ has rank at most $k$. By Theorem~\ref{thm:eckart-young},
+\[
+R_k(\mathcal{V}) \;=\; \|X - X V V^\top\|_F^2 \;\geqslant\; \min_{\rk B \leqslant k} \|X - B\|_F^2 \;=\; \sum_{j > k} \sigma_j^2 \;=\; (n - 1) \sum_{j > k} \lambda_j.
+\]
+
+\textbf{Step 3: $\mathcal{V}^\star$ achieves the bound.} Steps 1 and 2 give $R_k(\mathcal{V}^\star) = (n - 1) \sum_{j > k} \lambda_j$, matching the lower bound; hence $\mathcal{V}^\star$ minimizes $R_k$.
+\end{proof}
+
+\subsection{The SVD perspective}\label{subsec:7.2.4}
+
+PCA on centered $X$ can be computed without forming $S$: the singular value decomposition of $X$ already exposes the principal directions as the right singular vectors and the principal scores as $X V$.
+
+\begin{theorem}[PCA via SVD]\label{thm:pca-svd}
+Let $X \in \mathbb{R}^{n \times p}$ be centered with reduced SVD $X = U \Sigma V^\top$, where $U \in \mathbb{R}^{n \times r}$, $\Sigma = \diag(\sigma_1, \ldots, \sigma_r)$, $V \in \mathbb{R}^{p \times r}$, and $r = \rk X$. Then:
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item The columns $v_j$ of $V$ are orthonormal eigenvectors of $S$ at eigenvalues $\lambda_j = \sigma_j^2 / (n - 1)$.
+\item The principal-score matrix $Z := X V \in \mathbb{R}^{n \times r}$ equals $U \Sigma$, with entries $z_{ij} = \sigma_j U_{ij}$.
+\item The rank-$k$ truncated SVD satisfies $X_k = X V_k V_k^\top$; its column span $\mathrm{span}(v_1, \ldots, v_k)$ is a top-$k$ eigenspace of $S$, hence minimizes the rank-$k$ reconstruction error (Theorem~\ref{thm:pca-equivalence}).
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\textbf{(i)} $X^\top X = V \Sigma^\top \Sigma V^\top = V \diag(\sigma_1^2, \ldots, \sigma_r^2) V^\top$, so each $v_j$ satisfies $X^\top X v_j = \sigma_j^2 v_j$, equivalently $S v_j = (\sigma_j^2 / (n - 1)) v_j$. Orthonormality of $\{v_j\}$ is part of the SVD definition.
+
+\textbf{(ii)} $X V = U \Sigma V^\top V = U \Sigma$, using $V^\top V = I_r$. Entry-by-entry, $z_{ij} = (U \Sigma)_{ij} = \sigma_j U_{ij}$.
+
+\textbf{(iii)} $X V_k V_k^\top = U \Sigma V^\top V_k V_k^\top$. Since $V_k$ takes the first $k$ orthonormal columns of $V$, $V^\top V_k = \bigl(\begin{smallmatrix} I_k \\ \mathbf{0}_{(r - k) \times k} \end{smallmatrix}\bigr)$, so $\Sigma V^\top V_k = \bigl(\begin{smallmatrix} \Sigma_k \\ \mathbf{0} \end{smallmatrix}\bigr)$, and
+\[
+X V_k V_k^\top \;=\; U \begin{pmatrix} \Sigma_k \\ \mathbf{0} \end{pmatrix} V_k^\top \;=\; U_k \Sigma_k V_k^\top \;=\; X_k.
+\]
+By (i), $\{v_1, \ldots, v_k\}$ are orthonormal eigenvectors of $S$ at the top-$k$ eigenvalues $\lambda_1, \ldots, \lambda_k$, so $\mathrm{span}(v_1, \ldots, v_k)$ is a top-$k$ eigenspace of $S$.
+\end{proof}
+
+\begin{suppremark}[Numerical practice]
+For $p \gg n$ (gene-expression-style data) or moderately conditioned $X$, SVD on $X$ avoids forming the $p \times p$ matrix $S = \frac{1}{n - 1} X^\top X$. Squaring $X$ amplifies any conditioning issue, since $\kappa(X^\top X) = \kappa(X)^2$, so eigendecomposing $S$ loses precision faster than SVD on $X$. The command \texttt{prcomp(X, center = TRUE)} computes PCA via SVD internally; \texttt{princomp(X)} eigendecomposes $S$ and is now legacy.
+\end{suppremark}
+
+\subsection{Loadings, scores, biplot}\label{subsec:7.2.5}
+
+PCA produces two output matrices: the loadings $V = [u_1\ \cdots\ u_p]$ (principal directions in feature space) and the scores $Z = X V = U \Sigma$ (coordinates in the principal frame, Theorem~\ref{thm:pca-svd}).
+
+\textbf{Loadings.} Column $j$ of $V$ is a vector in feature space; its entries $v_{m, j}$ are the weights of the original features in the $j$-th principal score, $z_{ij} = \sum_m v_{m, j} x_{i, m}$. A large $|v_{m, j}|$ identifies feature $m$ as a major contributor to component $j$. The sign of each $v_j$ is arbitrary: replacing $v_j$ by $-v_j$ flips all $z_{ij}$ to $-z_{ij}$ without affecting variance or reconstruction.
+
+\textbf{Scores.} Row $i$ of $Z$ is a vector in $\mathbb{R}^r$; its first $k$ entries are the coordinates of observation $i$ in the rank-$k$ PCA subspace $\mathcal{V}^\star$. The reconstruction $\hat x_i^{(k)} := \sum_{j = 1}^{k} z_{ij} v_j$ is the orthogonal projection of $x_i$ onto $\mathcal{V}^\star$ (Theorem~\ref{thm:pca-equivalence}); equivalently, the rows of $X_k = X V_k V_k^\top$ are the $\hat x_i^{(k)}$.
+
+\textbf{Biplot.} A two-dimensional \textbf{biplot} \citep{gabriel-1971} superimposes two scatter plots on the same axes: the scores $\{(z_{i, 1}, z_{i, 2}) : i = 1, \ldots, n\}$ as points, and the loadings $\{(v_{m, 1}, v_{m, 2}) : m = 1, \ldots, p\}$ as arrows from the origin (often rescaled for visibility). Nearby points are observations with similar component-1 and component-2 coordinates; arrows pointing in similar directions are features that load similarly on those two components.
+
+\subsection{Variance explained, scree plot, choice of $k$}\label{subsec:7.2.6}
+
+\begin{definition}[Fraction of variance explained]\label{def:fve}
+For PCA with eigenvalues $\lambda_1 \geqslant \cdots \geqslant \lambda_p \geqslant 0$ of $S$, the \textbf{fraction of variance explained} by the first $k$ principal directions is
+\[
+\mathrm{FVE}_k \;:=\; \frac{\sum_{j = 1}^{k} \lambda_j}{\sum_{j = 1}^{p} \lambda_j} \;=\; \frac{\sum_{j = 1}^{k} \lambda_j}{\tr(S)} \;\in\; [0, 1].
+\]
+The \textbf{cumulative variance curve} plots $\mathrm{FVE}_k$ against $k$; the \textbf{scree plot} plots $\lambda_j$ against $j$.
+\end{definition}
+
+By Lemma~\ref{lem:pca-var-account} and Theorem~\ref{thm:pca-equivalence},
+\[
+1 - \mathrm{FVE}_k \;=\; \frac{\sum_{j > k} \lambda_j}{\tr(S)} \;=\; \frac{R_k(\mathcal{V}^\star)}{(n - 1) \tr(S)}.
+\]
+$\mathrm{FVE}_k$ has two readings: the variance fraction captured (left) and the complement of the rank-$k$ reconstruction error normalized by total variance (right).
+
+\textbf{Choosing $k$.}
+
+\begin{enumerate}[label=\textup{(\arabic*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item \textbf{Cumulative variance threshold.} Pick the smallest $k$ with $\mathrm{FVE}_k \geqslant 0.9$ (or $0.8$, $0.95$, problem-dependent).
+\item \textbf{Scree elbow.} Plot $\lambda_j$ vs.\ $j$ and pick $k$ at the visual "elbow" where the curve flattens. The elbow exists because $\lambda_j$ decreases rapidly for small $j$ and stabilizes.
+\item \textbf{Kaiser rule (correlation PCA).} Keep components with $\lambda_j > 1$. The threshold is the mean eigenvalue of $R$, which equals $1$ since $\tr(R) = p$; components above the threshold capture more variance than a single original (standardized) feature.
+\end{enumerate}
+
+The three rules can disagree by several components. None has sharp theoretical justification; the Kaiser rule in particular has fallen out of favor \citep[\S 6.1.2]{jolliffe-2002} for over-retaining components on weakly-correlated data. Methods with statistical backing (parallel analysis, profile likelihood) replace the visual elbow with a calibrated comparison against random-data baselines.
+
+\subsection{Standardization: PCA on covariance vs correlation}\label{subsec:7.2.7}
+
+The PCA problems of \S\ref{subsec:7.2.1} were stated for centered data $X$. A second preprocessing choice (whether to scale each feature to unit sample variance) produces two different PCA outputs.
+
+\begin{definition}[Standardized data, correlation matrix]\label{def:std-corr}
+Let $X$ be centered, with sample covariance $S$ and per-feature sample standard deviations $s_j = \sqrt{S_{jj}}$. The \textbf{standardized data matrix} is $\widetilde X := X D^{-1}$ where $D = \diag(s_1, \ldots, s_p)$. The \textbf{sample correlation matrix} is
+\[
+R \;:=\; \frac{1}{n - 1} \widetilde X^\top \widetilde X \;=\; D^{-1} S D^{-1},
+\]
+with entries $R_{jk} = S_{jk} / (s_j s_k) \in [-1, 1]$ and $R_{jj} = 1$.
+\end{definition}
+
+PCA on $X$ uses eigenvectors of $S$; PCA on $\widetilde X$ uses eigenvectors of $R$. Unless $D = c I_p$ (all features have equal sample variance), the two eigenvector sets differ and are not related by a closed-form transformation: $R = D^{-1} S D^{-1}$ is a similarity of $S$ only when $D$ is scalar, and a non-scalar $D^{-1}$ rotates the basis non-orthogonally.
+
+\textbf{When each choice is appropriate.}
+
+\begin{enumerate}[label=\textup{(\arabic*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item \textbf{Covariance PCA} preserves the original units. Appropriate when all features are on a common scale and variance differences between features are scientifically meaningful.
+\item \textbf{Correlation PCA} eliminates scale differences. Appropriate when features are in different units (height in cm, weight in kg) or when sample variances are artifacts of the recording scale.
+\end{enumerate}
+
+\section{K-means and Hierarchical Clustering}\label{sec:7.3}
+
+\subsection{K-means objective and Lloyd's algorithm}\label{subsec:7.3.1}
+
+K-means partitions $n$ observations into $K$ clusters by minimizing the within-cluster sum of squared distances to cluster centers.
+
+\begin{definition}[K-means objective]\label{def:kmeans}
+For $X \in \mathbb{R}^{n \times p}$ with rows $x_1, \ldots, x_n$ and a fixed integer $K \in \{1, \ldots, n\}$, the \textbf{K-means objective} jointly minimizes over a partition $\mathcal{C} = (C_1, \ldots, C_K)$ of $\{1, \ldots, n\}$ into $K$ non-empty parts and cluster centers $\mu_1, \ldots, \mu_K \in \mathbb{R}^p$:
+\[
+J(\mathcal{C}, \boldsymbol\mu) \;=\; \sum_{k = 1}^{K} \sum_{i \in C_k} \|x_i - \mu_k\|^2.
+\]
+\end{definition}
+
+For fixed partition $\mathcal{C}$, the inner minimization over $\mu_k$ is unconstrained least-squares with closed-form solution $\mu_k = \bar x^{(k)} := \frac{1}{|C_k|} \sum_{i \in C_k} x_i$, the cluster centroid. The minimum over centers, given $\mathcal{C}$, is
+\[
+J^\star(\mathcal{C}) \;=\; \sum_{k = 1}^{K} \sum_{i \in C_k} \|x_i - \bar x^{(k)}\|^2,
+\]
+the \textbf{within-cluster sum of squares} (WCSS). The K-means problem is therefore the discrete optimization $\min_\mathcal{C} J^\star(\mathcal{C})$ over all partitions of $\{1, \ldots, n\}$ into $K$ non-empty parts.
+
+\begin{lemma}[Total sum-of-squares decomposition]\label{lem:tss-decomp}
+With $\bar x = \frac{1}{n} \sum_i x_i$ the global mean and $n_k = |C_k|$,
+\[
+\underbrace{\sum_{i = 1}^{n} \|x_i - \bar x\|^2}_{\mathrm{TSS}} \;=\; \underbrace{\sum_{k = 1}^{K} \sum_{i \in C_k} \|x_i - \bar x^{(k)}\|^2}_{J^\star(\mathcal{C}) \;=\; \mathrm{WCSS}} \;+\; \underbrace{\sum_{k = 1}^{K} n_k \|\bar x^{(k)} - \bar x\|^2}_{\mathrm{BCSS}}.
+\]
+\end{lemma}
+
+\begin{proof}
+For each $C_k$, expand $\|x_i - \bar x\|^2 = \|x_i - \bar x^{(k)}\|^2 + 2(x_i - \bar x^{(k)})^\top(\bar x^{(k)} - \bar x) + \|\bar x^{(k)} - \bar x\|^2$. Sum over $i \in C_k$; the cross term vanishes by the centroid identity $\sum_{i \in C_k}(x_i - \bar x^{(k)}) = \mathbf{0}$. Summing the resulting per-cluster identity over $k$ gives the claim.
+\end{proof}
+
+TSS is fixed by the data, so minimizing WCSS is equivalent to maximizing BCSS, the spread of cluster centroids around the global mean.
+
+The discrete optimization $\min_\mathcal{C} J^\star(\mathcal{C})$ is NP-hard in general. Lloyd's algorithm \citep{lloyd-1982}, described in earlier unpublished form and often jointly attributed to \citet{forgy-1965}, gives an iterative heuristic that converges to a local minimum.
+
+\begin{definition}[Lloyd's algorithm]\label{def:lloyd}
+Given initial centers $\mu_1^{(0)}, \ldots, \mu_K^{(0)} \in \mathbb{R}^p$, iterate for $t = 0, 1, 2, \ldots$:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item \textbf{Assignment step.} Each observation joins the cluster of its nearest center:
+\[
+C_k^{(t)} \;=\; \big\{i : k = \arg\min_{j} \|x_i - \mu_j^{(t)}\|^2\big\}, \qquad k = 1, \ldots, K
+\]
+(ties broken by lowest index).
+\item \textbf{Update step.} Each center moves to the centroid of its cluster:
+\[
+\mu_k^{(t+1)} \;=\; \frac{1}{|C_k^{(t)}|} \sum_{i \in C_k^{(t)}} x_i, \qquad k = 1, \ldots, K.
+\]
+\end{itemize}
+Stop when $\mathcal{C}^{(t+1)} = \mathcal{C}^{(t)}$.
+\end{definition}
+
+\begin{theorem}[Monotone descent and finite-time convergence]\label{thm:lloyd-conv}
+Lloyd's algorithm produces a sequence $J(\mathcal{C}^{(t)}, \boldsymbol\mu^{(t)})$ that is monotone non-increasing in $t$, and the algorithm halts after finitely many iterations at a partition $\mathcal{C}^\star$ for which no single observation can be reassigned to a different cluster without increasing the objective.
+\end{theorem}
+
+\begin{proof}
+\textbf{Monotonicity.} Write $J_t = J(\mathcal{C}^{(t)}, \boldsymbol\mu^{(t)})$. The update step replaces $\boldsymbol\mu^{(t)}$ by the centroids $\boldsymbol\mu^{(t+1)}$ of $\mathcal{C}^{(t)}$. With $\mathcal{C}^{(t)}$ fixed, each $\mu_k$ minimizes $\sum_{i \in C_k^{(t)}} \|x_i - \mu_k\|^2$ at the centroid (least-squares, unique minimizer), so $J(\mathcal{C}^{(t)}, \boldsymbol\mu^{(t+1)}) \leqslant J_t$. The assignment step at iteration $t+1$ produces $\mathcal{C}^{(t+1)}$ in which each $i$ is assigned to its nearest center in $\boldsymbol\mu^{(t+1)}$. With $\boldsymbol\mu^{(t+1)}$ fixed, each observation contributes $\|x_i - \mu_{c(i)}\|^2$ where $c(i)$ is its cluster index, and the assignment rule chooses $c(i)$ to minimize this contribution per observation. Hence $J(\mathcal{C}^{(t+1)}, \boldsymbol\mu^{(t+1)}) \leqslant J(\mathcal{C}^{(t)}, \boldsymbol\mu^{(t+1)}) \leqslant J_t$, giving $J_{t+1} \leqslant J_t$.
+
+\textbf{Finite-time convergence.} The number of $K$-part partitions of $\{1, \ldots, n\}$ is at most $K^n < \infty$. We claim $J_{t+1} < J_t$ strictly whenever $\mathcal{C}^{(t+1)} \neq \mathcal{C}^{(t)}$: the assignment step assigns each observation to its argmin-distance cluster with ties broken uniquely, so a change in $\mathcal{C}$ implies some observation has moved to a strictly closer center under $\boldsymbol\mu^{(t+1)}$, lowering its squared-distance contribution. Since $\mathcal{C}^{(t)}$ takes values in a finite set and the objective strictly decreases at every change, the sequence stabilizes at some $t^\star$ with $\mathcal{C}^{(t^\star + 1)} = \mathcal{C}^{(t^\star)}$ and the algorithm halts.
+
+\textbf{Local optimality.} At halting, every $i$ is at its nearest centroid. Reassigning a single $i$ from $C_{c(i)}^{(t^\star)}$ to $C_j^{(t^\star)}$ replaces $\|x_i - \bar x^{(c(i))}\|^2$ by $\|x_i - \bar x^{(j)}\|^2 \geqslant \|x_i - \bar x^{(c(i))}\|^2$, so $J$ does not decrease.
+\end{proof}
+
+\begin{suppremark}[Local optima are not global]
+Different initializations $\boldsymbol\mu^{(0)}$ produce different local optima with sometimes substantially different objective values. The standard remedy in R is \texttt{kmeans(x, centers, nstart = 25)}, which runs Lloyd's algorithm 25 times from random initializations and returns the best.
+\end{suppremark}
+
+\subsection{K-means++ initialization}\label{subsec:7.3.2}
+
+Random uniform initialization (each $\mu_k^{(0)}$ a random row of $X$) often produces poor configurations: two centers in the same true cluster, leaving another true cluster without a center. K-means++ \citep{arthur-vassilvitskii-2007} replaces uniform initialization with a $D^2$-weighted scheme that systematically spreads initial centers across the data.
+
+\begin{definition}[K-means++ initialization]\label{def:kmeansplusplus}
+For data $X$ and $K$ centers, sample:
+\begin{enumerate}[label=\textup{(\arabic*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $\mu_1^{(0)} := x_i$ for $i$ chosen uniformly from $\{1, \ldots, n\}$;
+\item for $j = 2, \ldots, K$, sample $\mu_j^{(0)} := x_i$ from
+\[
+\Pr(i\, \mid\, \mu_1^{(0)}, \ldots, \mu_{j-1}^{(0)}) \;\propto\; D(x_i)^2, \qquad D(x_i) \;:=\; \min_{l < j} \|x_i - \mu_l^{(0)}\|.
+\]
+\end{enumerate}
+After all $K$ centers are chosen, run Lloyd's algorithm from this initialization.
+\end{definition}
+
+The squared-distance weighting $D(x_i)^2$ makes points far from existing centers proportionally more likely to be selected next.
+
+\begin{theorem}[K-means++ approximation guarantee]\label{thm:kmeans-pp-bound}
+Let $J^\star_\mathrm{opt}$ be the global minimum of the K-means objective. The expected K-means++ objective after Lloyd's algorithm satisfies
+\[
+\mathbb{E}\big[J^\star(\mathcal{C}_{\mathrm{K\text{-}means\text{+}\text{+}}})\big] \;\leqslant\; 8 (\ln K + 2) \, J^\star_\mathrm{opt},
+\]
+where the expectation is over the randomness in the K-means++ initialization \citep[Theorem 1.1]{arthur-vassilvitskii-2007}.
+\end{theorem}
+
+K-means++ is therefore $O(\log K)$-competitive with the global optimum in expectation. In R, K-means++ initialization is provided by \texttt{ClusterR::KMeans\_rcpp(initializer = "kmeans++")}; \texttt{stats::kmeans} uses uniform random initialization, with \texttt{nstart} > 1 partially compensating.
+
+\subsection{EM viewpoint via spherical Gaussian mixtures}\label{subsec:7.3.3}
+
+K-means coincides with the limiting form of the Expectation-Maximization (EM) algorithm applied to a Gaussian mixture model with isotropic covariances $\sigma^2 I_p$ as $\sigma^2 \to 0$.
+
+\begin{definition}[Spherical-equal-variance Gaussian mixture]\label{def:gmm-iso}
+A \textbf{spherical-equal-variance Gaussian mixture} on $\mathbb{R}^p$ has parameters $\boldsymbol\mu = (\mu_1, \ldots, \mu_K)$ and $\sigma^2 > 0$. Observations are independent with
+\[
+x_i \;\mid\; Z_i = k \;\sim\; \mathcal{N}(\mu_k,\, \sigma^2 I_p), \qquad Z_i \;\sim\; \mathrm{Uniform}\{1, \ldots, K\}.
+\]
+\end{definition}
+
+\begin{theorem}[K-means as $\sigma^2 \to 0$ EM limit]\label{thm:kmeans-em}
+The EM algorithm for Definition~\ref{def:gmm-iso}, in the $\sigma^2 \to 0$ limit, reduces to Lloyd's algorithm on the same data.
+\end{theorem}
+
+\begin{proof}
+The E-step computes the posterior responsibilities
+\[
+\gamma_{ik} \;=\; \Pr(Z_i = k \mid x_i; \boldsymbol\mu, \sigma^2) \;=\; \frac{\exp(-\|x_i - \mu_k\|^2 / (2 \sigma^2))}{\sum_{l = 1}^{K} \exp(-\|x_i - \mu_l\|^2 / (2 \sigma^2))}.
+\]
+Let $k^\star(i) = \arg\min_l \|x_i - \mu_l\|^2$ (assume unique). As $\sigma^2 \to 0$, the term in the denominator with the smallest $\|x_i - \mu_l\|^2$ (namely $l = k^\star(i)$, whose exponent is the largest) dominates, and
+\[
+\gamma_{ik} \;\to\; \indc\{k = k^\star(i)\} \qquad (\sigma^2 \to 0).
+\]
+The M-step maximizes the expected complete-data log-likelihood over $\boldsymbol\mu$, with closed-form solution
+\[
+\mu_k^{(t+1)} \;=\; \frac{\sum_{i = 1}^{n} \gamma_{ik}^{(t)} x_i}{\sum_{i = 1}^{n} \gamma_{ik}^{(t)}}.
+\]
+In the $\sigma^2 \to 0$ limit, $\gamma_{ik}^{(t)} = \indc\{k = k^\star(i)\}$ collapses the M-step update to $\mu_k^{(t+1)} = (1/|C_k^{(t)}|) \sum_{i \in C_k^{(t)}} x_i$, the centroid of $C_k^{(t)} = \{i : k^\star(i) = k\}$. The combined E--M iteration is exactly Lloyd's algorithm (Definition~\ref{def:lloyd}).
+\end{proof}
+
+The Gaussian-mixture viewpoint clarifies the assumptions K-means implicitly makes:
+
+\begin{ctab}
+\begin{tabular}{l l}
+\toprule
+\textbf{Modeling assumption} & \textbf{Failure mode} \\
+\midrule
+Spherical covariance $\sigma^2 I_p$ & Elongated or correlated clusters split or merge \\
+Equal $\sigma^2$ across clusters    & Wide and tight clusters compete unfairly for boundary points \\
+Isotropic Euclidean distance        & Different feature scales bias the partition \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The first two are addressed by full Gaussian mixture models (without the $\sigma^2 \to 0$ limit), the third by standardization (\S\ref{subsec:7.2.7}).
+
+\begin{suppremark}[Spectral clustering for non-spherical clusters]
+Spectral clustering \citep{ng-jordan-weiss-2002} sidesteps the spherical-cluster assumption by first embedding the data in $\mathbb{R}^K$ via the bottom-$K$ eigenvectors of a graph Laplacian, then K-means clustering in that embedding. Two-moon and concentric-ring data, where K-means fails badly, are partitioned correctly. R: \texttt{kernlab::specc}.
+\end{suppremark}
+
+\subsection{Agglomerative hierarchical clustering}\label{subsec:7.3.4}
+
+Hierarchical clustering produces a nested sequence of partitions, from $n$ singletons up to one all-encompassing cluster, by iteratively merging the two closest clusters under a linkage function.
+
+\begin{definition}[Agglomerative hierarchical clustering]\label{def:agglom}
+For data $x_1, \ldots, x_n \in \mathbb{R}^p$ with pairwise distances $d_{ij} = \|x_i - x_j\|$ and a linkage function $D : 2^{[n]} \times 2^{[n]} \to [0, \infty)$ assigning a distance to any pair of disjoint subsets, the \textbf{agglomerative algorithm} runs:
+\begin{enumerate}[label=\textup{(\arabic*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item Initialize $\mathcal{P}^{(0)} = \{\{1\}, \{2\}, \ldots, \{n\}\}$ (singletons), merge height $h^{(0)} = 0$.
+\item For $t = 0, 1, \ldots, n - 2$: identify the disjoint pair $(C_a, C_b) \in \mathcal{P}^{(t)} \times \mathcal{P}^{(t)}$ minimizing $D(C_a, C_b)$. Merge: $\mathcal{P}^{(t+1)} := (\mathcal{P}^{(t)} \setminus \{C_a, C_b\}) \cup \{C_a \cup C_b\}$, with merge height $h^{(t+1)} = D(C_a, C_b)$.
+\item After $n - 1$ merges, $\mathcal{P}^{(n-1)} = \{\{1, \ldots, n\}\}$.
+\end{enumerate}
+The sequence $(\mathcal{P}^{(t)}, h^{(t)})_{t = 0}^{n-1}$ is the \textbf{hierarchy}.
+\end{definition}
+
+\begin{definition}[Dendrogram]\label{def:dendrogram}
+The \textbf{dendrogram} of a hierarchy is a binary tree with $n$ leaves (the singletons) and $n - 1$ internal nodes (the merges). Each internal node is placed at vertical coordinate equal to its merge height $h^{(t)}$; the two children are the merged clusters.
+\end{definition}
+
+A horizontal cut at height $h^\star$ yields a partition: the connected components of the dendrogram below height $h^\star$. The cut height parameterizes granularity, replacing K-means' $K$ with a continuous threshold.
+
+\subsection{Linkage criteria}\label{subsec:7.3.5}
+
+\begin{definition}[Standard linkages]\label{def:linkages}
+For disjoint clusters $C_a, C_b \subseteq \{1, \ldots, n\}$ with sizes $n_a, n_b$ and centroids $\bar x^{(a)}, \bar x^{(b)}$:
+
+\begin{ctab}
+\begin{tabular}{l l}
+\toprule
+\textbf{Linkage} & \textbf{Definition $D(C_a, C_b)$} \\
+\midrule
+Single   & $\min_{i \in C_a,\, j \in C_b} d_{ij}$ \\
+Complete & $\max_{i \in C_a,\, j \in C_b} d_{ij}$ \\
+Average  & $\dfrac{1}{n_a n_b} \sum_{i \in C_a,\, j \in C_b} d_{ij}$ \\
+Ward     & $\dfrac{n_a n_b}{n_a + n_b}\, \|\bar x^{(a)} - \bar x^{(b)}\|^2$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+\end{definition}
+
+\textbf{Single linkage} merges clusters with the closest pair of points; the result tends toward chaining, where elongated clusters form along density gradients.
+
+\textbf{Complete linkage} merges clusters with the smallest maximum pair distance; the result is compact, ball-shaped clusters.
+
+\textbf{Average linkage} averages all cross-cluster pair distances; behavior is intermediate between single and complete.
+
+\textbf{Ward's linkage} \citep{ward-1963} measures the within-cluster sum-of-squares cost of merging $C_a, C_b$ into one cluster. The increase in WCSS (Lemma~\ref{lem:tss-decomp}) when merging is exactly $\frac{n_a n_b}{n_a + n_b}\|\bar x^{(a)} - \bar x^{(b)}\|^2$ \citep[\S 4.4]{everitt-2011}. Ward's linkage produces compact, balanced clusters and is the default for Euclidean data.
+
+\begin{suppremark}[Centroid linkage and inversions]
+A fifth linkage, $D(C_a, C_b) = \|\bar x^{(a)} - \bar x^{(b)}\|$ (centroid linkage), can produce \textbf{inversions} where $h^{(t+1)} < h^{(t)}$, breaking the dendrogram interpretation. Single, complete, average, and Ward linkages are all monotone: $h^{(t)} \leqslant h^{(t+1)}$ throughout, ensuring a valid dendrogram. R's \texttt{hclust(method = "centroid")} can produce inverted dendrograms; the documentation flags this.
+\end{suppremark}
+
+\subsection{Lance--Williams recurrence}\label{subsec:7.3.6}
+
+The four standard linkages all satisfy a single parametric recurrence \citep{lance-williams-1967}, allowing the distance from a newly-formed cluster to all other clusters to be computed without rescanning the underlying data.
+
+\begin{theorem}[Lance--Williams recurrence]\label{thm:lance-williams}
+Let $C_a, C_b$ be merged into $C_{ab} := C_a \cup C_b$, and let $C_c$ be any other cluster. For each linkage of Definition~\ref{def:linkages}, the merged distance is
+\[
+D(C_{ab}, C_c) \;=\; \alpha_a D(C_a, C_c) + \alpha_b D(C_b, C_c) + \beta D(C_a, C_b) + \gamma |D(C_a, C_c) - D(C_b, C_c)|,
+\]
+with parameters
+\begin{ctab}
+\begin{tabular}{l c c c c}
+\toprule
+\textbf{Linkage} & $\alpha_a$ & $\alpha_b$ & $\beta$ & $\gamma$ \\
+\midrule
+Single   & $1/2$ & $1/2$ & $0$ & $-1/2$ \\
+Complete & $1/2$ & $1/2$ & $0$ & $+1/2$ \\
+Average  & $\dfrac{n_a}{n_a + n_b}$ & $\dfrac{n_b}{n_a + n_b}$ & $0$ & $0$ \\
+Ward     & $\dfrac{n_a + n_c}{n_a + n_b + n_c}$ & $\dfrac{n_b + n_c}{n_a + n_b + n_c}$ & $-\dfrac{n_c}{n_a + n_b + n_c}$ & $0$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:lance-williams}, single and Ward cases]
+\textbf{Single linkage.} $D(C_{ab}, C_c) = \min_{i \in C_a \cup C_b,\, j \in C_c} d_{ij} = \min\{D(C_a, C_c),\, D(C_b, C_c)\}$. Using $\min(u, v) = \tfrac{1}{2}(u + v) - \tfrac{1}{2}|u - v|$, the recurrence holds with $\alpha_a = \alpha_b = 1/2$, $\beta = 0$, $\gamma = -1/2$. Complete linkage is symmetric: $\max(u, v) = \tfrac{1}{2}(u + v) + \tfrac{1}{2}|u - v|$ gives $\gamma = +1/2$.
+
+\textbf{Ward linkage.} By Definition~\ref{def:linkages},
+\[
+D(C_{ab}, C_c) \;=\; \frac{(n_a + n_b) n_c}{n_a + n_b + n_c} \big\|\bar x^{(ab)} - \bar x^{(c)}\big\|^2.
+\]
+The merged centroid is $\bar x^{(ab)} = (n_a \bar x^{(a)} + n_b \bar x^{(b)}) / (n_a + n_b)$, so
+\[
+\bar x^{(ab)} - \bar x^{(c)} \;=\; \frac{n_a (\bar x^{(a)} - \bar x^{(c)}) + n_b (\bar x^{(b)} - \bar x^{(c)})}{n_a + n_b}.
+\]
+Set $u := \bar x^{(a)} - \bar x^{(c)}, v := \bar x^{(b)} - \bar x^{(c)}$. Expanding $\|n_a u + n_b v\|^2$ and using $u^\top v = \tfrac{1}{2}(\|u\|^2 + \|v\|^2 - \|u - v\|^2)$:
+\begin{align*}
+(n_a + n_b)^2 \|\bar x^{(ab)} - \bar x^{(c)}\|^2 \;=\;& n_a^2 \|u\|^2 + n_b^2 \|v\|^2 + n_a n_b\big(\|u\|^2 + \|v\|^2 - \|u - v\|^2\big) \\
+\;=\;& n_a (n_a + n_b) \|u\|^2 + n_b (n_a + n_b) \|v\|^2 - n_a n_b \|u - v\|^2.
+\end{align*}
+Using $u - v = \bar x^{(a)} - \bar x^{(b)}$, multiply both sides by $n_c / [(n_a + n_b)(n_a + n_b + n_c)]$. The LHS becomes $D(C_{ab}, C_c)$. The RHS three terms become, using $\|\bar x^{(a)} - \bar x^{(c)}\|^2 = \frac{n_a + n_c}{n_a n_c} D(C_a, C_c)$ and the analogous identities for $D(C_b, C_c)$ and $D(C_a, C_b)$:
+\[
+\frac{n_a + n_c}{n_a + n_b + n_c} D(C_a, C_c) + \frac{n_b + n_c}{n_a + n_b + n_c} D(C_b, C_c) - \frac{n_c}{n_a + n_b + n_c} D(C_a, C_b),
+\]
+matching the tabulated parameters with $\gamma = 0$. Average linkage is verified analogously, using $D(C_{ab}, C_c) = (n_a + n_b)^{-1}(n_a D(C_a, C_c) + n_b D(C_b, C_c))$ directly. $\blacksquare$
+\end{derivation}
+
+\begin{suppremark}[Computational consequences]
+The Lance--Williams recurrence allows the agglomerative algorithm (Definition~\ref{def:agglom}) to maintain a $k \times k$ distance matrix among current clusters and update it in $O(k)$ at each merge: the row and column for the merged cluster are computed from the rows of $C_a, C_b$ via the recurrence, then the matrix shrinks by one row and column. Total time $O(n^3)$, total space $O(n^2)$. The data matrix is consulted only once at initialization to compute the $n \times n$ pairwise distance matrix.
+\end{suppremark}
+
+\begin{suppremark}[HDBSCAN: density-based modern alternative]
+Hierarchical clustering with the standard linkages produces a hierarchy regardless of cluster shape or density. Density-based methods, in particular \textbf{HDBSCAN} \citep{campello-moulavi-sander-2013}, replace the linkage with a density-reachability criterion (mutual reachability distance) and extract a flat partition by selecting the most stable clusters across density thresholds. HDBSCAN handles clusters of varying density and identifies low-density points as noise; standard hierarchical clustering does neither. R: \texttt{dbscan::hdbscan}.
+\end{suppremark}
+
+\section{t-SNE: Stochastic Neighbor Embedding}\label{sec:7.4}
+
+\subsection{The dimensionality-reduction problem beyond linearity}\label{subsec:7.4.1}
+
+PCA produces a linear embedding: each $x_i \in \mathbb{R}^p$ is sent to $V_k^\top x_i \in \mathbb{R}^k$ where $V_k$ is fixed. Linear embedding cannot recover low-dimensional structure that lives on a curved manifold inside $\mathbb{R}^p$.
+
+\begin{example}[Swiss roll]\label{ex:swiss-roll}
+The Swiss-roll dataset is generated by drawing $(t, h)$ with $t \in [3\pi/2,\, 9\pi/2]$ and $h \in [0, 21]$ and embedding into $\mathbb{R}^3$ via
+\[
+x \;=\; (t \cos t,\; h,\; t \sin t).
+\]
+The intrinsic two-dimensional structure $(t, h)$ is recoverable if the embedding is "unrolled". PCA on this data picks the largest variance direction in $\mathbb{R}^3$, which is the height axis; the rolled $(\cos t, \sin t)$ structure is invisible to PCA.
+\end{example}
+
+t-SNE \citep{vandermaaten-hinton-2008} addresses the nonlinear case by matching pairwise similarity distributions between high and low dimensions, rather than matching point coordinates by a linear map. The construction uses two probability distributions on the unordered pairs $\{i, j\}$: one in the original space (built from per-point Gaussians, \S\ref{subsec:7.4.2}), one in the embedding (built from a Student-$t$ kernel, \S\ref{subsec:7.4.4}). The objective is the KL divergence between them.
+
+\subsection{High-dimensional similarities and perplexity}\label{subsec:7.4.2}
+
+t-SNE represents high-dimensional similarity by, for each point $x_i$, a probability distribution over its potential neighbors.
+
+\begin{definition}[Conditional similarity]\label{def:tsne-pcond}
+For data $x_1, \ldots, x_n \in \mathbb{R}^p$ and per-point bandwidths $\sigma_1, \ldots, \sigma_n > 0$, the \textbf{conditional similarity} of $j$ given $i$ is
+\[
+p_{j \mid i} \;=\; \frac{\exp(-\|x_i - x_j\|^2 / (2 \sigma_i^2))}{\sum_{k \neq i} \exp(-\|x_i - x_k\|^2 / (2 \sigma_i^2))} \qquad (j \neq i),
+\]
+with $p_{i \mid i} := 0$. The vector $P_i := (p_{j \mid i})_{j \neq i}$ is a probability distribution on $\{1, \ldots, n\} \setminus \{i\}$.
+\end{definition}
+
+The bandwidth $\sigma_i$ controls how concentrated $P_i$ is around the closest neighbors. To choose $\sigma_i$, t-SNE matches a user-specified \textbf{perplexity}, an effective neighborhood size.
+
+\begin{definition}[Perplexity]\label{def:perplexity}
+The \textbf{perplexity} of $P_i$ is
+\[
+\mathrm{Perp}(P_i) \;=\; 2^{H(P_i)}, \qquad H(P_i) \;=\; -\sum_{j \neq i} p_{j \mid i} \log_2 p_{j \mid i}.
+\]
+Perplexity ranges from $1$ (when $P_i$ is concentrated at a single point) to $n - 1$ (when $P_i$ is uniform on $\{1, \ldots, n\} \setminus \{i\}$).
+\end{definition}
+
+The user specifies a target perplexity $\mathrm{Perp}^\star \in [5, 50]$, and each $\sigma_i$ is chosen so $\mathrm{Perp}(P_i) = \mathrm{Perp}^\star$.
+
+\begin{lemma}[Perplexity is monotone in bandwidth]\label{lem:perplexity-monotone}
+For each $i$ with the squared distances $\{d_{ij}^2 := \|x_i - x_j\|^2\}_{j \neq i}$ not all equal, $H(P_i)$ is strictly increasing in $\sigma_i$, and so is $\mathrm{Perp}(P_i)$.
+\end{lemma}
+
+\begin{proof}
+Reparametrize using $\beta := 1/(2 \sigma_i^2) > 0$, so $\sigma_i$ is decreasing in $\beta$. Let $Z(\beta) := \sum_{k \neq i} e^{-\beta d_{ik}^2}$ and write $H(P_i) = H(\beta)$ as a function of $\beta$. From $p_{j \mid i} = e^{-\beta d_{ij}^2} / Z(\beta)$,
+\[
+H(\beta) \;=\; -\sum_j p_{j \mid i} \log p_{j \mid i} \;=\; \beta \sum_j p_{j \mid i} d_{ij}^2 + \log Z(\beta) \;=\; \beta\, \langle d^2 \rangle_\beta + \log Z(\beta),
+\]
+where $\langle d^2 \rangle_\beta := \sum_j p_{j \mid i} d_{ij}^2$ is the mean of $d^2$ under $P_i(\beta)$ (logarithm in any fixed base; the choice affects only a positive constant). The Gibbs identity $d \log Z / d\beta = -\langle d^2 \rangle_\beta$ (differentiate $\log Z$ once and recognize the result as a $P_i$-expectation) gives
+\[
+\frac{d H}{d \beta} \;=\; \langle d^2 \rangle_\beta + \beta \frac{d \langle d^2 \rangle_\beta}{d \beta} - \langle d^2 \rangle_\beta \;=\; \beta \frac{d \langle d^2 \rangle_\beta}{d \beta}.
+\]
+The Gibbs second identity $d \langle d^2 \rangle_\beta / d \beta = -\mathrm{Var}_\beta(d^2)$ yields
+\[
+\frac{d H}{d \beta} \;=\; -\beta \, \mathrm{Var}_\beta(d^2) \;<\; 0,
+\]
+strict whenever the squared distances are not all equal under $P_i(\beta)$. $H$ is therefore strictly decreasing in $\beta$, equivalently strictly increasing in $\sigma_i$; $\mathrm{Perp}(P_i) = 2^{H(P_i)}$ inherits the same monotonicity.
+\end{proof}
+
+The lemma justifies binary search on $\sigma_i$. Standard implementations (\texttt{Rtsne}) bisect to a tolerance of $10^{-5}$ on $\mathrm{Perp}(P_i) - \mathrm{Perp}^\star$.
+
+\subsection{Symmetrized joint distribution}\label{subsec:7.4.3}
+
+The conditional similarities $p_{j \mid i}$ are not symmetric in $(i, j)$. The KL objective compares them to a symmetric low-dimensional similarity (\S\ref{subsec:7.4.4}), so we symmetrize $p$ to obtain a single joint distribution.
+
+\begin{definition}[Symmetrized similarity]\label{def:tsne-psym}
+The \textbf{symmetrized similarity} is
+\[
+p_{ij} \;:=\; \frac{p_{j \mid i} + p_{i \mid j}}{2 n} \qquad (i \neq j).
+\]
+$p_{ij}$ is symmetric ($p_{ij} = p_{ji}$); the family $\{p_{ij}\}$ is a probability distribution on the ordered pairs $\{(i, j) : i \neq j\}$.
+\end{definition}
+
+\begin{lemma}[Normalization and outlier robustness]\label{lem:psym-props}
+\leavevmode
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $\sum_{i \neq j} p_{ij} = 1$.
+\item For every $i$, $\sum_{j \neq i} p_{ij} \geqslant 1/(2n)$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+(i) Each $\sum_{j \neq i} p_{j \mid i} = 1$, summed over $i$ gives $n$; hence $\sum_{i \neq j} p_{ij} = (1/(2n)) \sum_{i \neq j}(p_{j \mid i} + p_{i \mid j}) = (1/(2n))(n + n) = 1$.
+
+(ii) $\sum_{j \neq i} p_{ij} = (1/(2n))(\sum_{j \neq i} p_{j \mid i} + \sum_{j \neq i} p_{i \mid j}) = (1/(2n))(1 + \sum_{j \neq i} p_{i \mid j}) \geqslant 1/(2n)$, since $\sum_{j \neq i} p_{i \mid j} \geqslant 0$.
+\end{proof}
+
+The lower bound (ii) is the outlier-robustness motivation of \citet{vandermaaten-hinton-2008}: under the asymmetric formulation, an outlier $i$ with large $\sigma_i$ has small $p_{j \mid i}$ for every $j$, contributing weakly to the objective. The symmetric form ensures every $i$'s row marginal $\sum_j p_{ij} \geqslant 1/(2n)$ regardless of $\sigma_i$.
+
+\subsection{The crowding problem and the Student-$t$ low-dimensional kernel}\label{subsec:7.4.4}
+
+t-SNE's low-dimensional kernel is heavy-tailed Student-$t$ with one degree of freedom (Cauchy), not Gaussian. The choice is driven by a geometric problem about the embedding dimension.
+
+\begin{definition}[Crowding problem]\label{def:crowding}
+The \textbf{crowding problem} is the failure to fit local-distance and moderate-distance structure simultaneously when embedding into low dimensions ($d = 2$ or $3$). In high-dimensional data, a point can have many neighbors at moderate distance; in $\mathbb{R}^d$ for small $d$, the volume of a ball at radius $r$ scales as $r^d$, which is too small to accommodate them all at appropriate distances under a Gaussian low-dimensional kernel.
+\end{definition}
+
+\begin{definition}[Low-dimensional similarity]\label{def:tsne-q}
+For embedded points $y_1, \ldots, y_n \in \mathbb{R}^d$, the \textbf{low-dimensional similarity} is
+\[
+q_{ij} \;=\; \frac{(1 + \|y_i - y_j\|^2)^{-1}}{\sum_{k \neq l} (1 + \|y_k - y_l\|^2)^{-1}} \qquad (i \neq j),
+\]
+with $q_{ii} := 0$. The numerator $(1 + \|y_i - y_j\|^2)^{-1}$ is the unnormalized Student-$t_1$ kernel at squared distance $\|y_i - y_j\|^2$.
+\end{definition}
+
+The Student-$t_1$ kernel addresses crowding by allowing moderate-distance pairs to occupy correspondingly larger embedding distances without losing similarity weight as fast as Gaussian.
+
+\begin{lemma}[Heavy tails]\label{lem:heavy-tails}
+The Gaussian kernel $\exp(-r^2/2)$ decays super-polynomially in $r^2$: for every $k \geqslant 1$, $\exp(-r^2/2) = o(r^{-2k})$ as $r \to \infty$. The Student-$t_1$ kernel $(1 + r^2)^{-1}$ decays polynomially: $(1 + r^2)^{-1} \sim r^{-2}$. The Student-$t_1$ tail is therefore heavier than the Gaussian tail.
+\end{lemma}
+
+\begin{proof}
+Both rates follow from elementary calculus. The polynomial-vs-exponential comparison $\lim_{r \to \infty} r^{2k} \exp(-r^2/2) = 0$ holds for every $k$ by L'H{\^o}pital, giving $\exp(-r^2/2) = o(r^{-2k})$. Direct expansion gives $(1 + r^2)^{-1} = r^{-2}(1 + r^{-2})^{-1} \to r^{-2}$ as $r \to \infty$. Hence $(1 + r^2)^{-1} / \exp(-r^2/2) \to \infty$.
+\end{proof}
+
+The optimization consequence: a high-dim point $x_j$ at moderate distance from $x_i$ with moderate $p_{ij}$ can be embedded at correspondingly moderate $\|y_i - y_j\|$ in $\mathbb{R}^d$, and the Student-$t_1$ kernel still produces a comparable $q_{ij}$. Under a Gaussian low-dim kernel (as in the predecessor SNE algorithm), matching the same moderate $p_{ij}$ would require a small embedding distance, compressing all moderate-similarity pairs to short distances and producing the crowded plot.
+
+\subsection{KL-divergence objective}\label{subsec:7.4.5}
+
+\begin{definition}[t-SNE objective]\label{def:tsne-objective}
+For symmetrized high-dim similarities $p_{ij}$ (Definition~\ref{def:tsne-psym}) and low-dim similarities $q_{ij}$ (Definition~\ref{def:tsne-q}), the \textbf{t-SNE cost function} is
+\[
+C(\boldsymbol y) \;=\; D_{\mathrm{KL}}(P \,\|\, Q) \;=\; \sum_{i \neq j} p_{ij} \log \frac{p_{ij}}{q_{ij}}, \qquad \boldsymbol y \;=\; (y_1, \ldots, y_n) \in \mathbb{R}^{n \times d}.
+\]
+\end{definition}
+
+KL is asymmetric in $(P, Q)$: large $p_{ij}$ requires large $q_{ij}$ (heavy penalty for separating in the embedding what was close in high-dim), while small $p_{ij}$ does not require small $q_{ij}$ (mild penalty for placing close in the embedding what was far in high-dim). Local structure (high-$p$ pairs) is therefore preserved more carefully than global structure (low-$p$ pairs).
+
+\subsection{Gradient derivation}\label{subsec:7.4.6}
+
+\begin{theorem}[t-SNE gradient]\label{thm:tsne-grad}
+With $C(\boldsymbol y)$ as in Definition~\ref{def:tsne-objective} and $\boldsymbol y \in \mathbb{R}^{n \times d}$,
+\[
+\frac{\partial C}{\partial y_a} \;=\; 4 \sum_{j \neq a} (p_{aj} - q_{aj})\, q_{aj}\, Z\, (y_a - y_j),
+\]
+where $Z := \sum_{k \neq l}(1 + \|y_k - y_l\|^2)^{-1}$ is the normalizer of $q$. Equivalently, using $q_{aj} Z = (1 + \|y_a - y_j\|^2)^{-1}$,
+\[
+\frac{\partial C}{\partial y_a} \;=\; 4 \sum_{j \neq a} (p_{aj} - q_{aj})\, (1 + \|y_a - y_j\|^2)^{-1}\, (y_a - y_j).
+\]
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:tsne-grad}]
+Set $r_{ij} := (1 + \|y_i - y_j\|^2)^{-1}$ for $i \neq j$, so $q_{ij} = r_{ij}/Z$. Decompose
+\[
+C \;=\; \sum_{i \neq j} p_{ij} \log p_{ij} - \sum_{i \neq j} p_{ij} \log r_{ij} + \log Z \cdot \sum_{i \neq j} p_{ij}.
+\]
+The first term is constant in $\boldsymbol y$; the third reduces to $\log Z$ since $\sum_{i \neq j} p_{ij} = 1$ (Lemma~\ref{lem:psym-props}). Hence
+\[
+\frac{\partial C}{\partial y_a} \;=\; -\sum_{i \neq j} p_{ij} \frac{\partial \log r_{ij}}{\partial y_a} + \frac{\partial \log Z}{\partial y_a}.
+\]
+
+\textbf{Per-pair derivative.} For $r_{ij} = (1 + \|y_i - y_j\|^2)^{-1}$, write $s_{ij} := 1 + \|y_i - y_j\|^2$. Then $\partial s_{ij}/\partial y_i = 2(y_i - y_j)$ and $\log r_{ij} = -\log s_{ij}$, so
+\[
+\frac{\partial \log r_{ij}}{\partial y_i} \;=\; -\frac{1}{s_{ij}} \cdot 2(y_i - y_j) \;=\; -2 r_{ij}(y_i - y_j).
+\]
+By symmetry of $s_{ij}$ in $(i, j)$, $\partial \log r_{ij}/\partial y_j = +2 r_{ij}(y_i - y_j)$. For $a \notin \{i, j\}$, the derivative is zero.
+
+\textbf{First sum.} Contributions to $\sum_{i \neq j} p_{ij} \partial \log r_{ij}/\partial y_a$ come only from pairs $(i, j)$ with $a \in \{i, j\}$:
+\begin{align*}
+\sum_{i \neq j} p_{ij} \frac{\partial \log r_{ij}}{\partial y_a} \;=\;& \sum_{j \neq a} p_{aj}(-2 r_{aj})(y_a - y_j) + \sum_{i \neq a} p_{ia}(+2 r_{ia})(y_i - y_a) \\
+\;=\;& -2 \sum_{j \neq a} p_{aj} r_{aj}(y_a - y_j) - 2 \sum_{i \neq a} p_{ia} r_{ia}(y_a - y_i),
+\end{align*}
+where the second line rewrites $(y_i - y_a) = -(y_a - y_i)$ and absorbs the sign. Using $p_{ij} = p_{ji}$ and $r_{ij} = r_{ji}$ to merge the two sums (the dummy index in the second sum can be relabelled $j$):
+\[
+\sum_{i \neq j} p_{ij} \frac{\partial \log r_{ij}}{\partial y_a} \;=\; -4 \sum_{j \neq a} p_{aj} r_{aj}(y_a - y_j).
+\]
+
+\textbf{Second sum.} $\partial Z/\partial y_a = \sum_{k \neq l} \partial r_{kl}/\partial y_a$. From $\partial r_{ij}/\partial y_i = -2 r_{ij}^2(y_i - y_j)$ and the analogous symmetric statement for $\partial/\partial y_j$, the same merging argument as above gives
+\[
+\frac{\partial Z}{\partial y_a} \;=\; -4 \sum_{j \neq a} r_{aj}^2 (y_a - y_j),
+\]
+so $\partial \log Z / \partial y_a = (1/Z) \partial Z / \partial y_a = -4 \sum_{j \neq a} q_{aj} r_{aj}(y_a - y_j)$.
+
+\textbf{Combine.}
+\begin{align*}
+\frac{\partial C}{\partial y_a} \;=\;& -\Big({-4} \sum_{j \neq a} p_{aj} r_{aj}(y_a - y_j)\Big) + \Big({-4} \sum_{j \neq a} q_{aj} r_{aj}(y_a - y_j)\Big) \\
+\;=\;& 4 \sum_{j \neq a} (p_{aj} - q_{aj}) r_{aj}(y_a - y_j) \\
+\;=\;& 4 \sum_{j \neq a} (p_{aj} - q_{aj}) q_{aj} Z (y_a - y_j),
+\end{align*}
+using $r_{aj} = q_{aj} Z$. The second display in the theorem statement is the form with $r_{aj}$ kept explicit; the two are equivalent. $\blacksquare$
+\end{derivation}
+
+The gradient has a physical interpretation. Define the per-pair force $F_{aj} := 4 (p_{aj} - q_{aj}) r_{aj}(y_a - y_j)$. When $p_{aj} > q_{aj}$ (the high-dim pair is closer than the low-dim pair under the current embedding), $F_{aj}$ pulls $y_a$ toward $y_j$. When $p_{aj} < q_{aj}$ (high-dim is farther than low-dim), $F_{aj}$ pushes $y_a$ away from $y_j$. The optimizer adjusts each $y_a$ until the net force vanishes.
+
+\subsection{Optimization: early exaggeration, learning rate, momentum}\label{subsec:7.4.7}
+
+The objective $C$ is non-convex with many local minima. The standard t-SNE optimizer is gradient descent with momentum and a starting trick.
+
+\textbf{Initialization.} Original t-SNE \citep{vandermaaten-hinton-2008} uses $y_i^{(0)} \sim \mathcal{N}(0, 10^{-4} I_d)$ independently. Current practice, especially in single-cell genomics \citep{kobak-berens-2019}, instead sets $y^{(0)}$ to the first $d$ principal components of $X$, rescaled to the small-variance range; this initialization is reproducible across seeds and tends to preserve global structure better. \texttt{Rtsne} accepts this via the \texttt{Y\_init} argument.
+
+\textbf{Momentum update.} For learning rate $\eta$ and momentum coefficient $\alpha(t) \in [0, 1)$,
+\[
+y_i^{(t+1)} \;=\; y_i^{(t)} - \eta \frac{\partial C}{\partial y_i^{(t)}} + \alpha(t) (y_i^{(t)} - y_i^{(t-1)}).
+\]
+Standard hyperparameters: $\eta = 200$, $\alpha(t) = 0.5$ for $t \leqslant 250$ and $\alpha(t) = 0.8$ thereafter.
+
+\textbf{Early exaggeration.} For $t \leqslant T_\mathrm{ee}$ (typically $T_\mathrm{ee} = 250$), replace $p_{ij}$ in the cost by $\alpha_\mathrm{ee} \cdot p_{ij}$ for $\alpha_\mathrm{ee} > 1$ (typically $4$ or $12$). The exaggerated $p$ amplifies the attractive forces in the gradient, encouraging clusters to form quickly. After $T_\mathrm{ee}$, $\alpha_\mathrm{ee}$ is set to $1$ and the optimizer continues to convergence.
+
+\textbf{Iterations.} A typical run uses $1000$ iterations: $250$ with early exaggeration, $750$ without.
+
+\textbf{Perplexity.} The user-specified target $\mathrm{Perp}^\star$ controls effective neighborhood size, with $[5, 50]$ the standard range. Smaller perplexity emphasizes fine local structure; larger perplexity smooths over local detail and produces more global structure.
+
+\textbf{Computational cost.} Naive computation of all $p_{ij}$ requires $O(n^2)$ pairwise distances; the gradient also requires $O(n^2)$ work per iteration via the $Z$ normalizer. Barnes--Hut t-SNE \citep{vandermaaten-2014} approximates the long-range gradient terms via a quadtree (in $\mathbb{R}^2$) or octree (in $\mathbb{R}^3$), reducing per-iteration cost to $O(n \log n)$. \texttt{Rtsne} uses Barnes--Hut by default.
+
+\begin{suppremark}[Newer competitors: TriMap and PaCMAP]
+Two more recent nonlinear DR methods are sometimes used in place of t-SNE. \textbf{TriMap} \citep{amid-warmuth-2019} replaces pairwise comparisons with triplet constraints (each anchor with one near and one far neighbor) to better preserve global structure. \textbf{PaCMAP} \citep{wang-etal-2021} balances near, mid-near, and far pairs explicitly, aiming to preserve global structure while keeping local structure. Neither has displaced t-SNE or UMAP in mainstream R workflows; both are most readily available in Python.
+\end{suppremark}
+
+\section{UMAP: Uniform Manifold Approximation and Projection}\label{sec:7.5}
+
+\subsection{The Riemannian-manifold assumption}\label{subsec:7.5.1}
+
+UMAP \citep{mcinnes-healy-melville-2018} models the high-dimensional data as samples from a distribution on a Riemannian manifold $M$ embedded in $\mathbb{R}^p$. Two technical assumptions justify the local fuzzy-neighborhood construction of \S\ref{subsec:7.5.2}:
+\begin{enumerate}[label=\textup{(A\arabic*)}, leftmargin=2.4em, itemsep=2pt, topsep=2pt]
+\item The data distribution on $M$ is approximately uniform with respect to the manifold's natural volume measure.
+\item The Riemannian metric on $M$ is locally constant near each $x_i$: in a small ball around $x_i$, distances are well approximated by Euclidean distances multiplied by a point-specific factor.
+\end{enumerate}
+
+(A1) and (A2) are local idealizations. Their role is to license a per-point Euclidean approximation: in the small-$\sigma_i$ neighborhood of each $x_i$, the data look like a Euclidean ball whose radius is calibrated to match the local sample density. The next subsection turns this into a numerical construction.
+
+\subsection{Local fuzzy neighborhoods}\label{subsec:7.5.2}
+
+For each data point $x_i$, UMAP builds a fuzzy 1-simplex (an edge) to every other data point with a strength of membership in $(0, 1]$ derived from local distances.
+
+\begin{definition}[Local fuzzy weight]\label{def:umap-w}
+For data $x_1, \ldots, x_n \in \mathbb{R}^p$ with metric $d$, and a hyperparameter $k \in \{2, \ldots, n - 1\}$ (the number-of-neighbors parameter), define for each $i$:
+\begin{align*}
+\rho_i \;&:=\; \min_{j \neq i} d(x_i, x_j) \qquad \text{(distance to the nearest neighbor),} \\
+w_{ij} \;&:=\; \exp\!\bigg(-\frac{\max(0,\, d(x_i, x_j) - \rho_i)}{\sigma_i}\bigg) \qquad (j \neq i),
+\end{align*}
+with $\sigma_i > 0$ chosen so that
+\[
+\sum_{j \neq i} w_{ij} \;=\; \log_2 k.
+\]
+\end{definition}
+
+The subtraction of $\rho_i$ ensures the nearest-neighbor weight is exactly $1$, so the closest neighbor is always "fully connected" to $x_i$. The choice $\sum_j w_{ij} = \log_2 k$ is UMAP's analog of t-SNE's perplexity, with $k$ playing the role of $\mathrm{Perp}^\star$. Binary search on $\sigma_i$ is justified by the same Gibbs-style monotonicity argument as Lemma~\ref{lem:perplexity-monotone}: $\sum_j w_{ij}$ is strictly monotone in $\sigma_i$ (larger $\sigma_i$ produces a less peaked $w$, increasing the sum).
+
+\subsection{Fuzzy union: probabilistic OR}\label{subsec:7.5.3}
+
+The weights $w_{ij}$ are asymmetric: $w_{ij} \neq w_{ji}$ in general because $\rho_i \neq \rho_j$ and $\sigma_i \neq \sigma_j$. UMAP symmetrizes via the probabilistic-OR (also called the algebraic-sum) t-conorm.
+
+\begin{definition}[Fuzzy union of edge memberships]\label{def:umap-mu}
+The \textbf{symmetric fuzzy edge weight} is
+\[
+\mu_{ij} \;:=\; w_{ij} + w_{ji} - w_{ij} w_{ji} \qquad (i \neq j).
+\]
+\end{definition}
+
+\begin{lemma}[Properties of the fuzzy union]\label{lem:umap-mu-props}
+\leavevmode
+\begin{enumerate}[label=\textup{(\roman*)}, leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $\mu_{ij} = \mu_{ji}$ (symmetry).
+\item $\mu_{ij} \in [0, 1]$ when $w_{ij}, w_{ji} \in [0, 1]$ (well-defined fuzzy membership).
+\item $\mu_{ij} = 1 - (1 - w_{ij})(1 - w_{ji})$ (probabilistic-OR identity).
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+(i) is immediate from the symmetric definition. (iii) Expanding the right side: $1 - (1 - w_{ij})(1 - w_{ji}) = 1 - 1 + w_{ij} + w_{ji} - w_{ij} w_{ji} = w_{ij} + w_{ji} - w_{ij} w_{ji} = \mu_{ij}$.
+(ii) From (iii), $\mu_{ij} = 1 - (1 - w_{ij})(1 - w_{ji})$ with both $(1 - w_{ij}), (1 - w_{ji}) \in [0, 1]$, so the product is in $[0, 1]$ and $\mu_{ij} \in [0, 1]$.
+\end{proof}
+
+The probabilistic-OR identity is read: under the (independence) assumption that "$x_i$ and $x_j$ are fuzzy-neighbors" from $i$'s perspective is independent of the same from $j$'s perspective, the probability that they are neighbors from at least one perspective is $1 - (1 - w_{ij})(1 - w_{ji})$. This is one of several t-conorms (others include $\max(w_{ij}, w_{ji})$ and $\min(1, w_{ij} + w_{ji})$); UMAP's choice is dictated by the Spivak adjunction, where the algebraic sum is the canonical fuzzy-union under the categorical formalism.
+
+\subsection{Spivak's metric realization adjunction}\label{subsec:7.5.4}
+
+The categorical foundation of UMAP is an adjunction between the categories $\mathbf{FinEPMet}$ (finite extended-pseudo-metric spaces, Definition~\ref{def:finepmet}) and $\mathbf{sFuzz}$ (fuzzy simplicial sets, Definition~\ref{def:fuzzy-ssset}). Both were introduced in \S\ref{subsec:7.1.8}.
+
+\begin{definition}[Standard metric simplex]\label{def:metric-simplex}
+For $n \geqslant 0$ and $a \in (0, 1]$, the \textbf{standard metric $n$-simplex of strength $a$} is the finite extended-pseudo-metric space
+\[
+\Delta^n_a \;:=\; \big(\{0, 1, \ldots, n\},\; d_a\big), \qquad d_a(i, j) \;:=\; \begin{cases} 0 & i = j, \\ -\log a & i \neq j. \end{cases}
+\]
+\end{definition}
+
+A morphism $\Delta^n_a \to (Y, d_Y)$ in $\mathbf{FinEPMet}$ is a function $f : \{0, \ldots, n\} \to Y$ short with respect to the metrics, equivalently $d_Y(f(i), f(j)) \leqslant -\log a$ for every $i, j$. Hence
+\[
+\hom_{\mathbf{FinEPMet}}(\Delta^n_a, Y) \;\cong\; \big\{(y_0, \ldots, y_n) \in Y^{n+1} : d_Y(y_i, y_j) \leqslant -\log a \text{ for all } i, j\big\}.
+\]
+
+\begin{definition}[Singular fuzzy simplicial set]\label{def:sing}
+The \textbf{singular} functor $\mathrm{Sing} : \mathbf{FinEPMet} \to \mathbf{sFuzz}$ is defined on objects by
+\[
+\mathrm{Sing}(Y)([n], a) \;:=\; \hom_{\mathbf{FinEPMet}}(\Delta^n_a, Y),
+\]
+with face/degeneracy maps in the $\Delta$-direction induced by precomposition with the corresponding morphisms of $\Delta$-objects, and strength-restriction maps in the $\mathcal{I}^{\mathrm{op}}$-direction induced by the inclusions
+\[
+\hom(\Delta^n_b, Y) \;\hookrightarrow\; \hom(\Delta^n_a, Y) \qquad (a \leqslant b)
+\]
+that hold because $-\log a \geqslant -\log b$ relaxes the metric constraint. On a morphism $\phi : Y \to Y'$ in $\mathbf{FinEPMet}$, $\mathrm{Sing}(\phi)([n], a)$ post-composes with $\phi$.
+\end{definition}
+
+\begin{definition}[Metric realization]\label{def:real}
+The \textbf{metric realization} functor $\mathrm{Real} : \mathbf{sFuzz} \to \mathbf{FinEPMet}$ sends a fuzzy simplicial set $X$ to the colimit
+\[
+\mathrm{Real}(X) \;:=\; \mathrm{colim}_{\,\Delta^n_a \to X}\; \Delta^n_a,
+\]
+taken in $\mathbf{FinEPMet}$ over the category of elements of $X$ (objects: pairs $((n, a), \sigma)$ with $\sigma \in X([n], a)$; morphisms: $\Delta$- and $\mathcal{I}^{\mathrm{op}}$-morphisms compatible with the $\sigma$ via the functoriality of $X$). For a morphism $\eta : X \to X'$ of fuzzy simplicial sets, $\mathrm{Real}(\eta)$ is the induced map of colimits.
+\end{definition}
+
+For finite $X$ (only finitely many non-degenerate simplices across all $(n, a)$), the colimit is finite: it is the quotient of $\bigsqcup_{\sigma \in X([n], a)} \Delta^n_a$ by the equivalence relation generated by face / degeneracy / strength-restriction identifications, equipped with the induced shortest-path extended pseudo-metric.
+
+\begin{theorem}[Spivak's adjunction]\label{thm:spivak-adj}
+\citep{spivak-2009}.\ The functor pair $\mathrm{Real} \dashv \mathrm{Sing}$ is an adjoint pair: there is a bijection
+\[
+\Phi_{X, Y} : \hom_{\mathbf{FinEPMet}}(\mathrm{Real}(X),\, Y) \;\xrightarrow{\;\cong\;}\; \hom_{\mathbf{sFuzz}}(X,\, \mathrm{Sing}(Y))
+\]
+natural in $X \in \mathbf{sFuzz}$ and $Y \in \mathbf{FinEPMet}$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:spivak-adj}]
+The proof uses the universal property of the colimit defining $\mathrm{Real}(X)$ together with the explicit description of $\mathrm{Sing}(Y)$.
+
+\textbf{Forward direction.} Take $g \in \hom_{\mathbf{FinEPMet}}(\mathrm{Real}(X), Y)$, a metric map. The colimit $\mathrm{Real}(X)$ is equipped with structure morphisms $\iota_\sigma : \Delta^n_a \to \mathrm{Real}(X)$ for each $\sigma \in X([n], a)$. The composition $g \circ \iota_\sigma : \Delta^n_a \to Y$ is a metric map, hence an element of $\mathrm{Sing}(Y)([n], a)$. Define
+\[
+\Phi_{X, Y}(g)_{[n], a}(\sigma) \;:=\; g \circ \iota_\sigma \;\in\; \mathrm{Sing}(Y)([n], a).
+\]
+We verify $\Phi_{X, Y}(g)$ is a natural transformation $X \Rightarrow \mathrm{Sing}(Y)$. For a morphism $\phi : ([m], b) \to ([n], a)$ in $\Delta \times \mathcal{I}^{\mathrm{op}}$ and $\sigma \in X([n], a)$, naturality requires
+\[
+\mathrm{Sing}(Y)(\phi)\big(g \circ \iota_\sigma\big) \;=\; g \circ \iota_{X(\phi)(\sigma)}.
+\]
+The colimit defining $\mathrm{Real}(X)$ identifies $\iota_{X(\phi)(\sigma)}$ with $\iota_\sigma$ pre-composed with the $\Delta \times \mathcal{I}^{\mathrm{op}}$-induced morphism $\Delta^m_b \to \Delta^n_a$, exactly the identification that makes the displayed equality hold.
+
+\textbf{Reverse direction.} Take a natural transformation $\eta : X \to \mathrm{Sing}(Y)$. Each component $\eta_{[n], a}(\sigma) \in \mathrm{Sing}(Y)([n], a) = \hom(\Delta^n_a, Y)$ is a metric map $f_\sigma : \Delta^n_a \to Y$. Naturality of $\eta$ asserts that for every morphism $\phi : ([m], b) \to ([n], a)$ in $\Delta \times \mathcal{I}^{\mathrm{op}}$ and every $\sigma \in X([n], a)$, $f_{X(\phi)(\sigma)}$ equals $f_\sigma$ pre-composed with the corresponding $\Delta^m_b \to \Delta^n_a$. This is precisely the compatibility condition required by the universal property of the colimit defining $\mathrm{Real}(X)$. Hence the family $\{f_\sigma\}$ extends uniquely to a metric map
+\[
+\Psi_{X, Y}(\eta) \;:=\; \mathrm{colim}\,\{f_\sigma\} \;:\; \mathrm{Real}(X) \to Y,
+\]
+with $\Psi_{X, Y}(\eta) \circ \iota_\sigma = f_\sigma$ for every $\sigma$.
+
+\textbf{Mutual inverses.} For $g \in \hom(\mathrm{Real}(X), Y)$, $\Psi(\Phi(g))$ is the unique metric map satisfying $\Psi(\Phi(g)) \circ \iota_\sigma = g \circ \iota_\sigma$ for every $\sigma$. By the universal property's uniqueness clause, $\Psi(\Phi(g)) = g$. For $\eta : X \to \mathrm{Sing}(Y)$, $\Phi(\Psi(\eta))_{[n], a}(\sigma) = \Psi(\eta) \circ \iota_\sigma = f_\sigma = \eta_{[n], a}(\sigma)$ by construction. Hence $\Phi(\Psi(\eta)) = \eta$.
+
+\textbf{Naturality.} For $f : Y \to Y'$ in $\mathbf{FinEPMet}$ and $g \in \hom(\mathrm{Real}(X), Y)$,
+\[
+\Phi_{X, Y'}(f \circ g)_{[n], a}(\sigma) \;=\; f \circ g \circ \iota_\sigma \;=\; \mathrm{Sing}(f)\big(\Phi_{X, Y}(g)_{[n], a}(\sigma)\big),
+\]
+so $\Phi$ is natural in $Y$. For $\eta : X' \to X$ in $\mathbf{sFuzz}$ and $g \in \hom(\mathrm{Real}(X), Y)$, $\mathrm{Real}(\eta) : \mathrm{Real}(X') \to \mathrm{Real}(X)$ satisfies $\mathrm{Real}(\eta) \circ \iota_{\sigma'} = \iota_{\eta(\sigma')}$ for $\sigma' \in X'([n], a)$, and
+\[
+\Phi_{X', Y}(g \circ \mathrm{Real}(\eta))_{[n], a}(\sigma') \;=\; g \circ \mathrm{Real}(\eta) \circ \iota_{\sigma'} \;=\; g \circ \iota_{\eta(\sigma')} \;=\; \Phi_{X, Y}(g)_{[n], a}(\eta(\sigma')),
+\]
+so $\Phi$ is natural in $X$ via $\mathrm{Sing}(Y)$ post-composition with $\eta$. $\blacksquare$
+\end{derivation}
+
+\begin{example}[Unit and counit on a single edge]\label{ex:spivak-unit-counit}
+By Theorem~\ref{thm:adjunction-unit-counit}, the adjunction $\mathrm{Real} \dashv \mathrm{Sing}$ has a unit $\eta : 1_{\mathbf{sFuzz}} \Rightarrow \mathrm{Sing} \circ \mathrm{Real}$ and counit $\varepsilon : \mathrm{Real} \circ \mathrm{Sing} \Rightarrow 1_{\mathbf{FinEPMet}}$. Concretely:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $\eta_X : X \to \mathrm{Sing}(\mathrm{Real}(X))$ sends $\sigma \in X([n], a)$ to the metric map $\iota_\sigma : \Delta^n_a \to \mathrm{Real}(X)$, viewed as an element of $\mathrm{Sing}(\mathrm{Real}(X))([n], a)$.
+\item $\varepsilon_Y : \mathrm{Real}(\mathrm{Sing}(Y)) \to Y$ is the unique metric map whose composition with $\iota_{f}$ (for $f \in \mathrm{Sing}(Y)([n], a)$) recovers $f : \Delta^n_a \to Y$ itself.
+\end{itemize}
+The triangle identities of Theorem~\ref{thm:adjunction-unit-counit} are then a formal consequence of the bijection in Theorem~\ref{thm:spivak-adj}.
+\end{example}
+
+\subsection{The functorial reconstruction principle}\label{subsec:7.5.5}
+
+The Spivak adjunction underwrites UMAP's optimization target. The high-dim data, treated as an extended-pseudo-metric space $(\{x_1, \ldots, x_n\}, d)$, is canonically associated with a fuzzy simplicial set $\mathrm{Sing}((\{x_i\}, d)) \in \mathbf{sFuzz}$ via the right adjoint. A candidate low-dim embedding $(y_1, \ldots, y_n) \in \mathbb{R}^d$ is similarly associated with $\mathrm{Sing}((\{y_i\}, d_\Phi))$ for a low-dim metric $d_\Phi$ derived from the kernel $\Phi$ of \S\ref{subsec:7.5.6}. The optimization minimizes a divergence between these two fuzzy simplicial sets.
+
+In practice, UMAP works only with the 1-skeleton: the $n = 1$ part of each $\mathrm{Sing}$. The fuzzy 1-simplices (edges) carry the membership weights $\mu_{ij}$ (\S\ref{subsec:7.5.3}); higher-dimensional simplices, while present in principle, do not appear in the algorithmic objective.
+
+\begin{suppremark}[1-skeleton in practice, full simplicial structure in theory]
+The full categorical machinery licenses the construction by exhibiting it as the canonical adjunction-induced object on the metric space. Once the 1-skeleton is in hand, optimization proceeds on edges only, and the higher-dimensional structure plays no algorithmic role. The simplicial-set framework is therefore a justification of the construction's well-definedness rather than a description of the algorithm's data flow.
+\end{suppremark}
+
+\subsection{Low-dimensional Cauchy-like kernel}\label{subsec:7.5.6}
+
+UMAP's low-dimensional similarity is a Cauchy-like kernel parameterized by two scalars.
+
+\begin{definition}[Low-dim membership]\label{def:umap-Phi}
+For embedded points $y_1, \ldots, y_n \in \mathbb{R}^d$ and parameters $a > 0$, $b > 0$, the \textbf{low-dim edge membership} is
+\[
+\nu_{ij} \;:=\; \Phi(y_i, y_j) \;:=\; \frac{1}{1 + a \|y_i - y_j\|^{2 b}} \qquad (i \neq j).
+\]
+\end{definition}
+
+The parameters $a, b$ are chosen by least-squares fitting of $\Phi$ to a target piecewise function depending on a hyperparameter $\mathrm{min\_dist}$:
+\[
+\psi(d) \;=\; \begin{cases} 1 & d \leqslant \mathrm{min\_dist}, \\ \exp\big(-(d - \mathrm{min\_dist})\big) & d > \mathrm{min\_dist}. \end{cases}
+\]
+Solving $\min_{a, b} \int_0^\infty (\Phi(d) - \psi(d))^2 \, dd$ for typical $\mathrm{min\_dist} \in [0.001, 0.5]$ gives $(a, b)$ tabulated in McInnes--Healy (e.g., $\mathrm{min\_dist} = 0.1$ yields $(a, b) \approx (1.577, 0.895)$). The Cauchy-like form $(1 + a \|\cdot\|^{2b})^{-1}$ generalizes the t-SNE Student-$t_1$ kernel ($a = b = 1$) and inherits the heavy-tail behavior addressing crowding (\S\ref{subsec:7.4.4}).
+
+\subsection{Cross-entropy objective and gradient}\label{subsec:7.5.7}
+
+\begin{definition}[UMAP objective]\label{def:umap-objective}
+The \textbf{UMAP cost function} is the fuzzy cross-entropy of edge memberships (Definition~\ref{def:fuzzy-ce}) applied to $\mu_{ij}$ and $\nu_{ij}$:
+\[
+C(\boldsymbol y) \;=\; \sum_{i < j} \bigg[\mu_{ij} \log \frac{\mu_{ij}}{\nu_{ij}} \;+\; (1 - \mu_{ij}) \log \frac{1 - \mu_{ij}}{1 - \nu_{ij}}\bigg],
+\]
+where the sum is over unordered pairs $\{i, j\}$ with $\mu_{ij}, \nu_{ij} \in (0, 1)$ to avoid logarithm boundary cases.
+\end{definition}
+
+The high-dim part $\mu_{ij}$ is fixed (computed from the data), so $C$ depends on $\boldsymbol y$ only through $\nu_{ij}$.
+
+\begin{theorem}[UMAP gradient]\label{thm:umap-grad}
+\[
+\frac{\partial C}{\partial y_i} \;=\; 2ab \sum_{j \neq i} \bigg[\mu_{ij} \;-\; \frac{(1 - \mu_{ij})\, \nu_{ij}}{1 - \nu_{ij}}\bigg] \, \nu_{ij} \, \|y_i - y_j\|^{2b - 2} \, (y_i - y_j).
+\]
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:umap-grad}]
+Set $r_{ij} := \|y_i - y_j\|^2$ for $i \neq j$, so $\nu_{ij} = (1 + a r_{ij}^b)^{-1}$. The cost decomposes as
+\[
+C \;=\; \sum_{i < j}\big[\mu_{ij}\log\mu_{ij} - \mu_{ij}\log\nu_{ij} + (1 - \mu_{ij})\log(1 - \mu_{ij}) - (1 - \mu_{ij})\log(1 - \nu_{ij})\big].
+\]
+The $\mu$-only terms are constant in $\boldsymbol y$, giving
+\[
+\frac{\partial C}{\partial y_a} \;=\; \sum_{i < j} \bigg[-\frac{\mu_{ij}}{\nu_{ij}} + \frac{1 - \mu_{ij}}{1 - \nu_{ij}}\bigg] \frac{\partial \nu_{ij}}{\partial y_a}.
+\]
+
+\textbf{Per-pair derivative.} $\nu_{ij} = (1 + a r_{ij}^b)^{-1}$ has
+\[
+\frac{\partial \nu_{ij}}{\partial r_{ij}} \;=\; -\nu_{ij}^2 \cdot a b r_{ij}^{b - 1}, \qquad \frac{\partial r_{ij}}{\partial y_i} \;=\; 2(y_i - y_j),
+\]
+so by the chain rule, for $a \in \{i, j\}$,
+\[
+\frac{\partial \nu_{ij}}{\partial y_a} \;=\; -2 a b\, \nu_{ij}^2\, r_{ij}^{b-1} \cdot \begin{cases} (y_a - y_j) & a = i, \\ (y_a - y_i) & a = j, \end{cases}
+\]
+and zero otherwise. Both cases collapse to $\partial \nu_{ij}/\partial y_a = -2 a b \nu_{ij}^2 r_{ij}^{b-1} (y_a - y_{j'})$ where $j'$ is the other index in $\{i, j\}$.
+
+\textbf{Sum over pairs.} The pairs containing $a$ are $(a, j)$ for $j \neq a$. Each contributes once to the unordered-pair sum (with $i = a < j$ if $a < j$ or $j < i = a$ if $j < a$, equivalently $\{i, j\} = \{a, j\}$). Hence
+\[
+\frac{\partial C}{\partial y_a} \;=\; \sum_{j \neq a} \bigg[-\frac{\mu_{aj}}{\nu_{aj}} + \frac{1 - \mu_{aj}}{1 - \nu_{aj}}\bigg] \cdot \big({-2 a b}\big)\, \nu_{aj}^2\, r_{aj}^{b-1}\, (y_a - y_j).
+\]
+Distribute $-2ab\,\nu_{aj}^2$ over the bracket, using $\nu_{aj}^2 \cdot (\mu_{aj}/\nu_{aj}) = \mu_{aj}\nu_{aj}$ and $\nu_{aj}^2 \cdot (1 - \mu_{aj})/(1 - \nu_{aj}) = (1 - \mu_{aj})\nu_{aj}^2/(1 - \nu_{aj})$; the overall factor of $-1$ from outside the bracket flips the order of the two terms:
+\[
+\frac{\partial C}{\partial y_a} \;=\; 2 a b \sum_{j \neq a} \bigg[\mu_{aj} \nu_{aj} \;-\; \frac{(1 - \mu_{aj})\, \nu_{aj}^2}{1 - \nu_{aj}}\bigg] \, r_{aj}^{b - 1} \, (y_a - y_j).
+\]
+Factoring $\nu_{aj}$ out of the bracket gives the stated form. $\blacksquare$
+\end{derivation}
+
+The bracket has an attractive / repulsive reading parallel to t-SNE. When $\mu_{aj}$ is large and $\nu_{aj}$ small (high-dim closer than low-dim), the bracket is positive, $\partial C / \partial y_a$ points along $(y_a - y_j)$, and gradient descent pulls $y_a$ toward $y_j$. When $\mu_{aj}$ is small and $\nu_{aj}$ large (high-dim farther than low-dim), the bracket is negative and descent pushes $y_a$ away from $y_j$.
+
+\subsection{Spectral initialization via the graph Laplacian}\label{subsec:7.5.8}
+
+UMAP initializes $\boldsymbol y$ from the bottom non-trivial eigenvectors of the graph Laplacian of the symmetric weight matrix $A_{ij} := \mu_{ij}$ (with $A_{ii} := 0$).
+
+\begin{definition}[Graph Laplacian]\label{def:graph-laplacian}
+For a symmetric weight matrix $A \in \mathbb{R}^{n \times n}$ with $A_{ij} \geqslant 0$ and $A_{ii} = 0$, the (\textbf{unnormalized}) \textbf{graph Laplacian} is $L := D - A$, where $D = \diag(\sum_j A_{1j}, \ldots, \sum_j A_{nj})$ is the degree matrix. $L$ is symmetric PSD with $L \mathbf{1} = \mathbf{0}$.
+\end{definition}
+
+The connection to a smoothness functional uses the identity $\sum_{i, j} A_{ij} (z_i - z_j)^2 = 2 z^\top L z$ for any $z \in \mathbb{R}^n$, expanding the square and applying $A_{ij} = A_{ji}$.
+
+\begin{theorem}[Laplacian eigenmaps]\label{thm:laplacian-eigenmap}
+\citep{belkin-niyogi-2003}.\ Let $0 = \lambda_1 \leqslant \lambda_2 \leqslant \cdots \leqslant \lambda_n$ be the eigenvalues of $L$ with orthonormal eigenvectors $u_1, \ldots, u_n$ (so $u_1 \propto \mathbf{1}$). The matrix $Y = [u_2\ \cdots\ u_{d+1}] \in \mathbb{R}^{n \times d}$ minimizes
+\[
+\tr(Y^\top L Y) \;=\; \tfrac{1}{2} \sum_{i, j} A_{ij} \|y_i^\top - y_j^\top\|^2
+\]
+subject to $Y^\top Y = I_d$ and $Y^\top \mathbf{1} = \mathbf{0}$. The minimum value is $\sum_{k = 2}^{d + 1} \lambda_k$.
+\end{theorem}
+
+\begin{proof}
+Set $W = [u_2\ \cdots\ u_n] \in \mathbb{R}^{n \times (n - 1)}$ orthonormal columns, spanning $\mathbf{1}^\perp$. Any $Y$ with $Y^\top \mathbf{1} = \mathbf{0}$ and $Y^\top Y = I_d$ can be written $Y = W M$ for some $M \in \mathbb{R}^{(n - 1) \times d}$ with $M^\top M = I_d$. Then $L W = W \diag(\lambda_2, \ldots, \lambda_n)$ since each $u_k$ for $k \geqslant 2$ is an eigenvector, so
+\[
+Y^\top L Y \;=\; M^\top W^\top L W M \;=\; M^\top \diag(\lambda_2, \ldots, \lambda_n) M.
+\]
+The trace $\tr(M^\top \diag(\lambda_2, \ldots, \lambda_n) M) = \sum_{k = 2}^{n} \lambda_k \|M_{(k-1), :}\|^2$, where $M_{(k-1), :}$ is the $(k-1)$-th row of $M$. The constraint $M^\top M = I_d$ implies $\sum_{k = 2}^{n} \|M_{(k-1), :}\|^2 = d$ and $\|M_{(k-1), :}\|^2 \in [0, 1]$ for each $k$. Minimizing $\sum_{k \geqslant 2} \lambda_k \|M_{(k-1), :}\|^2$ over this constraint set is achieved by placing mass $1$ on the smallest $\lambda_k$, namely $k = 2, \ldots, d + 1$, giving $M$ such that $WM$ takes columns $u_2, \ldots, u_{d+1}$. The minimum value is $\sum_{k = 2}^{d+1} \lambda_k$.
+\end{proof}
+
+The bottom non-trivial eigenvectors of $L$ minimize the smoothness penalty $\sum_{ij} A_{ij} \|y_i - y_j\|^2$, hence preserve the connectivity structure encoded in $A$. UMAP uses this initialization as a starting point that already separates clusters by graph topology, before the cross-entropy objective refines it locally.
+
+\subsection{Stochastic gradient descent with negative sampling}\label{subsec:7.5.9}
+
+The full UMAP gradient (Theorem~\ref{thm:umap-grad}) requires summing over all $\binom{n}{2}$ pairs per epoch, prohibitive for $n$ in the tens of thousands. UMAP instead uses stochastic gradient descent with negative sampling, in the spirit of word2vec.
+
+\textbf{Per-step update.} Each step samples one positive edge $\{i, j\}$ with $\mu_{ij} > 0$ (proportional to $\mu_{ij}$) and a small number $m$ of negative edges $\{i, k\}$ with $k$ sampled uniformly. The attractive gradient at the positive edge ($\partial C / \partial y_i$ with the bracket $-\mu_{aj}$ dominant when $\mu_{ij}$ is large) and the repulsive gradient at the negative edges ($\partial C / \partial y_i$ with the bracket $(1 - \mu_{ak})\nu_{ak}/(1 - \nu_{ak})$ dominant when $\mu_{ik}$ is small) are applied to update $y_i$ and $y_j$ (or $y_k$).
+
+\textbf{Hyperparameters.} The number of negative samples per positive sample $m$ is typically $5$. The number of epochs is $200$ for small $n$, scaling down to $30$ for large $n$. The learning rate decreases linearly from an initial value (typically $1.0$) to $0$ over the run.
+
+\textbf{Computational cost.} Per epoch, the algorithm samples $O(|\mathrm{edges}|)$ positives, where $|\mathrm{edges}| \leqslant n k$ (only $k$ neighbors per point have $\mu_{ij} > 0$). Total cost per epoch is $O(n k m d)$, linear in $n$. The implementation in \texttt{uwot} (R) uses approximate nearest-neighbor search (Annoy or HNSW) for the $k$-NN computation; the empirical end-to-end scaling is $O(n^{1.14})$.
+
+\section{Implementation Tour}\label{sec:7.6}
+
+\subsection{PCA via \texttt{prcomp} and \texttt{step\_pca}}\label{subsec:7.6.1}
+
+PCA is a one-line call in base R; the rotation matrix and scores are accessed via standard slots.
+
+<<impl-pca-prcomp, message=FALSE>>=
+data(iris); X <- as.matrix(iris[, 1:4])
+pc <- prcomp(X, center = TRUE, scale. = TRUE)
+summary(pc)$importance[, 1:3]            # variance explained per PC
+round(pc$rotation, 3)                    # loadings (right singular vectors)
+head(pc$x, 3)                            # principal scores
+@
+
+In a tidymodels pipeline, PCA is a preprocessing step inserted via \texttt{recipes::step\_pca}; the number of components $k$ is part of the workflow and tunable.
+
+<<impl-pca-tidymodels, message=FALSE>>=
+library(tidymodels)
+rec <- recipe(Species ~ ., data = iris) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_pca(all_numeric_predictors(), num_comp = 2)
+prep(rec) %>% bake(new_data = NULL) %>% head(3)
+@
+
+\subsection{K-means and hierarchical clustering via base R}\label{subsec:7.6.2}
+
+\texttt{kmeans()} runs Lloyd's algorithm (Definition~\ref{def:lloyd}) with multiple restarts via \texttt{nstart}. \texttt{hclust()} builds the dendrogram from a precomputed distance matrix.
+
+<<impl-kmeans, message=FALSE>>=
+set.seed(7)
+km <- kmeans(scale(X), centers = 3, nstart = 25)
+km$tot.withinss                          # within-cluster sum of squares
+table(true = iris$Species, km = km$cluster)
+@
+
+<<impl-hclust, message=FALSE>>=
+d  <- dist(scale(X))
+hc <- hclust(d, method = "ward.D2")
+cl <- cutree(hc, k = 3)
+table(true = iris$Species, hc = cl)
+@
+
+\subsection{t-SNE via \texttt{Rtsne}}\label{subsec:7.6.3}
+
+\texttt{Rtsne::Rtsne} accepts a numeric matrix and returns the embedding in \texttt{\$Y}. Default \texttt{theta = 0.5} enables Barnes--Hut approximation; \texttt{theta = 0} requests the exact $O(n^2)$ gradient.
+
+<<impl-tsne, message=FALSE>>=
+library(Rtsne)
+set.seed(7)
+em <- Rtsne(scale(X), dims = 2, perplexity = 30, theta = 0.5,
+            max_iter = 1000, check_duplicates = FALSE)
+plot(em$Y, col = iris$Species, pch = 19,
+     xlab = "t-SNE 1", ylab = "t-SNE 2")
+@
+
+\subsection{UMAP via \texttt{uwot}}\label{subsec:7.6.4}
+
+\texttt{uwot::umap} takes the same numeric matrix; \texttt{init = "spectral"} (the default) uses Laplacian-eigenmap initialization (\S\ref{subsec:7.5.8}), \texttt{init = "random"} switches to the t-SNE-style Gaussian initialization.
+
+<<impl-umap, message=FALSE>>=
+library(uwot)
+set.seed(7)
+em <- umap(scale(X), n_neighbors = 15, min_dist = 0.1,
+           n_components = 2, init = "spectral", n_epochs = 200)
+plot(em, col = iris$Species, pch = 19,
+     xlab = "UMAP 1", ylab = "UMAP 2")
+@
+
+\subsection{From-scratch t-SNE}\label{subsec:7.6.5}
+
+The full t-SNE algorithm of \S\ref{subsec:7.4.6} fits in roughly 20 lines of base R: per-row binary search for bandwidths via \texttt{uniroot}, a gradient-descent loop using the matrix form of Theorem~\ref{thm:tsne-grad}, no momentum or early exaggeration. Output quality on small data ($n \leqslant 500$) is comparable to \texttt{Rtsne} but slower.
+
+<<impl-tsne-scratch, message=FALSE>>=
+tsne_min <- function(X, k = 2, perp = 30, n_iter = 500, lr = 200) {
+  n  <- nrow(X)
+  if (perp >= n - 1) stop("perp must be strictly less than n - 1")
+  D2 <- as.matrix(dist(X))^2
+  P  <- t(sapply(seq_len(n), function(i) {
+    d2 <- D2[i, -i]                           # off-diagonal squared distances
+    f <- function(beta) {                     # entropy minus target log_2(perp)
+      e <- exp(-beta * (d2 - min(d2)))        # shift to avoid exp underflow
+      e <- e / sum(e)
+      -sum(e[e > 0] * log2(e[e > 0])) - log2(perp)
+    }
+    beta <- uniroot(f, c(1e-10, 1e10), tol = 1e-5)$root
+    p_i  <- numeric(n)
+    p_i[-i] <- exp(-beta * (d2 - min(d2)))
+    p_i / sum(p_i)
+  }))
+  P <- (P + t(P)) / (2 * n); P <- pmax(P, 1e-12)
+  Y <- matrix(rnorm(n * k, sd = 1e-4), n, k)
+  for (iter in seq_len(n_iter)) {
+    DY <- as.matrix(dist(Y))^2
+    R  <- 1 / (1 + DY); diag(R) <- 0; Q <- R / sum(R)
+    PQ <- (P - Q) * R
+    grad <- 4 * (Y * rowSums(PQ) - PQ %*% Y)   # vector recycling: Y[i,] * rowSums(PQ)[i]
+    Y    <- Y - lr * grad
+  }
+  Y
+}
+set.seed(7)
+em_scratch <- tsne_min(scale(X), perp = 30, n_iter = 300)
+dim(em_scratch); range(em_scratch)
+@
+
+Mathematically the gradient is $4(D - A)Y$ with $A = (P - Q) \cdot R$ and $D = \diag(\mathrm{rowSums}(A))$, the rewrite of $\sum_j A_{ij}(y_i - y_j) = (\sum_j A_{ij}) y_i - \sum_j A_{ij} y_j$ (Theorem~\ref{thm:tsne-grad}). The R implementation avoids forming $D$ explicitly: \texttt{Y * rowSums(A)} computes $DY$ via vector recycling in $O(nk)$ time and constant auxiliary memory, replacing the naive $O(n^2 k)$ \texttt{diag(rowSums(A))} construction plus matrix multiplication.
+
+\subsection{Side-by-side embedding comparison}\label{subsec:7.6.6}
+
+Putting the four embeddings on the same dataset highlights what each method preserves.
+
+<<impl-compare, message=FALSE>>=
+library(Rtsne); library(uwot)
+set.seed(7); Xs <- scale(X)
+em_pca  <- prcomp(Xs)$x[, 1:2]
+em_tsne <- Rtsne(Xs, perplexity = 30, check_duplicates = FALSE)$Y
+em_umap <- umap(Xs, n_neighbors = 15)
+par(mfrow = c(1, 3))
+for (em in list(em_pca, em_tsne, em_umap))
+  plot(em, col = iris$Species, pch = 19, xlab = "", ylab = "")
+@
+
+PCA preserves linear structure and pairwise Euclidean distances on the rank-2 plane; t-SNE pulls Setosa away from the other two species but distorts inter-cluster distances; UMAP separates all three with closer-to-honest global structure (though still parameter-sensitive, \S\ref{subsec:7.7.10}).
+
+\section{Pitfalls and Misapplications}\label{sec:7.7}
+
+\subsection{Pitfall 1: PCA without standardization}\label{subsec:7.7.1}
+
+PCA on raw data with disparately-scaled features makes PC1 align with the highest-variance feature regardless of structure among the others. \S\ref{subsec:7.2.7} gave the algebraic reason; the practical failure is dramatic.
+
+\textbf{Tempting because:} \texttt{prcomp(x)} runs without error or warning on any numeric matrix.
+
+<<p7-1-pca-scale, message=FALSE>>=
+library(tidyverse)
+set.seed(7); n <- 200
+big_scale <- rnorm(n, sd = 100)
+small_a   <- rnorm(n, sd = 1)
+small_b   <- small_a + rnorm(n, sd = 0.3)
+small_c   <- small_a - rnorm(n, sd = 0.3)
+X <- cbind(big_scale, small_a, small_b, small_c)
+pc_raw <- prcomp(X, scale. = FALSE)
+round(pc_raw$rotation[, 1:2], 3)        # PC1 loads almost entirely on big_scale
+round(pc_raw$sdev^2 / sum(pc_raw$sdev^2), 3)
+@
+
+\textbf{Diagnostic.} If PC1's loading is concentrated on a single feature ($|v_{m, 1}| \gtrsim 0.95$), suspect a scale issue.
+
+\textbf{Fix.} \texttt{prcomp(X, scale. = TRUE)} or pre-standardize via \texttt{scale(X)}.
+
+\subsection{Pitfall 2: PCA on outlier-laden data}\label{subsec:7.7.2}
+
+A single distant observation can dominate the sample covariance, making PC1 align toward that observation and hiding structure in the rest.
+
+\textbf{Tempting because:} the sample covariance is sensitive to extreme values, but raw data may not have an obviously flagged outlier; the score plot is accepted at face value.
+
+<<p7-2-pca-outlier, message=FALSE>>=
+set.seed(7); n <- 200
+X_clean <- matrix(rnorm(n * 4), n, 4)
+X <- rbind(X_clean, c(50, 50, 0, 0))     # one extreme row appended
+pc <- prcomp(scale(X))
+range(pc$x[, 1])                         # outlier dominates PC1 score range
+sort(abs(pc$x[, 1]), decreasing = TRUE)[1:3]
+@
+
+\textbf{Diagnostic.} \texttt{quantile(pc\$x[, 1])} or a score plot reveals one or two observations with extreme PC1 scores.
+
+\textbf{Fix.} Robust PCA via \texttt{rrcov::PcaHubert} or \texttt{rrcov::PcaCov}; or remove flagged outliers before PCA after diagnosis.
+
+\subsection{Pitfall 3: K-means initialization sensitivity}\label{subsec:7.7.3}
+
+\texttt{kmeans()} with \texttt{nstart = 1} (R default) returns different cluster assignments on different runs.
+
+\textbf{Tempting because:} the default value is \texttt{nstart = 1}; users do not notice unless they re-run.
+
+<<p7-3-kmeans-nstart, message=FALSE>>=
+set.seed(7); n <- 100; K <- 4
+centers <- matrix(c(0, 0,  4, 0,  0, 4,  4, 4), ncol = 2, byrow = TRUE)
+X <- centers[sample(K, n, replace = TRUE), ] +
+       matrix(rnorm(n * 2, sd = 0.7), n, 2)
+sapply(1:5, function(s) {                # five seeds, nstart = 1 each
+  set.seed(s)
+  kmeans(X, K, nstart = 1)$tot.withinss
+})
+@
+
+\textbf{Diagnostic.} Run \texttt{kmeans} with the same data and varying seeds; differing \texttt{tot.withinss} signals different local minima.
+
+\textbf{Fix.} \texttt{kmeans(X, K, nstart = 25)}; or K-means++ via \texttt{ClusterR::KMeans\_rcpp(initializer = "kmeans++")}.
+
+\subsection{Pitfall 4: K-means assumes spherical equal-variance clusters}\label{subsec:7.7.4}
+
+K-means partitions space by Voronoi cells around centroids, equivalent to spherical-equal-variance Gaussian-mixture EM (\S\ref{subsec:7.3.3}). Non-spherical clusters are split or merged badly.
+
+\textbf{Tempting because:} K-means is the default clustering tool, applied without checking cluster geometry.
+
+<<p7-4-kmeans-shape, message=FALSE>>=
+set.seed(7); n <- 200
+theta_a <- runif(n, 0, pi); theta_b <- runif(n, pi, 2 * pi)
+X1 <- cbind(cos(theta_a),       sin(theta_a))       + matrix(rnorm(2 * n, sd = 0.1), n, 2)
+X2 <- cbind(0.5 + cos(theta_b), 0.5 + sin(theta_b)) + matrix(rnorm(2 * n, sd = 0.1), n, 2)
+X <- rbind(X1, X2); true <- rep(1:2, each = n)
+km <- kmeans(X, 2, nstart = 25)$cluster
+table(true, km)                          # K-means cuts each moon, fails to recover
+@
+
+\textbf{Diagnostic.} Visualize data alongside cluster boundaries; if true clusters are visibly non-spherical, K-means is wrong.
+
+\textbf{Fix.} Spectral clustering via \texttt{kernlab::specc} \citep{ng-jordan-weiss-2002}; for variable-density clusters, HDBSCAN via \texttt{dbscan::hdbscan}.
+
+\subsection{Pitfall 5: Subjectivity of the elbow method}\label{subsec:7.7.5}
+
+The visual "elbow" in a scree plot or in within-cluster-sum-of-squares-vs-$K$ is observer-dependent. On data without strong cluster structure, no clear elbow exists, but observers still report one.
+
+\textbf{Tempting because:} visual inspection feels objective; the elbow heuristic is taught everywhere.
+
+<<p7-5-elbow, message=FALSE>>=
+set.seed(7); n <- 200
+X <- matrix(rnorm(n * 5), n, 5)          # pure noise: no true cluster structure
+wss <- sapply(1:10, function(k) kmeans(X, k, nstart = 25)$tot.withinss)
+round(wss, 1)                            # decrement is gradual, no clear elbow
+round(diff(wss), 1)
+@
+
+\textbf{Diagnostic.} The right tool depends on which "$k$" is being chosen. For \emph{PCA} (number of components), compute cumulative variance, Kaiser, and parallel analysis. For \emph{K-means} (number of clusters), compute the gap statistic and silhouette. The two families are not interchangeable: parallel analysis tests a PCA eigenvalue against a random-data baseline; the gap statistic tests a clustering objective against a random-data baseline.
+
+\textbf{Fix.} For PCA, parallel analysis via \texttt{paran::paran} or a pre-specified cumulative-variance threshold. For K-means, the gap statistic via \texttt{cluster::clusGap} \citep{tibshirani-walther-hastie-2001}.
+
+\subsection{Pitfall 6: Linkage and metric sensitivity in hierarchical clustering}\label{subsec:7.7.6}
+
+Different linkages produce qualitatively different dendrograms on the same data. The same dataset can support a 2-cluster, 4-cluster, or 7-cluster reading depending on linkage.
+
+\textbf{Tempting because:} \texttt{hclust(d, method = "complete")} is the R default; users accept it without trying alternatives.
+
+<<p7-6-linkage, message=FALSE>>=
+set.seed(7); n <- 50
+X <- rbind(matrix(rnorm(n, mean = 0, sd = 1.5), n / 2, 2),
+           matrix(rnorm(n, mean = 2, sd = 1.5), n / 2, 2))   # overlapping clusters
+d <- dist(X)
+sapply(c("single", "complete", "average", "ward.D2"), function(m)
+  table(cutree(hclust(d, method = m), k = 2)))    # cluster sizes vary by linkage
+@
+
+\textbf{Diagnostic.} Apply multiple linkages and tabulate cluster sizes or co-cluster matrices; substantial disagreement means the result is linkage-driven.
+
+\textbf{Fix.} Pick linkage from prior knowledge: Ward for compact balanced clusters, single for chain-like, complete for ball-shaped. Or compute multiple and report disagreement.
+
+\subsection{Pitfall 7: Euclidean distance on categorical features}\label{subsec:7.7.7}
+
+One-hot encoding categorical features and applying Euclidean distance produces nonsensical pairwise distances: any two distinct categories are at the same distance, regardless of conceptual proximity.
+
+\textbf{Tempting because:} \texttt{model.matrix} encoding is one line, and the result feels numerical.
+
+<<p7-7-categorical, message=FALSE>>=
+library(cluster); library(clustMixType)
+df <- data.frame(
+  height = c(170, 165, 180, 175, 162, 178),
+  region = factor(c("North", "South", "North", "East", "South", "East"))
+)
+df_dummy <- model.matrix(~ . - 1, data = df)
+dist(df_dummy)                            # Euclidean on dummies: meaningless
+daisy(df, metric = "gower")               # Gower handles mixed types properly
+set.seed(7)
+kproto(df, k = 2, verbose = FALSE)$cluster  # k-prototypes partition on mixed types
+@
+
+\textbf{Diagnostic.} If any feature is categorical (\texttt{class(x)} returns \texttt{factor} or \texttt{character}), Euclidean distance on a one-hot encoding is wrong.
+
+\textbf{Fix.} Gower distance via \texttt{cluster::daisy(x, metric = "gower")} \citep{gower-1971}; or k-prototypes (the mixed-type generalization of k-means) via \texttt{clustMixType::kproto}, illustrated above.
+
+\subsection{Pitfall 8: t-SNE distances and cluster sizes}\label{subsec:7.7.8}
+
+t-SNE preserves local neighbor structure; it does \emph{not} preserve inter-cluster distances or cluster sizes. The resulting plot's between-cluster spacing and cluster diameters reflect optimization artifacts more than data structure.
+
+\textbf{Tempting because:} the plot looks like a 2D projection, inviting distance interpretations as in PCA.
+
+<<p7-8-tsne-distances, message=FALSE>>=
+library(Rtsne)
+set.seed(7); n <- 100
+centers <- matrix(c(0, 0,  10, 0,  100, 0), ncol = 2, byrow = TRUE)
+true <- sample(3, n * 3, replace = TRUE)
+X <- centers[true, ] + matrix(rnorm(n * 3 * 2, sd = 1), n * 3, 2)
+em <- Rtsne(X, perplexity = 30)$Y
+round(sapply(split.data.frame(em, true), colMeans), 2)   # embedding ignores 10/100 ratio
+@
+
+\textbf{Diagnostic.} Compute true (original-space) inter-cluster distances and embedding inter-cluster distances; if their ratios disagree by a large factor, the plot's distances are not informative.
+
+\textbf{Fix.} Treat t-SNE as a connectivity visualizer, not a metric-preserving projection. For distance-based downstream analysis, use PCA.
+
+\subsection{Pitfall 9: t-SNE perplexity at extremes}\label{subsec:7.7.9}
+
+Very small perplexity ($< 5$) fragments true clusters into micro-clusters and produces near-noise embeddings; very large perplexity blurs fine local detail. The recommended range is $[5, 50]$; \texttt{Rtsne} additionally caps perplexity at $(n - 1)/3$ to keep the binary search well-posed.
+
+\textbf{Tempting because:} perplexity looks like a regularization knob; users sweep without understanding the failure modes.
+
+<<p7-9-tsne-perplexity, message=FALSE>>=
+library(Rtsne); library(cluster)
+set.seed(7); n <- 100
+centers <- matrix(c(0, 0,  4, 0,  0, 4), ncol = 2, byrow = TRUE)
+true <- sample(3, n * 3, replace = TRUE)
+X <- centers[true, ] + matrix(rnorm(n * 3 * 2, sd = 0.5), n * 3, 2)
+em_low <- Rtsne(X, perplexity = 2 )$Y    # fragments true clusters
+em_ok  <- Rtsne(X, perplexity = 30)$Y    # recovers them
+em_hi  <- Rtsne(X, perplexity = 90)$Y    # near-uniform blob
+# Silhouette of true labels on each embedding: larger = clearer separation
+sapply(list(low = em_low, ok = em_ok, hi = em_hi),
+       function(em) round(mean(silhouette(true, dist(em))[, 3]), 3))
+@
+
+\textbf{Diagnostic.} Run with multiple perplexities (e.g., 5, 30, 50); if cluster structure varies dramatically, the result is perplexity-driven.
+
+\textbf{Fix.} Stay in $[5, 50]$, the standard recommended range; report multiple perplexity runs side by side.
+
+\subsection{Pitfall 10: UMAP global structure is approximate}\label{subsec:7.7.10}
+
+UMAP preserves more global structure than t-SNE, but \texttt{n\_neighbors} and \texttt{min\_dist} parameters reshape the embedding's global geometry.
+
+\textbf{Tempting because:} default parameters produce visually pleasing embeddings, suggesting they are reliable.
+
+<<p7-10-umap-params, message=FALSE>>=
+library(uwot); library(cluster)
+set.seed(7); n <- 100
+centers <- matrix(c(0, 0,  4, 0,  0, 4), ncol = 2, byrow = TRUE)
+true <- sample(3, n * 3, replace = TRUE)
+X <- centers[true, ] + matrix(rnorm(n * 3 * 2, sd = 0.5), n * 3, 2)
+em_local  <- umap(X, n_neighbors = 3,   min_dist = 0.001)  # very local
+em_global <- umap(X, n_neighbors = 100, min_dist = 0.5)    # very global
+sapply(list(local = em_local, global = em_global),
+       function(em) c(spread = diff(range(em)),
+                      sil = round(mean(silhouette(true, dist(em))[, 3]), 3)))
+@
+
+\textbf{Diagnostic.} Sweep \texttt{n\_neighbors} over (e.g.) 5, 15, 50; if cluster relationships vary, global structure is parameter-driven.
+
+\textbf{Fix.} Use UMAP for visualization with documented parameters; for global-structure claims, complement with PCA and quantitative validation.
+
+\subsection{Pitfall 11: Cluster validation without ground truth}\label{subsec:7.7.11}
+
+Without labels, "best $k$" cannot be measured directly. Intrinsic measures (silhouette, gap statistic, BIC) provide indirect signals that often disagree.
+
+\textbf{Tempting because:} a silhouette score is fast and produces a single number.
+
+<<p7-11-validation, message=FALSE>>=
+library(cluster)
+set.seed(7); n <- 200
+X <- matrix(rnorm(n * 3), n, 3)
+sil <- sapply(2:8, function(k) {
+  km <- kmeans(X, k, nstart = 25)
+  mean(silhouette(km$cluster, dist(X))[, 3])
+})
+gap <- clusGap(X, kmeans, K.max = 8, B = 50, nstart = 25, verbose = FALSE)
+which.max(sil) + 1                                # silhouette pick
+maxSE(gap$Tab[, 3], gap$Tab[, 4])                  # gap-statistic pick
+@
+
+\textbf{Diagnostic.} Compute multiple cluster-validation metrics; if silhouette \citep{rousseeuw-1987} and the gap statistic \citep{tibshirani-walther-hastie-2001} disagree, the data may not have stable cluster structure.
+
+\textbf{Fix.} Report multiple metrics with their disagreement explicitly. If a labeled subset exists, compute Adjusted Rand Index via \texttt{mclust::adjustedRandIndex} as external validation.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
+

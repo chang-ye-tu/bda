@@ -1,0 +1,986 @@
+% Compile pipeline (two steps):
+%   Rscript -e "knitr::knit('lecture.Rnw')"   # produces lecture.tex
+%   xelatex -shell-escape lecture.tex          # run twice to settle the toc
+\documentclass[17pt]{extarticle}
+
+\input{bda_preamble.tex}
+
+% Unit 4 specific
+\fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ 4 Resampling and Model Evaluation}}
+
+\setcounter{theorem}{0}\setcounter{example}{0}
+\renewcommand\thedefinition{4.\arabic{theorem}}
+\renewcommand\thetheorem  {4.\arabic{theorem}}
+\renewcommand\theexample  {4.\arabic{example}}
+\renewcommand\theexercise {4.\arabic{exercise}}
+\renewcommand\thefigure   {4.\arabic{figure}}
+
+\title{\color{hdrBG}\bfseries\Huge Resampling and Model Evaluation}
+\author{}\date{}
+
+\begin{document}
+
+<<setup, include=FALSE>>=
+source("bda_knitr_setup.R")
+knitr::opts_chunk$set(fig.path = "figs/unit04-")
+@
+
+\begin{titlepage}
+\thispagestyle{empty}\vspace*{\fill}
+\begin{center}
+{\color{hdrBG}\bfseries\fontsize{28}{32}\selectfont Unit 4.\ Resampling and Model Evaluation}\\[1em]
+\rule{70mm}{0.8pt}\\[0.8em]
+{\large Business Data Analytics: Introductory Machine Learning}
+\end{center}\vspace*{\fill}
+\end{titlepage}
+
+\setcounter{page}{1}
+
+\begin{motivation}[Training error is not generalization error]
+Training error measures fit on data the model has seen; generalization error measures prediction on data it has not. The two diverge whenever a model can overfit. Cross-validation estimates the second; its assumptions fail silently.
+\end{motivation}
+
+\section{The Generalization Question}\label{sec:4.1}
+
+This section fixes notation: the data-generating distribution, the iid sampling assumption, and the population vs.\ empirical risk distinction.
+
+\subsection{Population risk and empirical risk}\label{sec:4.1.1}
+
+OLS, ridge, and logistic regression are fit by minimizing an empirical risk on the training sample (Unit~1 \S 1.9.1; Unit~2 \S 2.1.3; Unit~3 \S 3.1.3). Deployment depends on a different quantity.
+
+\begin{definition}[Data-generating distribution and iid sampling]\label{def:dgp}
+The pair \((X, Y) \in \mathbb{R}^{p} \times \mathcal{Y}\) has joint distribution \(P\), the \emph{data-generating distribution}. The training data \(\{(X_i, Y_i)\}_{i=1}^{n}\) are an \emph{iid sample} from \(P\): the \((X_i, Y_i)\) are independent across \(i\), and each has distribution \(P\).
+
+Lowercase \((x_i, y_i)\) denotes a realization of \((X_i, Y_i)\); a row is written uppercase or lowercase depending on whether we reason about it before or after sampling.
+\end{definition}
+
+\begin{definition}[Population risk]\label{def:poprisk}
+Let \(\ell : \mathcal{Y} \times \mathcal{Y} \to \mathbb{R}_{\geqslant 0}\) be a loss function (Unit~1 Definition~1.17) and \(f : \mathbb{R}^{p} \to \mathcal{Y}\) a candidate predictor. The \emph{population risk} of \(f\) under \(P\) is
+\[
+  \mathcal{R}(f) \;:=\; \expc_{(X, Y) \sim P}\, \ell\bigl(Y,\, f(X)\bigr),
+\]
+the expected loss on a fresh draw from \(P\). The \emph{empirical risk} on the sample is
+\[
+  \widehat{\mathcal{R}}_{n}(f) \;:=\; \frac{1}{n} \sum_{i=1}^{n} \ell\bigl(Y_i,\, f(X_i)\bigr),
+\]
+recovering Unit~1 Definition~1.17 when \(f\) is the parameterized \(f_\theta\).
+\end{definition}
+
+\(\widehat{\mathcal{R}}_{n}(f)\) is a Monte Carlo estimate of \(\mathcal{R}(f)\): the population expectation replaced by a sample average.
+
+\begin{lemma}[Empirical risk is unbiased on a fixed predictor]\label{lem:fixed-f-unbiased}
+If \(f\) does not depend on the sample \(\{(X_i, Y_i)\}_{i=1}^{n}\), then
+\[
+  \expc\, \widehat{\mathcal{R}}_{n}(f) \;=\; \mathcal{R}(f).
+\]
+\end{lemma}
+
+\begin{proof}
+By linearity of expectation and identical distribution,
+\[
+  \expc\, \widehat{\mathcal{R}}_{n}(f)
+  \;=\; \frac{1}{n} \sum_{i=1}^{n} \expc\, \ell\bigl(Y_i,\, f(X_i)\bigr)
+  \;=\; \expc\, \ell\bigl(Y,\, f(X)\bigr)
+  \;=\; \mathcal{R}(f).
+\]
+The independence of the \((X_i, Y_i)\) across \(i\) is not used; only their identical distribution is needed.
+\end{proof}
+
+\begin{suppremark}[Where the proof breaks for fitted models]
+When \(f = f_{\hat\theta}\) is fitted by minimizing \(\widehat{\mathcal{R}}_{n}\) on the same sample, the predictor depends on the sample: \(\hat\theta\) was chosen to make \(\widehat{\mathcal{R}}_{n}(f_{\hat\theta})\) small. The lemma's hypothesis (\(f\) does not depend on the sample) fails, and \(\widehat{\mathcal{R}}_{n}(f_{\hat\theta})\) systematically underestimates \(\mathcal{R}(f_{\hat\theta})\).
+\end{suppremark}
+
+\subsection{The optimism of training error}\label{sec:4.1.2}
+
+\begin{definition}[Training error and optimism]\label{def:optimism}
+The \emph{training error} of a fitted predictor \(f_{\hat\theta}\) is \(\widehat{\mathcal{R}}_n(f_{\hat\theta})\), the empirical risk on the data used to fit it. The \emph{optimism} is
+\[
+  \mathrm{op}(\hat\theta) \;:=\; \mathcal{R}(f_{\hat\theta}) \;-\; \widehat{\mathcal{R}}_n(f_{\hat\theta}).
+\]
+\end{definition}
+
+Lemma~\ref{lem:fixed-f-unbiased} gives \(\expc\, \mathrm{op} = 0\) for any \(f\) that does not depend on the sample. When \(\hat\theta\) minimizes \(\widehat{\mathcal{R}}_n\), it absorbs sample noise, so \(\widehat{\mathcal{R}}_n(f_{\hat\theta}) < \mathcal{R}(f_{\hat\theta})\) on average. Expected optimism is positive and grows with model flexibility.
+
+\begin{example}[OLS on pure noise]\label{ex:optimism-sim}
+Fit OLS on \(n = 50\) rows of \(p = 20\) random predictors against a target with no signal; compare training mean squared error (MSE) to test MSE on a fresh sample of \(N = 10^4\).
+
+<<optimism-sim>>=
+set.seed(2026)
+n <- 50; p <- 20; N <- 1e4
+sim_one <- function() {
+  X_tr <- matrix(rnorm(n * p), n, p);  y_tr <- rnorm(n)
+  X_te <- matrix(rnorm(N * p), N, p);  y_te <- rnorm(N)
+  beta <- lm.fit(X_tr, y_tr)$coefficients
+  c(train = mean((y_tr - X_tr %*% beta)^2),
+    test  = mean((y_te - X_te %*% beta)^2))
+}
+colMeans(t(replicate(200, sim_one())))
+@
+
+The signal is zero: any predictor that ignores \(X\) has \(\mathcal{R} = 1\). Training MSE averages well below \(1\) (the fit absorbs sample noise); test MSE averages well above \(1\) (that noise carries no predictive value out of sample). The gap is the optimism.
+\end{example}
+
+\begin{theorem}[In-sample optimism for least squares]\label{thm:insample-opt}
+Fix design \(X\); let \(y \in \mathbb{R}^{n}\) have \(\expc y = \mu\) and \(\cov y = \sigma^2 I_n\), and let \(y' \in \mathbb{R}^{n}\) be an independent copy of \(y\). For any predictor \(\hat y = g(y)\) with finite second moments,
+\[
+  \tfrac{1}{n}\, \expc\|y' - \hat y\|^2 \;-\; \tfrac{1}{n}\, \expc\|y - \hat y\|^2 \;=\; \tfrac{2}{n} \sum_{i=1}^{n} \cov(y_i, \hat y_i).
+\]
+Under Unit~2 Assumption A2 (full column rank of \(X\)), OLS gives \(\hat y = P_X y\) with \(P_X = X(X^\top X)^{-1} X^\top\), and the right-hand side equals \(2 \sigma^2 p / n\): one \(\sigma^2\) per fitted parameter, divided by sample size.
+\end{theorem}
+
+\begin{proof}
+\textbf{General identity.} Expand the squares and use \(\expc(y_i')^2 = \expc y_i^2\), \(\expc y_i' = \expc y_i\), and \(y_i' \perp \hat y_i\):
+\[
+\begin{aligned}
+\expc(y_i' - \hat y_i)^2 - \expc(y_i - \hat y_i)^2
+&\;=\; -2\bigl(\expc[y_i' \hat y_i] - \expc[y_i \hat y_i]\bigr) \\
+&\;=\; 2\bigl(\expc[y_i \hat y_i] - \expc y_i \cdot \expc \hat y_i\bigr) \\
+&\;=\; 2 \cov(y_i, \hat y_i).
+\end{aligned}
+\]
+Sum over \(i\) and divide by \(n\); since \(\sum_i \expc(y_i - \hat y_i)^2 = \expc\|y - \hat y\|^2\) and likewise for \(y'\),
+\[
+  \tfrac{1}{n}\, \expc\|y' - \hat y\|^2 \;-\; \tfrac{1}{n}\, \expc\|y - \hat y\|^2 \;=\; \tfrac{2}{n} \sum_{i=1}^{n} \cov(y_i, \hat y_i).
+\]
+
+\textbf{OLS specialization.} \(P_X\) is deterministic in \(y\), and \(\cov y = \sigma^2 I\) gives
+\[
+  \cov(y_i, \hat y_i) \;=\; \cov\Bigl(y_i,\, \sum_{j} (P_X)_{ij}\, y_j\Bigr) \;=\; \sum_{j} (P_X)_{ij}\, \cov(y_i, y_j) \;=\; \sigma^2 (P_X)_{ii}.
+\]
+Sum and apply the cyclic trace property:
+\[
+  \sum_{i=1}^{n} \cov(y_i, \hat y_i) \;=\; \sigma^2 \tr(P_X) \;=\; \sigma^2 \tr\bigl((X^\top X)^{-1} X^\top X\bigr) \;=\; \sigma^2 \tr(I_p) \;=\; \sigma^2 p.
+\]
+\end{proof}
+
+When \(\hat y\) absorbs sample noise in \(y\), each \(\hat y_i\) acquires positive correlation with \(y_i\); the optimism is twice the row-average of these covariances. The same identity defines the \emph{effective degrees of freedom} of Unit~2 \S 2.2.3 and \S 2.5.2 and underlies Mallows's \(C_p\) and AIC. The simulation above runs in the random-\(X\) regime, where the gap is typically larger.
+
+\subsection{The single train/test split and its limits}\label{sec:4.1.3}
+
+A held-out test set satisfies the hypothesis of Lemma~\ref{lem:fixed-f-unbiased}. Partition the data into disjoint training and test indices \(T\) and \(V\) (Unit~1 Definition~1.2), fit \(\hat\theta\) on \(\{(X_i, Y_i) : i \in T\}\), and report
+\[
+  \widehat{\mathcal{R}}_V(f_{\hat\theta}) \;:=\; \frac{1}{|V|} \sum_{i \in V} \ell\bigl(Y_i,\, f_{\hat\theta}(X_i)\bigr).
+\]
+Since \(T \cap V = \emptyset\), \(f_{\hat\theta}\) (a function of training data only) does not depend on the test sample. Applying Lemma~\ref{lem:fixed-f-unbiased} conditional on the training data, \(\widehat{\mathcal{R}}_V(f_{\hat\theta})\) is an unbiased estimator of \(\mathcal{R}(f_{\hat\theta})\).
+
+Unbiasedness alone is not enough. \(\widehat{\mathcal{R}}_V(f_{\hat\theta})\) is a sample average of \(|V|\) loss values, with standard error of order \(\sigma_\ell / \sqrt{|V|}\), where \(\sigma_\ell^2 = \var\, \ell\bigl(Y, f_{\hat\theta}(X)\bigr)\). The example below shows the spread for a 70/30 split.
+
+\begin{example}[Variability of test MSE across splits]\label{ex:split-variability}
+Fix a sample of size \(n = 200\) with a linear signal; do 70/30 splits 500 times, refit each, and record the test MSE.
+
+<<split-var, fig.width=6, fig.height=3.5>>=
+set.seed(1)
+n <- 200; p <- 5
+beta <- c(1, -1, 0.5, 0, 0)
+X <- matrix(rnorm(n * p), n, p)
+y <- X %*% beta + rnorm(n)
+mse_split <- function() {
+  V <- sample(n, 60);  T <- setdiff(seq_len(n), V)
+  fit <- lm.fit(X[T, ], y[T])
+  mean((y[V] - X[V, ] %*% fit$coefficients)^2)
+}
+test_mse <- replicate(500, mse_split())
+c(mean = mean(test_mse), sd = sd(test_mse))
+par(mar = c(4, 5, 0.5, 0.5))
+hist(test_mse, breaks = 30, main = NULL, xlab = "test MSE")
+@
+
+The 500 values cluster around the population risk with substantial spread; one 70/30 split often yields a test MSE far from \(\mathcal{R}(f_{\hat\theta})\). Reporting it as the test error ignores this variability.
+\end{example}
+
+\begin{suppremark}[The case for resampling]
+Each split gives an unbiased but noisy estimate. Averaging across multiple splits reduces variance without introducing bias. That is the role of cross-validation.
+\end{suppremark}
+
+\section{Bias--Variance Decomposition}\label{sec:4.2}
+
+\subsection{The decomposition for squared loss}\label{sec:4.2.1}
+
+Throughout this section, \((X, Y) \sim P\), \(\mathcal{D} = \{(X_i, Y_i)\}_{i=1}^{n}\) is iid from \(P\), and \(\hat f = \hat f_{\mathcal{D}}\) is the predictor fitted on \(\mathcal{D}\). The test pair \((X, Y)\) is independent of \(\mathcal{D}\). Subscripts on \(\expc\) indicate the source averaged: \(\expc_{\mathcal{D}}\) over \(\mathcal{D}\), \(\expc_{Y \mid x}\) over \(Y \mid X = x\); unsubscripted \(\expc[\cdot \mid X = x]\) averages over both.
+
+\begin{definition}[Regression function and conditional noise variance]\label{def:reg-fn}
+The \emph{regression function} of \(P\) is
+\[
+  f^\star(x) \;:=\; \expc[Y \mid X = x].
+\]
+The \emph{conditional noise variance} at \(x\) is \(\sigma^2(x) := \var(Y \mid X = x)\). By definition, \(\expc[Y - f^\star(x) \mid X = x] = 0\) and \(\var(Y - f^\star(x) \mid X = x) = \sigma^2(x)\).
+\end{definition}
+
+\begin{definition}[Pointwise bias and variance of \(\hat f\)]\label{def:bias-var}
+For a fitted predictor \(\hat f\) and a fixed test point \(x\),
+\[
+  \mathrm{bias}(\hat f, x) \;:=\; \expc_{\mathcal{D}}\bigl[\hat f(x)\bigr] - f^\star(x), \qquad
+  \mathrm{var}(\hat f, x) \;:=\; \var_{\mathcal{D}}\bigl(\hat f(x)\bigr).
+\]
+\end{definition}
+
+\begin{theorem}[Pointwise bias-variance decomposition]\label{thm:bias-var}
+For a fixed test point \(x\) and \(\hat f\) fitted on \(\mathcal{D}\) drawn independently of the test pair \((X, Y)\),
+\[
+  \expc\bigl[(Y - \hat f(x))^2 \mid X = x\bigr]
+  \;=\; \mathrm{bias}(\hat f, x)^2 \;+\; \mathrm{var}(\hat f, x) \;+\; \sigma^2(x).
+\]
+\end{theorem}
+
+\begin{proof}
+\textbf{Separate the noise.} Write \(Y - \hat f(x) = \bigl(Y - f^\star(x)\bigr) + \bigl(f^\star(x) - \hat f(x)\bigr)\), square, and take \(\expc[\cdot \mid X = x]\):
+\[
+\begin{aligned}
+\expc\bigl[(Y - \hat f(x))^2 \mid X = x\bigr]
+&\;=\; \expc\bigl[(Y - f^\star(x))^2 \mid X = x\bigr] \\
+&\quad +\; 2\, \expc\bigl[(Y - f^\star(x))(f^\star(x) - \hat f(x)) \mid X = x\bigr] \\
+&\quad +\; \expc\bigl[(f^\star(x) - \hat f(x))^2 \mid X = x\bigr].
+\end{aligned}
+\]
+The first term is \(\sigma^2(x)\) by Definition~\ref{def:reg-fn}. The cross term vanishes: \(\mathcal{D}\) is independent of \(Y \mid X = x\), so the expectation factors, and \(\expc_{Y \mid x}[Y - f^\star(x)] = 0\). The third term reduces to \(\expc_{\mathcal{D}}\bigl[(f^\star(x) - \hat f(x))^2\bigr]\) since \(\hat f(x)\) does not depend on \(Y\).
+
+\textbf{Decompose the model term.} Insert \(\pm \expc_{\mathcal{D}}\hat f(x)\):
+\[
+  f^\star(x) - \hat f(x) \;=\; \underbrace{\bigl(f^\star(x) - \expc_{\mathcal{D}} \hat f(x)\bigr)}_{= -\mathrm{bias}(\hat f, x),\ \text{constant in } \mathcal{D}} \;+\; \underbrace{\bigl(\expc_{\mathcal{D}} \hat f(x) - \hat f(x)\bigr)}_{\expc_{\mathcal{D}} = 0}.
+\]
+Square and take \(\expc_{\mathcal{D}}[\cdot]\); the cross term vanishes (constant times mean-zero), leaving
+\[
+  \expc_{\mathcal{D}}\bigl[(f^\star(x) - \hat f(x))^2\bigr] \;=\; \mathrm{bias}(\hat f, x)^2 \;+\; \mathrm{var}(\hat f, x).
+\]
+Combining the two steps yields the claim.
+\end{proof}
+
+\subsection{Integrated risk and the trade-off}\label{sec:4.2.2}
+
+Apply \(\expc_X[\cdot]\) to both sides of Theorem~\ref{thm:bias-var}. The pointwise LHS already averages over \(Y \mid x\) and \(\mathcal{D}\), so applying \(\expc_X\) gives the expectation over all three sources. Conditioning on \(\mathcal{D}\) and using \(\mathcal{D} \perp (X, Y)\):
+\[
+\begin{aligned}
+\expc_X\bigl[\,\expc[(Y - \hat f(X))^2 \mid X]\,\bigr]
+&\;=\; \expc_{X, Y, \mathcal{D}}\bigl[(Y - \hat f(X))^2\bigr] \\
+&\;=\; \expc_{\mathcal{D}}\Bigl[\,\expc_{(X, Y) \sim P}\bigl[(Y - \hat f_{\mathcal{D}}(X))^2\bigr]\,\Bigr] \\
+&\;=\; \expc_{\mathcal{D}}\bigl[\mathcal{R}(\hat f)\bigr].
+\end{aligned}
+\]
+The inner expectation in the second line treats \(\hat f_{\mathcal{D}}\) as fixed (we conditioned on \(\mathcal{D}\)) and is the population risk of that fixed function (Definition~\ref{def:poprisk}). The outer \(\expc_{\mathcal{D}}\) appears because \(\mathcal{R}(\hat f)\) is itself random through \(\hat f = \hat f_{\mathcal{D}}\): the decomposition is for the population risk averaged across training samples, not the realized risk on one \(\mathcal{D}\).
+
+Applying \(\expc_X\) term by term to the RHS of Theorem~\ref{thm:bias-var} gives the matching identity
+\[
+  \expc_{\mathcal{D}}\bigl[\mathcal{R}(\hat f)\bigr] \;=\; \expc_X\bigl[\mathrm{bias}(\hat f, X)^2\bigr] \;+\; \expc_X\bigl[\mathrm{var}(\hat f, X)\bigr] \;+\; \expc_X\bigl[\sigma^2(X)\bigr].
+\]
+The three terms are average squared bias, average variance, and irreducible noise. The first two depend on \(\hat f\): for ridge regression (Unit~2 \S 2.2), increasing \(\lambda\) shrinks coefficients, raising bias and lowering variance. Their sum is U-shaped in \(\lambda\); the minimum is the optimal \(\lambda\).
+
+\begin{example}[Bias-variance trade-off for ridge]\label{ex:bv-ridge}
+Truth: \(y = X \beta^\star + \varepsilon\) with \(p = 20\), \(n = 100\), \(\sigma = 1\), \(\beta^\star = (2, -1, 0.5, 0, \dots, 0)\). Across a grid of \(\lambda\), estimate \(\expc_X \mathrm{bias}^2\) and \(\expc_X \mathrm{var}\) by averaging over \(B = 200\) training samples at \(n_{\mathrm{te}} = 200\) fixed test points.
+
+<<bv-ridge, fig.width=6, fig.height=3.5>>=
+set.seed(1)
+n <- 100; p <- 20; B <- 200; n_te <- 200
+beta_star <- c(2, -1, 0.5, rep(0, p - 3))
+X_test <- matrix(rnorm(n_te * p), n_te, p)
+y_test <- as.numeric(X_test %*% beta_star)
+lambdas <- 10^seq(-2, 3, length.out = 25)
+
+ridge_fit <- function(X, y, lambda)
+  solve(crossprod(X) + lambda * diag(p), crossprod(X, y))
+
+bv_one <- function(lambda) {
+  preds <- replicate(B, {
+    X_tr <- matrix(rnorm(n * p), n, p)
+    y_tr <- as.numeric(X_tr %*% beta_star + rnorm(n))
+    as.numeric(X_test %*% ridge_fit(X_tr, y_tr, lambda))
+  })
+  c(bias2    = mean((rowMeans(preds) - y_test)^2),
+    variance = mean(apply(preds, 1, var)))
+}
+res <- t(sapply(lambdas, bv_one))
+
+par(mar = c(4, 5, 0.5, 0.5))
+matplot(log10(lambdas), cbind(res, rowSums(res)), type = "l", lty = 1,
+        col = c("red", "blue", "black"), lwd = 2,
+        xlab = expression(log[10]~lambda), ylab = "MSE component")
+legend("topleft", legend = c(expression(bias^2), "variance",
+                              expression(bias^2 + variance)),
+       col = c("red", "blue", "black"), lty = 1, lwd = 2, bty = "n")
+@
+
+\noindent As \(\lambda\) grows, bias rises and variance falls; their sum has a U-shape with an interior minimum. Cross-validation estimates this curve from a single sample and selects the minimizing \(\lambda\) (Unit~2 \S 2.5.1).
+\end{example}
+
+\subsection{0/1 loss and the limits of the decomposition}\label{sec:4.2.3}
+
+\begin{suppremark}[Why the decomposition does not transfer to classification]
+Theorem~\ref{thm:bias-var} relies on the quadratic identity \((a + b)^2 = a^2 + 2ab + b^2\); no analogous identity exists for 0/1 loss. Proposed bias-variance decompositions for classification (Domingos 2000; Kohavi and Wolpert 1996; Tibshirani 1996) each fail at least one of: (i) all terms nonnegative; (ii) bias zero corresponds to the population-optimal classifier; (iii) reduction to Theorem~\ref{thm:bias-var} for squared loss. Classification model selection in this course relies on Unit~3's metrics and on resampling, not on a decomposition.
+\end{suppremark}
+
+\section{K-fold Cross-Validation}\label{sec:4.3}
+
+\subsection{The K-fold CV estimator}\label{sec:4.3.1}
+
+A single train/test split (\S\ref{sec:4.1.3}) gave an unbiased estimator with high variance. K-fold cross-validation repeats the split in a structured way and averages.
+
+\begin{definition}[K-fold partition]\label{def:kfold}
+A \emph{K-fold partition} of \(\{1, \ldots, n\}\) is a sequence of disjoint subsets \(\mathcal{I}_1, \ldots, \mathcal{I}_K\) with \(\bigcup_{k=1}^{K} \mathcal{I}_k = \{1, \ldots, n\}\). When formed by uniform random shuffling, the fold sizes differ from \(n/K\) by at most one.
+\end{definition}
+
+For fold \(k\), \(\hat f^{(-k)}\) denotes the predictor fitted on the rows not in \(\mathcal{I}_k\) (training size \(n - |\mathcal{I}_k|\)). The model is evaluated on \(\mathcal{I}_k\); cycling \(k\) and averaging gives the CV estimator.
+
+\begin{definition}[K-fold CV estimator]\label{def:cv}
+The \emph{K-fold cross-validation estimator} is
+\[
+  \mathrm{CV}_K \;:=\; \frac{1}{K} \sum_{k=1}^{K} \widehat{\mathcal{R}}_{\mathcal{I}_k}\bigl(\hat f^{(-k)}\bigr) \;=\; \frac{1}{K} \sum_{k=1}^{K} \frac{1}{|\mathcal{I}_k|} \sum_{i \in \mathcal{I}_k} \ell\bigl(Y_i, \hat f^{(-k)}(X_i)\bigr).
+\]
+When the folds are equal-sized, this simplifies to
+\[
+  \mathrm{CV}_K \;=\; \frac{1}{n} \sum_{i=1}^{n} \ell\bigl(Y_i, \hat f^{(-k(i))}(X_i)\bigr),
+\]
+where \(k(i)\) is the fold containing observation \(i\); each row contributes once, evaluated by the model that did not see it.
+\end{definition}
+
+\begin{figure}[!h]
+\centering
+\begin{tikzpicture}[every node/.style={font=\small}]
+\foreach \k in {1,...,5} {
+  \node[anchor=east] at (0, -\k * 0.55) {Iter \(\k\):};
+  \foreach \j in {1,...,5} {
+    \pgfmathparse{int(\j == \k)}
+    \ifnum\pgfmathresult=1
+      \fill[orange!50] (\j, -\k * 0.55 - 0.22) rectangle (\j + 1, -\k * 0.55 + 0.22);
+      \node at (\j + 0.5, -\k * 0.55) {Test};
+    \else
+      \fill[blue!15] (\j, -\k * 0.55 - 0.22) rectangle (\j + 1, -\k * 0.55 + 0.22);
+      \node at (\j + 0.5, -\k * 0.55) {Train};
+    \fi
+  }
+}
+\end{tikzpicture}
+\caption{\(K = 5\)-fold cross-validation: each iteration tests on one fold (orange) and trains on the rest (blue).}\label{fig:kfold}
+\end{figure}
+
+Each per-fold loss \(\ell(Y_i, \hat f^{(-k)}(X_i))\) for \(i \in \mathcal{I}_k\) is computed on a row independent of \(\hat f^{(-k)}\). Conditioning on \(\hat f^{(-k)}\), Lemma~\ref{lem:fixed-f-unbiased} gives
+\[
+  \expc\bigl[\widehat{\mathcal{R}}_{\mathcal{I}_k}(\hat f^{(-k)}) \,\big|\, \hat f^{(-k)}\bigr] \;=\; \mathcal{R}(\hat f^{(-k)}).
+\]
+Taking total expectation: \(\expc[\widehat{\mathcal{R}}_{\mathcal{I}_k}(\hat f^{(-k)})] = \expc[\mathcal{R}(\hat f^{(-k)})]\), with the latter the same for every \(k\) by symmetry. Averaging,
+\[
+  \expc[\mathrm{CV}_K] \;=\; \expc\bigl[\mathcal{R}(\hat f^{(-k)})\bigr] \quad \text{(any \(k\))},
+\]
+the expected risk of a model fitted on \(n - |\mathcal{I}_k| \approx n(K-1)/K\) rows. The gap from \(\expc_{\mathcal{D}}[\mathcal{R}(\hat f_{\mathcal{D}})]\) at training size \(n\) is the bias of K-fold CV.
+
+\subsection{Bias of K-fold CV}\label{sec:4.3.2}
+
+\(\mathrm{CV}_K\) estimates the expected risk at training size \(n(K-1)/K\), but the deployed model is fit on all \(n\) training rows. For procedures whose expected risk decreases with training size, \(\expc[\mathrm{CV}_K] > \expc[\mathcal{R}(\hat f_n)]\): the bias is positive, and CV is \emph{pessimistic}.
+
+The size of the bias decreases in \(K\). For OLS the formula is exact:
+
+\begin{derivation}[Bias of K-fold CV for OLS at fixed design]
+\textbf{Expected risk at training size \(m\).} For OLS with \(\cov y = \sigma^2 I_m\) and correctly specified mean \(\mu := \expc y \in \col(X)\), the fitted vector \(\hat y = P_X y\) satisfies \(\hat y - \mu = P_X(y - \mu)\). Risk on a fresh in-sample \(y'\):
+\[
+  \expc\bigl[\|y' - \hat y\|^2 / m\bigr] \;=\; \underbrace{\expc\|y' - \mu\|^2 / m}_{=\,\sigma^2}
+  \;+\; \underbrace{\expc\|\mu - \hat y\|^2 / m}_{=\,\sigma^2 p / m},
+\]
+the cross term vanishing because \(y' \perp \hat y\) with \(\expc(y' - \mu) = 0\); the second term by \(\expc\|P_X(y - \mu)\|^2 = \sigma^2 \tr(P_X) = \sigma^2 p\). Thus \(\expc[\mathcal{R}(\hat f_m)] = \sigma^2(1 + p/m)\).
+
+\textbf{Bias of CV.} Substituting \(m = n(K-1)/K\) for the per-fold training size,
+\[
+  \mathrm{bias}(\mathrm{CV}_K) \;=\; \expc[\mathcal{R}(\hat f_m)] - \expc[\mathcal{R}(\hat f_n)] \;=\; \sigma^2 p\,\Bigl(\tfrac{1}{m} - \tfrac{1}{n}\Bigr) \;=\; \frac{\sigma^2 p}{n(K-1)}.
+\]
+\end{derivation}
+
+At \(\sigma^2 = 1\), \(p = 20\), \(n = 200\):
+
+\begin{ctab}
+\begin{tabular}{l c c c c c}
+\toprule
+\(K\) & 2 & 5 & 10 & 20 & \(n\) (LOO) \\
+\midrule
+\(\mathrm{bias}(\mathrm{CV}_K)\) & 0.10 & 0.025 & 0.011 & 0.0053 & \(\approx 0\) \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The bias falls as \(1/(K-1)\): \(K = 2\) overestimates the risk of the deployed model by about \(9\%\), \(K = 10\) by about \(1\%\), and LOO eliminates it.
+
+\subsection{Variance of K-fold CV and the LOO trade}\label{sec:4.3.3}
+
+Bias decreases monotonically in \(K\); variance does not. As \(K\) grows, the per-fold training sets \([n] \setminus \mathcal{I}_k\) become more similar (sharing a fraction \((K-2)/K\) of their rows), so the per-fold losses \(L_k := \widehat{\mathcal{R}}_{\mathcal{I}_k}(\hat f^{(-k)})\) become correlated. Averaging correlated quantities reduces variance less than averaging independent ones.
+
+\begin{derivation}[Variance with correlated folds]
+By exchangeability, \(\var(L_k) = \sigma_L^2\) and \(\cov(L_j, L_k) = \rho_K \sigma_L^2\) for \(j \neq k\). Then
+\[
+  \var(\mathrm{CV}_K) \;=\; \frac{1}{K^2}\bigl(K \sigma_L^2 + K(K-1)\rho_K \sigma_L^2\bigr) \;=\; \frac{\sigma_L^2}{K}\bigl(1 + (K-1)\rho_K\bigr).
+\]
+For \(\rho_K = 0\), \(\var = \sigma_L^2/K\) (standard \(1/K\) averaging). As \(\rho_K \to 1\), \(\var \to \sigma_L^2\), no better than a single fold.
+\end{derivation}
+
+LOO is the extreme: training sets share \((n-2)/(n-1) \approx 1\) of their rows, so \(\hat f^{(-j)}\) and \(\hat f^{(-k)}\) are \emph{nearly identical functions of the data}, forcing \(\rho_K \approx 1\). Whether this makes \(\var(\mathrm{CV}_{\mathrm{LOO}})\) large depends on the model class:
+
+\begin{ctab}[0.95]
+\begin{tabular}{l l}
+\toprule
+\textbf{Model class} & \textbf{LOO behavior} \\
+\midrule
+Stable (OLS at \(n \gg p\), ridge) & \(\sigma_L^2\) small per row; LOO variance comparable to moderate-\(K\) \\
+Unstable (nearest neighbors, single trees) & \(\sigma_L^2\) large; LOO inflated relative to \(K = 10\) \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent Standard choice: \(K = 5\) or \(K = 10\). Bias is below \(\sim 1\%\) at \(K = 10\), and the cost is \(K\) full fits, not \(n\). LOO is reserved for closed-form shortcuts (the OLS leverage formula) or settings where \(\sigma_L^2\) is small enough to make the correlated average reliable.
+
+\begin{example}[Variance of $\mathrm{CV}_K$ across data samples for OLS]\label{ex:cv-variance}
+\(n = 200\), \(p = 5\), linear signal as in \S\ref{sec:4.1.3}; for each \(K\), \(\mathrm{CV}_K\) is computed on \(B = 100\) independent datasets and the across-replicate variance recorded.
+
+<<cv-var, fig.width=6, fig.height=3.5>>=
+set.seed(1)
+n <- 200; p <- 5; B <- 100
+beta <- c(1, -1, 0.5, 0, 0)
+Ks <- c(2, 5, 10, 20, 50, 200)
+
+cv_K <- function(K, X, y) {
+  fold_id <- sample(rep(1:K, length.out = n))
+  errs <- vapply(1:K, function(k) {
+    tr <- which(fold_id != k);  te <- which(fold_id == k)
+    fit <- lm.fit(X[tr, , drop = FALSE], y[tr])
+    mean((y[te] - X[te, , drop = FALSE] %*% fit$coefficients)^2)
+  }, numeric(1))
+  mean(errs)
+}
+
+result <- sapply(Ks, function(K) {
+  replicate(B, {
+    X <- matrix(rnorm(n * p), n, p)
+    y <- as.numeric(X %*% beta + rnorm(n))
+    cv_K(K, X, y)
+  })
+})
+
+par(mar = c(4, 5, 0.5, 0.5))
+plot(Ks, apply(result, 2, var), type = "b", log = "x", pch = 19,
+     xlab = "K (log scale)", ylab = expression(Var(CV[K])))
+@
+
+\noindent For OLS at \(n \gg p\), variance is roughly constant in \(K\) over this range (0.009--0.012): the \(\sigma_L^2/K\) averaging effect approximately cancels the growth in fold correlation \((K-1)\rho_K\). \(K = 5\) or \(K = 10\) achieves small bias at variance comparable to LOO with much less computation.
+\end{example}
+
+\(\var(\mathrm{CV}_K)\) cannot be estimated from the per-row CV losses \(\{e_i\}\) alone:
+
+\begin{theorem}[Bengio and Grandvalet, 2004]\label{thm:bg-impossibility}
+Consider K-fold CV (\(K \geqslant 2\)) with equal folds of size \(m = n/K\), and let \(e_i := \ell(Y_i, \hat f^{(-k(i))}(X_i))\) be the per-row CV loss, where \(k(i)\) is the fold containing \(i\). Suppose the joint distribution of \((e_1, \ldots, e_n)\) is invariant under within-fold permutations and under permutations of the fold labels (the natural symmetry inherited from iid sampling and equal-size partitioning). Then no symmetric quadratic statistic \(T = T(e_1, \ldots, e_n)\) satisfies \(\expc T = \var(\mathrm{CV}_K)\) for every joint distribution in this exchangeable class.
+\end{theorem}
+
+\begin{proof}
+\textbf{Variance decomposition.} Exchangeability reduces the joint second-moment structure to three parameters:
+\[
+  \sigma^2 := \var(e_i), \quad \gamma_w := \cov(e_i, e_j) \text{ for } i \neq j,\ k(i) = k(j), \quad \gamma_b := \cov(e_i, e_j) \text{ for } k(i) \neq k(j).
+\]
+With \(K\) folds of size \(m = n/K\), there are \(K m(m-1) = n^2/K - n\) ordered same-fold pairs and \(n^2(1 - 1/K)\) ordered between-fold pairs. Therefore
+\[
+  \var(\mathrm{CV}_K) = \tfrac{1}{n^2}\bigl[n \sigma^2 + (n^2/K - n)\gamma_w + n^2(1 - 1/K)\gamma_b\bigr] = \tfrac{\sigma^2}{n} + \tfrac{n - K}{nK}\,\gamma_w + \tfrac{K - 1}{K}\,\gamma_b.
+\]
+
+\textbf{General symmetric quadratic estimator.} Imposing the same exchangeability on \(T\), the most general quadratic form is
+\[
+  T \;=\; a_1 \sum_{i=1}^{n} e_i^2 \;+\; a_2 \!\!\!\sum_{\substack{i \neq j \\ k(i) = k(j)}}\!\!\! e_i e_j \;+\; a_3 \!\!\!\sum_{k(i) \neq k(j)}\!\!\! e_i e_j \;+\; a_4 \sum_{i=1}^{n} e_i \;+\; a_5.
+\]
+
+\textbf{Moment matching.} Using \(\expc e_i^2 = \sigma^2 + \mu^2\), \(\expc[e_i e_j] = \gamma_w + \mu^2\) (same fold), \(\expc[e_i e_j] = \gamma_b + \mu^2\) (between folds), and \(\expc e_i = \mu\):
+\[
+  \expc T \;=\; a_1 n(\sigma^2 + \mu^2) + a_2(n^2/K - n)(\gamma_w + \mu^2) + a_3 n^2(1 - 1/K)(\gamma_b + \mu^2) + a_4 n \mu + a_5.
+\]
+For \(\expc T = \var(\mathrm{CV}_K)\) to hold for all \((\mu, \sigma^2, \gamma_w, \gamma_b)\), match coefficients of each:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item Coefficient of \(\sigma^2\): \(a_1 n = 1/n \;\Rightarrow\; a_1 = 1/n^2\).
+\item Coefficient of \(\gamma_w\): \(a_2(n^2/K - n) = (n - K)/(nK) \;\Rightarrow\; a_2 = 1/n^2\).
+\item Coefficient of \(\gamma_b\): \(a_3 n^2(1 - 1/K) = (K - 1)/K \;\Rightarrow\; a_3 = 1/n^2\).
+\item Coefficients of \(\mu\) and constant: RHS has neither \(\mu\) nor a constant, so \(a_4 = 0\) and \(a_5 = 0\).
+\item Coefficient of \(\mu^2\): \(a_1 n + a_2(n^2/K - n) + a_3 n^2(1 - 1/K) = 0\) (RHS has no \(\mu^2\)).
+\end{itemize}
+
+\textbf{Contradiction.} Substituting \(a_1 = a_2 = a_3 = 1/n^2\) into the \(\mu^2\) constraint:
+\[
+  \tfrac{1}{n^2}\bigl[n + (n^2/K - n) + n^2(1 - 1/K)\bigr] \;=\; \tfrac{1}{n^2} \cdot n^2 \;=\; 1 \;\neq\; 0.
+\]
+The system is inconsistent, so no symmetric quadratic estimator is unbiased.
+\end{proof}
+
+\begin{suppremark}[Reported CV standard errors are heuristic]
+Standard implementations report the across-fold SD divided by \(\sqrt{K}\). This estimates within-run variability, not \(\var(\mathrm{CV}_K)\); it tacitly assumes \(\rho_K = 0\). Useful as a rough indicator, not for formal inference. The unbiased measurement is to repeat CV across independent data samples, as in Example~\ref{ex:cv-variance}.
+\end{suppremark}
+
+\subsection{Repeated K-fold}\label{sec:4.3.4}
+
+\(\mathrm{CV}_K\) depends on which K-fold partition was drawn; averaging over \(R\) independent partitions removes this partition-level variance.
+
+\begin{definition}[R-repeated K-fold CV]\label{def:repeated-cv}
+Given \(R\) independent K-fold partitions of the same sample, with \(\mathrm{CV}_K^{(r)}\) the K-fold estimate from the \(r\)-th partition, the \emph{R-repeated K-fold CV estimator} is
+\[
+  \overline{\mathrm{CV}}_K^{(R)} \;:=\; \frac{1}{R} \sum_{r=1}^{R} \mathrm{CV}_K^{(r)}.
+\]
+\end{definition}
+
+\begin{lemma}[Variance of repeated K-fold]\label{lem:repeated-var}
+Let \(V_{\mathrm{data}} := \var\bigl(\expc[\mathrm{CV}_K \mid \mathcal{D}]\bigr)\) (data-level variance, averaging out the partition) and \(V_{\mathrm{part}} := \expc\bigl[\var(\mathrm{CV}_K \mid \mathcal{D})\bigr]\) (partition-level variance, averaging out the data). Then
+\[
+  \var\bigl(\overline{\mathrm{CV}}_K^{(R)}\bigr) \;=\; V_{\mathrm{data}} \;+\; \frac{V_{\mathrm{part}}}{R}.
+\]
+\end{lemma}
+
+\begin{proof}
+By the law of total variance, conditioning on \(\mathcal{D}\):
+\[
+  \var\bigl(\overline{\mathrm{CV}}_K^{(R)}\bigr) \;=\; \var\bigl(\expc[\overline{\mathrm{CV}}_K^{(R)} \mid \mathcal{D}]\bigr) \;+\; \expc\bigl[\var(\overline{\mathrm{CV}}_K^{(R)} \mid \mathcal{D})\bigr].
+\]
+Conditional on \(\mathcal{D}\), the \(R\) partitions are iid, so \(\expc[\overline{\mathrm{CV}}_K^{(R)} \mid \mathcal{D}] = \expc[\mathrm{CV}_K \mid \mathcal{D}]\) and \(\var(\overline{\mathrm{CV}}_K^{(R)} \mid \mathcal{D}) = \var(\mathrm{CV}_K \mid \mathcal{D})/R\). Substituting yields the claim.
+\end{proof}
+
+As \(R \to \infty\), \(\var(\overline{\mathrm{CV}}_K^{(R)}) \to V_{\mathrm{data}}\): repetition cannot reduce the data-level component. The relative gain is governed by \(V_{\mathrm{part}} / V_{\mathrm{data}}\), small for stable procedures and larger for unstable ones.
+
+\begin{example}[Diminishing returns of repetition for OLS]\label{ex:repeated-cv}
+Same setup as Example~\ref{ex:cv-variance}; compute \(\overline{\mathrm{CV}}_{10}^{(R)}\) for \(R \in \{1, 2, 5, 10, 25\}\) and record the across-data-replicate variance.
+
+<<repeated-cv, fig.width=6, fig.height=3.5>>=
+set.seed(1)
+n <- 200; p <- 5; B <- 100; K <- 10
+beta <- c(1, -1, 0.5, 0, 0)
+Rs <- c(1, 2, 5, 10, 25)
+
+cv_K <- function(X, y) {
+  fold_id <- sample(rep(1:K, length.out = n))
+  errs <- vapply(1:K, function(k) {
+    tr <- which(fold_id != k);  te <- which(fold_id == k)
+    fit <- lm.fit(X[tr, , drop = FALSE], y[tr])
+    mean((y[te] - X[te, , drop = FALSE] %*% fit$coefficients)^2)
+  }, numeric(1))
+  mean(errs)
+}
+
+result <- sapply(Rs, function(R) {
+  replicate(B, {
+    X <- matrix(rnorm(n * p), n, p)
+    y <- as.numeric(X %*% beta + rnorm(n))
+    mean(replicate(R, cv_K(X, y)))
+  })
+})
+
+par(mar = c(4, 5, 0.5, 0.5))
+plot(Rs, apply(result, 2, var), type = "b", log = "x", pch = 19,
+     xlab = "R (log scale)", ylab = expression(Var(bar(CV)[K]^{(R)})))
+@
+
+\noindent For OLS at \(n \gg p\), training sets across partitions overlap by \((K-2)/K = 80\%\) of rows, so the partition-level variance \(V_{\mathrm{part}}\) is small relative to \(V_{\mathrm{data}}\). The variance of \(\overline{\mathrm{CV}}_K^{(R)}\) plateaus quickly.
+\end{example}
+
+Working choice: \(R \in [5, 25]\) repetitions of \(K \in \{5, 10\}\), at cost \(RK\) fits. Tidymodels exposes this via \texttt{rsample::vfold\_cv(v = K, repeats = R)}. For unstable models (single trees, nearest neighbors), \(V_{\mathrm{part}}\) is larger and repetition helps visibly.
+
+\subsection{Stratified K-fold}\label{sec:4.3.5}
+
+In classification (Unit~3), per-fold loss depends on the fold's class composition. Random partitioning produces folds whose positive-class proportion fluctuates around \(\pi := \prb(Y = 1)\), adding variance to \(\mathrm{CV}_K\). \emph{Stratified K-fold} fixes the class composition.
+
+\begin{definition}[Stratified K-fold partition]\label{def:stratified-kfold}
+A K-fold partition \(\mathcal{I}_1, \ldots, \mathcal{I}_K\) of \(\{1, \ldots, n\}\) is \emph{stratified by \(Y\)} if each fold contains, up to rounding, the same proportion of each class:
+\[
+  \frac{|\{i \in \mathcal{I}_k : Y_i = c\}|}{|\mathcal{I}_k|} \;\approx\; \frac{|\{i : Y_i = c\}|}{n} \qquad \text{for every fold } k \text{ and class } c.
+\]
+For binary \(Y\) with class rate \(\pi\), each fold contains \(\approx \pi |\mathcal{I}_k|\) positives.
+\end{definition}
+
+Under random partitioning, the count of positives in a fold of size \(m = n/K\) is \(\mathrm{Binomial}(m, \pi)\) with variance \(m \pi (1 - \pi)\); under stratification, this count is fixed (up to rounding). For severely imbalanced data, random partitioning can leave a fold with zero positives, making per-fold metrics like precision and F1 undefined.
+
+\begin{example}[Imbalanced classification: stratification matters]\label{ex:stratified}
+Set \(\pi = 0.05\), \(n = 400\), \(K = 10\). Each fold has \(m = 40\) rows; expected positives per fold \(m \pi = 2\), with SD \(\sqrt{m \pi(1-\pi)} \approx 1.38\).
+
+<<stratified-demo>>=
+set.seed(1)
+n <- 400; pi_rate <- 0.05; K <- 10
+y <- rbinom(n, 1, pi_rate)
+sum(y)
+# Random partition: positives per fold
+fold_random <- sample(rep(1:K, length.out = n))
+table(fold_random, y)[, 2]
+# Stratified partition: shuffle within each class
+fold_strat <- integer(n)
+for (cls in unique(y)) {
+  idx <- which(y == cls)
+  fold_strat[idx] <- sample(rep(1:K, length.out = length(idx)))
+}
+table(fold_strat, y)[, 2]
+@
+
+Random partition produces fold counts spanning the binomial range (0 to 4 here); stratification places \(\approx 2\) positives in every fold. Folds with zero positives leave precision and F1 undefined.
+\end{example}
+
+For balanced regression, stratification has no benefit. For imbalanced classification (Unit~3 \S 3.5), it is the default: \texttt{rsample::vfold\_cv(v = K, strata = y)}. Pitfalls: stratifying on a column that leaks the target (cf.\ Unit~1 \S 1.7); stratifying on continuous \(Y\) without discretizing (rsample uses \texttt{breaks =}, default 4 bins). For long-tailed \(Y\), four bins put most rows in the middle and leave the tails unbalanced; increase \texttt{breaks} or log-transform \(Y\) first.
+
+
+\section{Splits That Honor Data Structure}\label{sec:4.4}
+
+K-fold CV's unbiasedness argument (\S\ref{sec:4.3.1}) requires the test fold to be independent of the training data. iid sampling makes this automatic. Two structural dependencies need modified split schemes: temporal order (rows arrive in time) and group structure (rows share a unit). A separate issue arises when CV is used both to tune hyperparameters and to report risk; nested CV addresses that.
+
+\subsection{Time-series cross-validation}\label{sec:4.4.1}
+
+For time-indexed data \((X_1, Y_1), \ldots, (X_n, Y_n)\), random K-fold places future rows in training and past rows in testing for some \(k\), so the model uses post-prediction-time information: target leakage in time (Unit~1 \S 1.7). Time-respecting CV trains on past, tests on future.
+
+\begin{definition}[Rolling-origin CV]\label{def:rolling-origin}
+For initial window size \(n_0\) and forecast horizon \(h\), the \(k\)-th fold is
+\[
+  T_k \;=\; \{k, k+1, \ldots, n_0 + k - 1\}, \qquad V_k \;=\; \{n_0 + k, \ldots, n_0 + k + h - 1\}, \qquad k = 1, \ldots, K,
+\]
+with \(K = n - n_0 - h + 1\). The training window has fixed size \(n_0\), shifting forward by one row per fold; the test window of length \(h\) lies immediately after. The CV estimator averages the per-fold losses on \(V_k\).
+\end{definition}
+
+\begin{definition}[Growing-window CV]\label{def:growing-window}
+As in Definition~\ref{def:rolling-origin}, but with \(T_k = \{1, \ldots, n_0 + k - 1\}\): the training set accumulates all rows before \(V_k\) rather than sliding.
+\end{definition}
+
+The choice depends on stationarity:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item \emph{Stationary} (joint distribution constant in time): growing-window dominates because more data lowers variance.
+\item \emph{Non-stationary} (concept drift, regime change): rolling-origin avoids training on outdated rows.
+\end{itemize}
+
+\texttt{rsample::rolling\_origin(initial = $n_0$, assess = $h$, cumulative = TRUE/FALSE)} implements both.
+
+\subsection{Group K-fold cross-validation}\label{sec:4.4.2}
+
+When rows share a structural unit (patient with repeated measurements, customer with multiple transactions, store with daily records), iid fails: rows from the same unit are dependent. Random K-fold splits the same unit's rows across train and test folds, breaking the independence Lemma~\ref{lem:fixed-f-unbiased} requires; \(\mathrm{CV}_K\) underestimates risk on a new unit.
+
+\begin{definition}[Group K-fold partition]\label{def:group-kfold}
+Let the \(n\) rows be labeled by group \(g_1, \ldots, g_n \in \{1, \ldots, G\}\). A \emph{group K-fold partition} is a partition of the \emph{groups} \(\{1, \ldots, G\}\) into disjoint subsets \(\mathcal{G}_1, \ldots, \mathcal{G}_K\); the row partition is \(\mathcal{I}_k := \{i : g_i \in \mathcal{G}_k\}\).
+\end{definition}
+
+Each fold contains all rows from its assigned groups and none from other groups. The test fold's groups are unseen during training, restoring the independence Lemma~\ref{lem:fixed-f-unbiased} requires.
+
+The estimand is the expected risk on a fresh \emph{unit} drawn from the group-level population, not a fresh row from a known unit. The two differ when within-unit correlation is high. \texttt{rsample::group\_vfold\_cv(group = g, v = K)} implements this.
+
+\subsection{Nested cross-validation}\label{sec:4.4.3}
+
+Cross-validation is used both to estimate risk and to tune hyperparameters \(\lambda\) (ridge \(\lambda\) in Unit~2 \S 2.5.1, classification threshold in Unit~3 \S 3.4.2). Reporting \(\min_\lambda \mathrm{CV}_K(\lambda)\) as the risk estimate reuses the test folds for selection: \(\hat\lambda\) is biased toward folds on which it happens to score well, and the reported number is optimistic.
+
+\begin{definition}[Nested K-fold CV]\label{def:nested-cv}
+Outer K-fold partition \(\{\mathcal{I}_k^{\mathrm{out}}\}_{k=1}^{K_{\mathrm{out}}}\). For each \(k\):
+\begin{enumerate}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item Let the inner training set be the rows outside \(\mathcal{I}_k^{\mathrm{out}}\).
+\item Run \(K_{\mathrm{in}}\)-fold CV on the inner training set across a grid \(\Lambda\); pick \(\hat\lambda_k = \arg\min_\lambda \mathrm{CV}_{K_{\mathrm{in}}}(\lambda)\).
+\item Refit on the inner training set with \(\hat\lambda_k\); evaluate on \(\mathcal{I}_k^{\mathrm{out}}\).
+\end{enumerate}
+The nested CV estimate is the average of the outer-fold losses.
+\end{definition}
+
+Cost: \(K_{\mathrm{out}} \cdot K_{\mathrm{in}} \cdot |\Lambda|\) full fits. The common compromise is a single outer train/test split with CV-tuning inside training: cost drops to \(K_{\mathrm{in}} \cdot |\Lambda| + 1\) at the cost of a noisier risk estimate (\S\ref{sec:4.1.3}).
+
+\begin{suppremark}[When the inner-outer distinction matters]
+Nested CV is needed when reporting a final risk number for a tuned procedure, especially in publications and competitions. For exploratory comparison at fixed hyperparameters, plain K-fold suffices.
+\end{suppremark}
+
+\section{Implementation Tour}\label{sec:4.5}
+
+\subsection{rsample: split objects}\label{sec:4.5.1}
+
+\texttt{rsample} provides four split functions corresponding to the schemes of \S\S\ref{sec:4.3}--\ref{sec:4.4}.
+
+<<rsample-tour, message=FALSE, warning=FALSE>>=
+library(tidymodels)
+set.seed(2026)
+n <- 200
+df <- tibble(
+  x1 = rnorm(n), x2 = rnorm(n), x3 = rnorm(n),
+  store = sample(letters[1:20], n, replace = TRUE),
+  date  = as.Date("2025-01-01") + 1:n,
+  y     = x1 - 0.5 * x2 + 0.3 * x3 + rnorm(n, sd = 0.5)
+)
+@
+
+Each split function returns a tibble whose \texttt{splits} column lists \texttt{rsplit} objects; \texttt{analysis()} extracts a fold's training rows, \texttt{assessment()} its test rows.
+
+<<rsample-vfold>>=
+vfold_cv(df, v = 5)                                       # plain K-fold
+@
+
+<<rsample-group>>=
+group_vfold_cv(df, group = store, v = 5)                  # group K-fold
+@
+
+<<rsample-rolling>>=
+rolling_origin(df, initial = 150, assess = 10,            # time-series CV
+               cumulative = FALSE)
+@
+
+\begin{suppremark}[Modern rsample sliding APIs]
+\texttt{rsample} \(\geq\) 1.2 adds \texttt{sliding\_period()}, \texttt{sliding\_index()}, and \texttt{sliding\_window()} for time-respecting splits. These accept a date or index column and handle irregular timestamps (gaps, weekends, monthly aggregates) more cleanly than index-based \texttt{rolling\_origin()}. The latter is retained here for pedagogical clarity (the indices match Definition~\ref{def:rolling-origin} directly); the sliding family is the preferred choice in production pipelines with calendar-aware data.
+\end{suppremark}
+
+These share a row-tibble structure (one row per fold); \texttt{fit\_resamples} and \texttt{tune\_grid} accept any of them interchangeably. \texttt{bootstraps()} provides resamples of the same shape, used in Unit~5 for bagging and Random Forest OOB.
+
+\subsection{workflow and preprocessing-in-fold}\label{sec:4.5.2}
+
+Standardization, imputation, and feature selection must be computed on the training fold alone. Computing them on \(\mathcal{D}\) before splitting leaks each test fold into its own training, biasing \(\mathrm{CV}_K\) downward.
+
+The \texttt{recipe} + \texttt{workflow} idiom enforces this: a \texttt{recipe} stores preprocessing steps; fitting a workflow on a fold's training rows trains the recipe on those rows alone, and the test fold is processed with the train-fitted parameters (means, SDs, imputation values).
+
+<<workflow-recipe, message=FALSE, warning=FALSE>>=
+rec <- recipe(y ~ x1 + x2 + x3, data = df) |>
+  step_normalize(all_numeric_predictors())
+
+mod <- linear_reg() |> set_engine("lm")
+
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(mod)
+@
+
+\texttt{fit\_resamples()} runs the workflow on each fold and aggregates per-fold metrics:
+
+<<fit-resamples, message=FALSE, warning=FALSE>>=
+fit_resamples(wf, resamples = vfold_cv(df, v = 5)) |>
+  collect_metrics()
+@
+
+The reported metrics (\texttt{rmse}, \texttt{rsq}) are averages of per-fold values; \texttt{std\_err} is the across-fold standard deviation divided by \(\sqrt{K}\) (heuristic; cf.\ Theorem~\ref{thm:bg-impossibility}).
+
+\subsection{tune::tune\_grid and tune::last\_fit}\label{sec:4.5.3}
+
+Hyperparameters are declared with \texttt{tune()} placeholders; \texttt{tune\_grid} sweeps a grid across the resamples.
+
+<<tune-ridge, message=FALSE, warning=FALSE>>=
+mod_ridge <- linear_reg(penalty = tune(), mixture = 0) |>
+  set_engine("glmnet")
+
+wf_ridge <- workflow() |>
+  add_recipe(rec) |>
+  add_model(mod_ridge)
+
+grid <- grid_regular(penalty(range = c(-3, 1)), levels = 10)
+res  <- tune_grid(wf_ridge, resamples = vfold_cv(df, v = 5), grid = grid)
+
+show_best(res, metric = "rmse", n = 3)
+@
+
+The end-to-end protocol uses an outer train/test split, tunes on the training portion, and evaluates once on the test portion (\S\ref{sec:4.4.3}):
+
+<<last-fit, message=FALSE, warning=FALSE>>=
+split <- initial_split(df, prop = 0.8)
+res_train <- tune_grid(
+  wf_ridge,
+  resamples = vfold_cv(training(split), v = 5),
+  grid      = grid
+)
+final_wf <- finalize_workflow(wf_ridge, select_best(res_train, metric = "rmse"))
+final    <- last_fit(final_wf, split = split)
+
+collect_metrics(final)
+@
+
+\texttt{last\_fit} fits the finalized workflow on \texttt{training(split)} and evaluates on \texttt{testing(split)}; the fitted model is accessible via \texttt{extract\_workflow(final)}.
+
+\section{Pitfalls and Misapplications}\label{sec:4.6}
+
+Each entry names a misuse, demonstrates it on a small example, and gives the diagnostic and correct alternative. These also serve as the trap-question bank for the final project.
+
+\subsection{Random CV on time-series data}\label{sec:4.6.1}
+
+The misuse: applying \texttt{vfold\_cv} to time-indexed data. Adjacent rows in time are dependent, and random splits put each test row's neighbors into training; the CV estimate is optimistically biased.
+
+<<pitfall-random-ts, message=FALSE, warning=FALSE>>=
+set.seed(1)
+n <- 300; t <- 1:n
+y <- numeric(n); y[1] <- rnorm(1)
+for (i in 2:n) y[i] <- 0.95 * y[i-1] + rnorm(1, sd = 0.3)
+df_ts <- tibble(t = t, y = y)
+
+fold <- sample(rep(1:5, length.out = n))
+mse_random <- mean(sapply(1:5, function(k) {
+  fit <- lm(y ~ poly(t, 3), data = df_ts[fold != k, ])
+  mean((df_ts$y[fold == k] - predict(fit, df_ts[fold == k, ]))^2)
+}))
+
+mse_rolling <- mean(sapply(0:4, function(k) {
+  fit <- lm(y ~ poly(t, 3), data = df_ts[1:(180 + k * 20), ])
+  te  <- (180 + k * 20 + 1):(200 + k * 20)
+  mean((df_ts$y[te] - predict(fit, df_ts[te, ]))^2)
+}))
+
+c(random = mse_random, rolling = mse_rolling)
+@
+
+\textbf{Diagnostic.} Any column representing time (timestamp, sequence index, transaction date).
+
+\textbf{Fix.} \texttt{rolling\_origin()} (\S\ref{sec:4.4.1}).
+
+\subsection{Ignoring group structure}\label{sec:4.6.2}
+
+The misuse: random K-fold on data where rows share an entity (patient, customer, store). The model memorizes the entity from training rows and predicts well on the same entity's rows in the test fold.
+
+<<pitfall-group, message=FALSE, warning=FALSE>>=
+set.seed(1)
+n <- 200; G <- 20; groups <- letters[1:G]
+g_eff <- setNames(rnorm(G, sd = 1), groups)
+df_g <- tibble(group = sample(groups, n, replace = TRUE), x = rnorm(n))
+df_g$y <- g_eff[df_g$group] + 0.5 * df_g$x + rnorm(n, sd = 0.3)
+
+# Predictor: group mean from training (memorizes group effects)
+predict_gm <- function(train, test) {
+  g_mu <- tapply(train$y, train$group, mean)
+  pred <- g_mu[test$group]
+  pred[is.na(pred)] <- mean(train$y)             # unseen-group fallback
+  pred
+}
+
+fold <- sample(rep(1:5, length.out = n))
+mse_random <- mean(sapply(1:5, function(k) {
+  mean((df_g$y[fold == k] - predict_gm(df_g[fold != k, ], df_g[fold == k, ]))^2)
+}))
+
+g_fold <- split(groups, rep(1:5, length.out = G))
+mse_group <- mean(sapply(1:5, function(k) {
+  in_te <- df_g$group %in% g_fold[[k]]
+  mean((df_g$y[in_te] - predict_gm(df_g[!in_te, ], df_g[in_te, ]))^2)
+}))
+
+c(random = mse_random, group = mse_group)
+@
+
+\textbf{Diagnostic.} Any column with multiple rows per value.
+
+\textbf{Fix.} \texttt{group\_vfold\_cv()} (\S\ref{sec:4.4.2}).
+
+\subsection{Preprocessing outside CV folds}\label{sec:4.6.3}
+
+The misuse: computing preprocessing statistics (means, SDs, imputation values, PCA loadings) on \(\mathcal{D}\) before splitting. The magnitude varies: a global mean barely differs from per-fold means; target-driven imputation or PCA loadings leak substantially; feature selection by correlation with \(y\) (next pitfall) is the dramatic case.
+
+\textbf{Diagnostic.} Any preprocessing step using rows outside the current fold's training set.
+
+\textbf{Fix.} \texttt{recipe} + \texttt{workflow} (\S\ref{sec:4.5.2}) computes preprocessing per fold.
+
+\subsection{Feature selection outside CV}\label{sec:4.6.4}
+
+The misuse: pre-screen features by correlation with \(y\) on the whole dataset, then run CV with the selected features. Features were chosen to predict \(y\), so they continue to predict \(y\) on every fold by construction.
+
+<<pitfall-fs, message=FALSE, warning=FALSE>>=
+set.seed(1)
+n <- 200; p <- 100
+X <- matrix(rnorm(n * p), n, p)
+y <- rnorm(n)                              # no signal at all
+fold <- sample(rep(1:5, length.out = n))
+
+# Pre-screen on full data, then CV
+top5_global <- order(abs(cor(X, y)), decreasing = TRUE)[1:5]
+mse_global_fs <- mean(sapply(1:5, function(k) {
+  Xtr <- X[fold != k, top5_global];  Xte <- X[fold == k, top5_global]
+  fit <- lm.fit(cbind(1, Xtr), y[fold != k])
+  mean((y[fold == k] - cbind(1, Xte) %*% fit$coefficients)^2)
+}))
+
+# Select within each training fold
+mse_in_fold_fs <- mean(sapply(1:5, function(k) {
+  top5 <- order(abs(cor(X[fold != k, ], y[fold != k])), decreasing = TRUE)[1:5]
+  Xtr <- X[fold != k, top5];  Xte <- X[fold == k, top5]
+  fit <- lm.fit(cbind(1, Xtr), y[fold != k])
+  mean((y[fold == k] - cbind(1, Xte) %*% fit$coefficients)^2)
+}))
+
+c(global_fs = mse_global_fs, in_fold_fs = mse_in_fold_fs)
+@
+
+Pre-screening makes a noise-only target appear predictable.
+
+\textbf{Diagnostic.} Any selection step that uses \(y\).
+
+\textbf{Fix.} Include selection in the recipe (\texttt{step\_select\_*}) so it runs per fold.
+
+\subsection{Reporting the best tuned CV score as the test score}\label{sec:4.6.5}
+
+The misuse: tune a hyperparameter \(\lambda\) over a grid by CV, then report \(\min_\lambda \mathrm{CV}_K(\lambda)\) as the test error. The chosen \(\hat\lambda\) is biased toward folds on which it scored low; the minimum is therefore optimistic.
+
+<<pitfall-tune-bias, message=FALSE, warning=FALSE>>=
+set.seed(1)
+B <- 50; n <- 100; p <- 20
+lambdas <- 10^seq(-3, 1, length.out = 30)
+
+bias_sim <- replicate(B, {
+  X <- matrix(rnorm(n * p), n, p);  y <- rnorm(n)
+  X_te <- matrix(rnorm(1e4 * p), 1e4, p);  y_te <- rnorm(1e4)
+  fold <- sample(rep(1:5, length.out = n))
+  cv_curve <- sapply(lambdas, function(lam) {
+    mean(sapply(1:5, function(k) {
+      bhat <- solve(crossprod(X[fold != k, ]) + lam * diag(p),
+                    crossprod(X[fold != k, ], y[fold != k]))
+      mean((y[fold == k] - X[fold == k, ] %*% bhat)^2)
+    }))
+  })
+  bhat_full <- solve(crossprod(X) + lambdas[which.min(cv_curve)] * diag(p),
+                     crossprod(X, y))
+  c(min_cv = min(cv_curve), test = mean((y_te - X_te %*% bhat_full)^2))
+})
+rowMeans(bias_sim)
+@
+
+Two biases combine: K-fold pessimism inflates CV scores (training on \(n(K-1)/K\) rows, \S\ref{sec:4.3.2}); selection over the grid deflates the minimum. Their net direction varies by setup (here pessimism wins; in higher-dimensional or more flexible settings, selection wins). Either way, the minimum CV is not a fair estimate of the tuned model's risk.
+
+\textbf{Diagnostic.} A tuning loop has selected \(\hat\lambda\), and the CV score at \(\hat\lambda\) is being reported.
+
+\textbf{Fix.} Nested CV or a held-out test split (\S\ref{sec:4.4.3}).
+
+\subsection{Across-fold SD treated as the standard error}\label{sec:4.6.6}
+
+The misuse: reporting the across-fold SD divided by \(\sqrt{K}\) as the standard error of \(\mathrm{CV}_K\). The formula assumes independent folds; K-fold folds are correlated through shared training data (\S\ref{sec:4.3.3}), so it understates the true standard error.
+
+<<pitfall-cv-se, message=FALSE, warning=FALSE>>=
+set.seed(1)
+B <- 100; n <- 200; p <- 5
+beta <- c(1, -1, 0.5, 0, 0)
+
+run_one <- function() {
+  X <- matrix(rnorm(n * p), n, p);  y <- as.numeric(X %*% beta + rnorm(n))
+  fold <- sample(rep(1:5, length.out = n))
+  errs <- sapply(1:5, function(k) {
+    bhat <- lm.fit(X[fold != k, ], y[fold != k])$coefficients
+    mean((y[fold == k] - X[fold == k, ] %*% bhat)^2)
+  })
+  c(cv = mean(errs), reported_se = sd(errs) / sqrt(5))
+}
+out <- t(replicate(B, run_one()))
+c(reported_se_mean = mean(out[, "reported_se"]),
+  empirical_se     = sd(out[, "cv"]))
+@
+
+The empirical standard deviation of \(\mathrm{CV}_K\) across data replicates exceeds the reported across-fold SE.
+
+\textbf{Diagnostic.} Any inferential claim (\(p\)-value, confidence interval) computed from a CV reported SE.
+
+\textbf{Fix.} Repeat CV across independent data samples (Theorem~\ref{thm:bg-impossibility}).
+
+\subsection{SMOTE outside CV folds}\label{sec:4.6.7}
+
+The misuse: apply SMOTE (synthetic minority oversampling, Unit~3 \S 3.5.2) to the full dataset, then run CV. SMOTE creates synthetic minority points by interpolating between real minority neighbors; if the real neighbors include test rows, the synthetic points leak the test target distribution into training.
+
+<<pitfall-smote, message=FALSE, warning=FALSE>>=
+library(themis)
+set.seed(1)
+n <- 400
+df_imbal <- tibble(
+  x1 = rnorm(n), x2 = rnorm(n),
+  y  = factor(rbinom(n, 1, plogis(-3 + 0.5 * x1)))    # ~5% positive
+)
+mod <- logistic_reg() |> set_engine("glm")
+
+# Wrong: SMOTE on full data first, then CV the result
+df_smoted <- recipe(y ~ ., data = df_imbal) |>
+  step_smote(y) |> prep() |> bake(new_data = NULL)
+auc_wrong <- collect_metrics(fit_resamples(
+  workflow() |> add_model(mod) |> add_formula(y ~ x1 + x2),
+  resamples = vfold_cv(df_smoted, v = 5),
+  metrics   = metric_set(roc_auc)
+))$mean
+
+# Right: SMOTE in recipe applied per fold by fit_resamples
+auc_right <- collect_metrics(fit_resamples(
+  workflow() |>
+    add_recipe(recipe(y ~ ., data = df_imbal) |> step_smote(y)) |>
+    add_model(mod),
+  resamples = vfold_cv(df_imbal, v = 5),
+  metrics   = metric_set(roc_auc)
+))$mean
+
+c(wrong = auc_wrong, right = auc_right)
+@
+
+\textbf{Diagnostic.} Any class-balancing step (SMOTE, ROSE, undersampling) that uses \(y\).
+
+\textbf{Fix.} \texttt{themis::step\_smote(y)} inside a recipe inside a workflow; resampling then runs per fold (Unit~3 \S 3.7.5).
+
+\end{document}

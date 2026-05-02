@@ -1,0 +1,1290 @@
+% Compile pipeline (two steps):
+%   Rscript -e "knitr::knit('lecture.Rnw')"   # produces lecture.tex
+%   xelatex -shell-escape lecture.tex          # run twice to settle the toc
+\documentclass[17pt]{extarticle}
+
+\input{bda_preamble.tex}
+
+% Unit 3 specific
+\fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ 3 Classification and Evaluation Metrics}}
+
+\setcounter{theorem}{0}\setcounter{example}{0}
+\renewcommand\thedefinition{3.\arabic{theorem}}
+\renewcommand\thetheorem  {3.\arabic{theorem}}
+\renewcommand\theexample  {3.\arabic{example}}
+\renewcommand\theexercise {3.\arabic{exercise}}
+\renewcommand\thefigure   {3.\arabic{figure}}
+
+\title{\color{hdrBG}\bfseries\Huge Classification and Evaluation Metrics}
+\author{}\date{}
+
+\begin{document}
+
+<<setup, include=FALSE>>=
+source("bda_knitr_setup.R")
+knitr::opts_chunk$set(fig.path = "figs/unit03-")
+@
+
+\begin{titlepage}
+\thispagestyle{empty}\vspace*{\fill}
+\begin{center}
+{\color{hdrBG}\bfseries\fontsize{28}{32}\selectfont Unit 3.\ Classification and Evaluation Metrics}\\[1em]
+\rule{70mm}{0.8pt}\\[0.8em]
+{\large Business Data Analytics: Introductory Machine Learning}
+\end{center}\vspace*{\fill}
+\end{titlepage}
+
+\setcounter{page}{1}
+
+\begin{motivation}[From real-valued to binary outcomes]
+Most business decisions are binary: churn, default, click, purchase. The workhorse model is logistic regression, but the harder question is how to evaluate it.
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+  \item \textbf{Continuous targets:} $R^2$ and MSE usually suffice.
+  \item \textbf{Binary targets:} require diverse metrics (accuracy, precision, recall, ROC, PR), each answering a different business question.
+  \item \textbf{The hidden trap:} class imbalance silently distorts most of these metrics.
+\end{itemize}
+\end{motivation}
+
+\section{Logistic Regression}\label{sec:3.1}
+
+\subsection{Probability and information-theoretic preliminaries}\label{sec:3.1.1}
+
+Logistic regression is built from three pieces of probabilistic vocabulary: the Bernoulli likelihood, maximum likelihood estimation, and the Kullback--Leibler divergence.
+
+\begin{definition}[Bernoulli random variable]\label{def:bernoulli}
+A random variable $Y$ taking values in $\{0, 1\}$ is \emph{Bernoulli} with parameter $\mu \in [0, 1]$, written $Y \sim \mathrm{Ber}(\mu)$, if
+\[
+  \prb(Y = 1) = \mu, \qquad \prb(Y = 0) = 1 - \mu,
+\]
+or equivalently if its probability mass function (pmf) is $p(y;\mu) = \mu^{y}(1-\mu)^{1-y}$ for $y \in \{0,1\}$. Then $\expc Y = \mu$ and $\var Y = \mu(1-\mu)$.
+\end{definition}
+
+\begin{definition}[Likelihood and maximum likelihood estimator]\label{def:mle}
+Given independent observations $y_1, \dots, y_n$ from a parametric family $\{p(y; \theta) : \theta \in \Theta\}$, the \emph{likelihood} of $\theta$ is
+\[
+  L(\theta) \;:=\; \prod_{i=1}^n p(y_i; \theta),
+\]
+the \emph{log-likelihood} is $\ell(\theta) := \log L(\theta) = \sum_{i=1}^n \log p(y_i; \theta)$, and the \emph{maximum likelihood estimator} (MLE) is
+\[
+  \hat\theta_{\mathrm{MLE}} \;:=\; \arg\max_{\theta \in \Theta}\; \ell(\theta).
+\]
+\end{definition}
+
+\begin{example}[Bernoulli MLE is the sample proportion]\label{ex:bernoulli-mle}
+Let $y_1, \dots, y_n \overset{\mathrm{iid}}{\sim} \mathrm{Ber}(\mu)$ and write $n_1 = \sum_i y_i$, $n_0 = n - n_1$. Then
+\[
+  \ell(\mu) \;=\; \sum_{i=1}^n \bigl[ y_i \log \mu + (1 - y_i) \log(1 - \mu) \bigr]
+  \;=\; n_1 \log \mu + n_0 \log(1 - \mu).
+\]
+The first-order condition $\ell'(\mu) = n_1/\mu - n_0/(1-\mu) = 0$ gives $\hat\mu_{\mathrm{MLE}} = n_1/n$, the sample proportion of $1$s. The second derivative $\ell''(\mu) = -n_1/\mu^2 - n_0/(1-\mu)^2 < 0$ confirms strict concavity, so $\hat\mu$ is the unique maximizer.
+\end{example}
+
+The Bernoulli model is the simplest nontrivial likelihood. Logistic regression is Bernoulli MLE with $\mu$ allowed to depend on covariates.
+
+\begin{definition}[Kullback--Leibler divergence]\label{def:kl}
+For pmfs $p, q$ on a finite set $\mathcal{Y}$ with $q(y) > 0$ wherever $p(y) > 0$, the \emph{Kullback--Leibler divergence} from $p$ to $q$ is
+\[
+  D_{\mathrm{KL}}(p \,\|\, q) \;:=\; \sum_{y \in \mathcal{Y}} p(y)\, \log \frac{p(y)}{q(y)},
+\]
+with the convention $0 \log 0 = 0$. $D_{\mathrm{KL}}(p \,\|\, q)$ is not symmetric in $(p, q)$ and is not a metric.
+\end{definition}
+
+\begin{lemma}[Gibbs's inequality]\label{lem:gibbs}
+$D_{\mathrm{KL}}(p \,\|\, q) \geqslant 0$, with equality iff $p = q$.
+\end{lemma}
+
+\begin{proof}
+$\log$ is concave on $(0,\infty)$, so for any probability weights $w_y = p(y) \geqslant 0$ summing to $1$ and any positive $x_y$,
+\[
+  \sum_y p(y) \log x_y \;\leqslant\; \log \sum_y p(y)\, x_y \tag{Jensen, Unit 1 \S 1.9.9}.
+\]
+Apply this with $x_y = q(y)/p(y)$ on $\mathrm{supp}(p) := \{y : p(y) > 0\}$:
+\[
+  -D_{\mathrm{KL}}(p \,\|\, q)
+  \;=\; \sum_{y \in \mathrm{supp}(p)} p(y) \log \frac{q(y)}{p(y)}
+  \;\leqslant\; \log \sum_{y \in \mathrm{supp}(p)} q(y)
+  \;\leqslant\; \log 1 \;=\; 0.
+\]
+The last inequality is $\sum_{\mathrm{supp}(p)} q \leqslant \sum_{\mathcal{Y}} q = 1$. Equality in Jensen's requires $q(y)/p(y)$ constant on $\mathrm{supp}(p)$; combined with both sums equaling $1$, this forces $p = q$.
+\end{proof}
+
+\begin{definition}[Cross-entropy]\label{def:cross-entropy}
+For pmfs $p, q$ on $\mathcal{Y}$, the \emph{cross-entropy} from $p$ to $q$ is
+\[
+  H(p, q) \;:=\; -\sum_{y \in \mathcal{Y}} p(y)\, \log q(y),
+\]
+and the (Shannon) \emph{entropy} of $p$ is $H(p) := H(p, p) = -\sum_y p(y) \log p(y)$. Algebraic manipulation gives
+\[
+  H(p, q) \;=\; H(p) + D_{\mathrm{KL}}(p \,\|\, q).
+\]
+\end{definition}
+
+\begin{remark}
+Two consequences of $H(p, q) = H(p) + D_{\mathrm{KL}}(p \,\|\, q)$ recur throughout this unit:
+
+\begin{ctab}
+\begin{tabular}{l l}
+\toprule
+\textbf{Use} & \textbf{Reason} \\
+\midrule
+With $p$ fixed, $\arg\min_q H(p, q) = \arg\min_q D_{\mathrm{KL}}(p \,\|\, q)$ & $H(p)$ does not depend on $q$ \\
+$H(p, q) \geqslant H(p)$, equality iff $q = p$ & Gibbs's inequality (\ref{lem:gibbs}) \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The first will identify cross-entropy minimization with maximum likelihood once the model is in hand.
+\end{remark}
+
+\subsection{The logistic regression model}\label{sec:3.1.2}
+
+Logistic regression assigns each observation a probability of being class $1$ via a linear-then-squashed function of the covariates. The squashing is performed by the sigmoid.
+
+\begin{definition}[Sigmoid function]\label{def:sigmoid}
+The \emph{sigmoid} (or \emph{logistic}) function $\sigma : \mathbb{R} \to (0, 1)$ is
+\[
+  \sigma(z) \;:=\; \frac{1}{1 + e^{-z}} \;=\; \frac{e^{z}}{1 + e^{z}}.
+\]
+\end{definition}
+
+\begin{lemma}[Sigmoid properties]\label{lem:sigmoid}
+$\sigma$ is strictly increasing with $\sigma(\mathbb{R}) = (0,1)$ and $\sigma(0) = 1/2$. As $z \to -\infty$, $\sigma(z) \to 0$; as $z \to +\infty$, $\sigma(z) \to 1$. Also,
+\[
+  1 - \sigma(z) \;=\; \sigma(-z), \qquad \sigma'(z) \;=\; \sigma(z)\bigl(1 - \sigma(z)\bigr).
+\]
+\end{lemma}
+
+\begin{proof}
+Symmetry: $1 - \sigma(z) = e^{-z}/(1+e^{-z}) = 1/(1+e^{z}) = \sigma(-z)$. Derivative, by the chain rule:
+\[
+  \sigma'(z) \;=\; \frac{e^{-z}}{(1+e^{-z})^{2}} \;=\; \sigma(z) \cdot \frac{e^{-z}}{1+e^{-z}} \;=\; \sigma(z)\bigl(1 - \sigma(z)\bigr).
+\]
+Strict positivity of $\sigma'$ gives strict monotonicity; the midpoint and limits are read off the formula.
+\end{proof}
+
+\begin{definition}[Logistic regression model]\label{def:logistic}
+Given covariates $x_i \in \mathbb{R}^{p}$ (with $x_{i,1} \equiv 1$ when an intercept is included), the \emph{logistic regression model} with parameter $\beta \in \mathbb{R}^{p}$ posits that $Y_1, \dots, Y_n$ are independent with
+\[
+  Y_i \;\sim\; \mathrm{Ber}(\mu_i), \qquad \mu_i \;=\; \sigma(x_i^\top \beta).
+\]
+The quantity $\eta_i := x_i^\top \beta$ is the \emph{linear predictor}.
+\end{definition}
+
+The inverse of $\sigma$, the \emph{logit}, is
+\[
+  \mathrm{logit}(\mu) \;:=\; \sigma^{-1}(\mu) \;=\; \log\frac{\mu}{1-\mu},
+\]
+so the model can be written equivalently as $\mathrm{logit}(\mu_i) = x_i^\top \beta$. Coefficients $\beta$ are therefore interpreted in log-odds: a unit increase in $x_{i,j}$ raises the log-odds of $Y_i = 1$ by $\beta_j$, equivalently multiplies the odds $\mu_i / (1 - \mu_i)$ by $e^{\beta_j}$.
+
+\begin{definition}[Plug-in classifier and decision boundary]\label{def:decision-boundary}
+Given threshold $\tau \in (0, 1)$, the \emph{plug-in classifier} predicts
+\[
+  \hat Y(x) \;:=\; \indc\bigl[\sigma(x^\top \beta) > \tau\bigr].
+\]
+By strict monotonicity of $\sigma$ (\ref{lem:sigmoid}), this is equivalent to $x^\top \beta > \mathrm{logit}(\tau)$, so the \emph{decision boundary}
+\[
+  \mathcal{B}_\tau \;:=\; \{x \in \mathbb{R}^{p} : x^\top \beta = \mathrm{logit}(\tau)\}
+\]
+is a hyperplane in $\mathbb{R}^{p}$. At $\tau = 1/2$, $\mathrm{logit}(1/2) = 0$, so $\mathcal{B}_{1/2} = \{x : x^\top \beta = 0\}$.
+\end{definition}
+
+The boundary is a hyperplane: class $1$ on one side, class $0$ on the other. The sigmoid's curvature shows in the predicted probabilities, not in the geometry of the classifier.
+
+\subsection{Cross-entropy loss and MLE}\label{sec:3.1.3}
+
+For logistic regression (\ref{def:logistic}), the log-likelihood is
+\[
+  \ell(\beta) \;=\; \sum_{i=1}^{n} \bigl[ y_i \log \mu_i + (1 - y_i) \log(1 - \mu_i) \bigr],
+  \qquad \mu_i = \sigma(x_i^\top \beta).
+\]
+
+\begin{definition}[Binary cross-entropy loss]\label{def:bce}
+The \emph{binary cross-entropy loss} for label $y \in \{0,1\}$ and predicted probability $\mu \in (0,1)$ is
+\[
+  L_{\mathrm{CE}}(y, \mu) \;:=\; -y \log \mu - (1 - y) \log(1 - \mu).
+\]
+Also called \emph{log-loss} in machine-learning libraries (\texttt{sklearn.metrics.log\_loss}, \texttt{xgboost}'s \texttt{logloss} objective).
+\end{definition}
+
+\begin{lemma}[MLE equals empirical cross-entropy minimization]\label{lem:mle-ce}
+\[
+  \hat\beta_{\mathrm{MLE}} \;=\; \arg\min_{\beta \in \mathbb{R}^{p}} \frac{1}{n} \sum_{i=1}^{n} L_{\mathrm{CE}}\bigl(y_i, \sigma(x_i^\top \beta)\bigr).
+\]
+\end{lemma}
+
+\begin{proof}
+$\hat\beta_{\mathrm{MLE}} = \arg\max_\beta \ell(\beta) = \arg\min_\beta\, -\ell(\beta)$, and $-\ell(\beta) = \sum_i L_{\mathrm{CE}}(y_i, \mu_i)$ by inspection; the $1/n$ factor does not change the argmin.
+\end{proof}
+
+\textbf{Information-theoretic reading.} Define the empirical pmf $\hat p_i$ on $\{0,1\}$ by $\hat p_i(1) = y_i$, $\hat p_i(0) = 1 - y_i$ (a point mass at $y_i$), and the model pmf $q_i$ by $q_i(1) = \mu_i$, $q_i(0) = 1 - \mu_i$. Direct calculation gives
+\[
+  L_{\mathrm{CE}}(y_i, \mu_i) \;=\; H(\hat p_i, q_i) \;=\; D_{\mathrm{KL}}(\hat p_i \,\|\, q_i),
+\]
+where the second equality uses $H(\hat p_i) = 0$ (entropy of a point mass) in the decomposition $H(p,q) = H(p) + D_{\mathrm{KL}}(p \,\|\, q)$ (\ref{def:cross-entropy}). Hence
+\[
+  \hat\beta_{\mathrm{MLE}} \;=\; \arg\min_\beta\, \frac{1}{n} \sum_{i=1}^{n} D_{\mathrm{KL}}(\hat p_i \,\|\, q_i):
+\]
+MLE minimizes the average per-observation KL from labels to model.
+
+\subsection{Why not squared loss}\label{sec:3.1.4}
+
+Cross-entropy is the likelihood loss (\ref{lem:mle-ce}). The squared loss
+\[
+  L_{\mathrm{SQ}}(y, \mu) \;:=\; (y - \mu)^{2}
+\]
+familiar from Unit 2 is the obvious alternative. The empirical risk under $L_{\mathrm{CE}}$ is convex in $\beta$; under $L_{\mathrm{SQ}}$ it is not.
+
+\begin{lemma}[Cross-entropy is convex in $\beta$]\label{lem:ce-convex}
+$\beta \mapsto \sum_{i=1}^{n} L_{\mathrm{CE}}\bigl(y_i, \sigma(x_i^\top \beta)\bigr)$ is convex on $\mathbb{R}^{p}$.
+\end{lemma}
+
+\begin{proof}
+Define the \emph{softplus} $s(z) := \log(1 + e^{z})$. Then $s'(z) = \sigma(z)$ and $s''(z) = \sigma(z)(1 - \sigma(z)) \geqslant 0$ (\ref{lem:sigmoid}), so $s$ is convex by the second-order condition (Unit 1, \S 1.9.6). Algebra gives $-\log\sigma(\eta) = s(-\eta)$ and $-\log(1 - \sigma(\eta)) = s(\eta)$, hence
+\[
+  L_{\mathrm{CE}}(y, \sigma(\eta)) \;=\; y\, s(-\eta) + (1 - y)\, s(\eta).
+\]
+Both $s(-\eta)$ and $s(\eta)$ are convex in $\eta$ (composition of $s$ with an affine map; Unit 1, \S 1.9.7), and $y, 1-y \geqslant 0$, so the sum is convex. Composing further with $\eta = x_i^\top \beta$ (affine in $\beta$) and summing over $i$ preserves convexity.
+\end{proof}
+
+\begin{lemma}[Squared loss is not convex in $\beta$]\label{lem:sq-nonconvex}
+For any $x \neq 0$ and $y \in \{0, 1\}$, $\beta \mapsto L_{\mathrm{SQ}}(y, \sigma(x^\top \beta))$ is not convex on $\mathbb{R}^{p}$.
+\end{lemma}
+
+\begin{proof}
+For $y = 1$, set $\phi(\eta) := (1 - \sigma(\eta))^{2}$. With $\mu := \sigma(\eta)$ and $\sigma'(\eta) = \mu(1-\mu)$,
+\[
+  \phi'(\eta) = -2\mu(1-\mu)^{2}, \qquad \phi''(\eta) = -2\mu(1-\mu)^{2}(1 - 3\mu),
+\]
+so $\phi''(\eta) < 0$ when $\mu < 1/3$. Along the line $\beta_0 + tx$, $\beta \mapsto L_{\mathrm{SQ}}(1, \sigma(x^\top\beta))$ becomes $g(t) = \phi\bigl(x^\top\beta_0 + t\|x\|^{2}\bigr)$ with $g''(t) = \|x\|^{4}\,\phi''(\cdot)$, also negative there; convexity therefore fails (Unit 1, \S 1.9.4). The case $y = 0$ is symmetric: $\phi'' < 0$ when $\mu > 2/3$.
+\end{proof}
+
+\begin{remark}
+Confidently wrong predictions ($y = 1, \mu < 1/3$ or $y = 0, \mu > 2/3$) are where squared loss fails twice: the loss is concave (just proved), and its gradient $\partial L_{\mathrm{SQ}}/\partial \eta = -2(y - \mu)\mu(1-\mu)$ vanishes as $\mu \to 0$ or $1$. Cross-entropy fails neither: $\partial L_{\mathrm{CE}}/\partial \eta = \mu - y$ stays $O(1)$, and the loss is globally convex (\ref{lem:ce-convex}).
+\end{remark}
+
+\subsection{Optimization: gradient and IRLS}\label{sec:3.1.5}
+
+The first-order condition $\nabla \ell(\beta) = 0$ is nonlinear in $\beta$ (unlike OLS), so logistic regression has no closed-form MLE. Newton-Raphson iterates have a weighted-least-squares interpretation that runs underneath \texttt{glm}.
+
+\begin{lemma}[Gradient and Hessian]\label{lem:grad-hess}
+Let $X \in \mathbb{R}^{n \times p}$ have rows $x_i^\top$, $y \in \mathbb{R}^{n}$ be the response, $\mu(\beta) \in (0,1)^{n}$ the predicted means with $\mu_i = \sigma(x_i^\top \beta)$, and $W(\beta) := \diag\bigl(\mu_i(1-\mu_i)\bigr) \in \mathbb{R}^{n \times n}$. Then
+\[
+  \nabla \ell(\beta) \;=\; X^\top \bigl(y - \mu(\beta)\bigr),
+  \qquad
+  \nabla^{2} \ell(\beta) \;=\; -X^\top W(\beta)\, X.
+\]
+\end{lemma}
+
+\begin{proof}
+By the chain rule and $\sigma'(\eta) = \mu(1-\mu)$, $\partial \mu_i / \partial \beta_j = \mu_i(1-\mu_i)\,x_{ij}$. Hence
+\[
+  \frac{\partial \ell}{\partial \beta_j}
+  \;=\; \sum_{i=1}^{n} \biggl[\frac{y_i}{\mu_i} - \frac{1-y_i}{1-\mu_i}\biggr] \mu_i(1-\mu_i)\, x_{ij}
+  \;=\; \sum_{i=1}^{n}(y_i - \mu_i)\, x_{ij}
+  \;=\; (X^\top(y - \mu))_j,
+\]
+and differentiating once more,
+\[
+  \frac{\partial^{2} \ell}{\partial \beta_j \partial \beta_k}
+  \;=\; -\sum_{i=1}^{n} x_{ij}\,\mu_i(1-\mu_i)\,x_{ik}
+  \;=\; -(X^\top W X)_{jk}. \qedhere
+\]
+\end{proof}
+
+\begin{remark}
+The diagonal entries of $W(\beta) = \diag\bigl(\mu_i(1-\mu_i)\bigr)$ are non-negative (since $\mu_i \in (0,1)$), so $W \succcurlyeq 0$. For any $v \in \mathbb{R}^{p}$,
+\[
+  v^\top X^\top W X v \;=\; (Xv)^\top W (Xv) \;\geqslant\; 0,
+\]
+hence $X^\top W X \succcurlyeq 0$ and $-\ell$ has PSD Hessian: a second proof of \ref{lem:ce-convex}.
+\end{remark}
+
+\begin{theorem}[Iteratively reweighted least squares]\label{thm:irls}
+With $\mu^{(k)} := \mu(\beta^{(k)})$ and $W^{(k)} := W(\beta^{(k)})$, the Newton-Raphson step on $\ell$ at $\beta^{(k)}$ is
+\[
+  \beta^{(k+1)} \;=\; \bigl(X^\top W^{(k)} X\bigr)^{-1} X^\top W^{(k)}\, z^{(k)},
+  \qquad
+  z^{(k)} \;:=\; X \beta^{(k)} + \bigl(W^{(k)}\bigr)^{-1}\bigl(y - \mu^{(k)}\bigr).
+\]
+The right-hand side is the weighted least squares estimate $\arg\min_\beta \|W^{(k)\,1/2}(z^{(k)} - X\beta)\|^{2}$.
+\end{theorem}
+
+\begin{proof}
+Newton on $\ell$: $\beta^{(k+1)} = \beta^{(k)} - (\nabla^{2}\ell)^{-1}\nabla \ell$. By \ref{lem:grad-hess},
+\[
+  \beta^{(k+1)} \;=\; \beta^{(k)} + (X^\top W^{(k)} X)^{-1} X^\top (y - \mu^{(k)}).
+\]
+Write $\beta^{(k)} = (X^\top W^{(k)} X)^{-1}(X^\top W^{(k)} X)\beta^{(k)}$ and $X^\top(y - \mu^{(k)}) = X^\top W^{(k)} (W^{(k)})^{-1}(y - \mu^{(k)})$, then combine:
+\[
+  \beta^{(k+1)} \;=\; (X^\top W^{(k)} X)^{-1} X^\top W^{(k)} \bigl[X\beta^{(k)} + (W^{(k)})^{-1}(y - \mu^{(k)})\bigr] \;=\; (X^\top W^{(k)} X)^{-1} X^\top W^{(k)} z^{(k)}.
+\]
+This is the solution of the WLS normal equations $X^\top W^{(k)} X \beta = X^\top W^{(k)} z^{(k)}$.
+\end{proof}
+
+\begin{remark}
+\ref{thm:irls} is the algorithm \texttt{glm(family = binomial)} runs: each iteration recomputes $W^{(k)}$ and $z^{(k)}$, then solves one WLS. Convergence is quadratic near $\hat\beta_{\mathrm{MLE}}$, where $X^\top W X$ is invertible.
+\end{remark}
+
+\section{Discrete Evaluation Metrics}\label{sec:3.2}
+
+\subsection{The confusion matrix}\label{sec:3.2.1}
+
+Each observation has a true label $y_i \in \{0, 1\}$ and a predicted label $\hat y_i \in \{0, 1\}$ (for logistic regression, $\hat y_i = \indc[\sigma(x_i^\top \beta) > \tau]$ via \ref{def:decision-boundary}). Unit 1 \S 1.8.2 introduced the four counts; we restate them in indicator form, add marginal totals, and anchor the derivations that follow.
+
+\begin{definition}[Confusion matrix]\label{def:confusion}
+For $\{(y_i, \hat y_i)\}_{i=1}^{n}$, the four \emph{confusion counts} are
+\[
+  \begin{aligned}
+    \mathrm{TP} &:= \textstyle\sum_i \indc[y_i = 1,\, \hat y_i = 1], &
+    \mathrm{FN} &:= \textstyle\sum_i \indc[y_i = 1,\, \hat y_i = 0], \\
+    \mathrm{FP} &:= \textstyle\sum_i \indc[y_i = 0,\, \hat y_i = 1], &
+    \mathrm{TN} &:= \textstyle\sum_i \indc[y_i = 0,\, \hat y_i = 0],
+  \end{aligned}
+\]
+arranged as the \emph{confusion matrix}:
+
+\begin{ctab}
+\begin{tabular}{l c c}
+\toprule
+ & \textbf{Predicted $1$} & \textbf{Predicted $0$} \\
+\midrule
+\textbf{Actual $1$} & $\mathrm{TP}$ & $\mathrm{FN}$ \\
+\textbf{Actual $0$} & $\mathrm{FP}$ & $\mathrm{TN}$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The \emph{marginal counts} are $P := \mathrm{TP} + \mathrm{FN}$ (actual positives), $N := \mathrm{FP} + \mathrm{TN}$ (actual negatives), $\hat P := \mathrm{TP} + \mathrm{FP}$ (predicted positives), and $\hat N := \mathrm{FN} + \mathrm{TN}$ (predicted negatives), with $P + N = \hat P + \hat N = n$.
+\end{definition}
+
+\begin{remark}
+The first letter (T/F) records whether the prediction matched $y$; the second (P/N) records the value of $\hat y$. Diagonal entries TP and TN are correct; off-diagonal FP and FN are errors.
+\end{remark}
+
+\begin{definition}[Empirical operators]\label{def:empirical}
+Hatted operators are sample analogues of their population versions. For the sample $\{(y_i, \hat y_i)\}_{i=1}^{n}$, with $A, B$ predicates and $Z, Z_1, Z_2$ real-valued functions of $(y, \hat y)$,
+\[
+  \widehat{\prb}(A) \;:=\; \tfrac{1}{n}\textstyle\sum_{i} \indc[A(y_i, \hat y_i)],
+  \qquad
+  \widehat{\prb}(A \mid B) \;:=\; \frac{\widehat{\prb}(A \wedge B)}{\widehat{\prb}(B)} \quad\text{(when } \widehat{\prb}(B) > 0\text{)},
+\]
+\[
+  \widehat{\expc}(Z) \;:=\; \tfrac{1}{n}\textstyle\sum_{i} Z(y_i, \hat y_i),
+  \quad
+  \widehat{\var}(Z) \;:=\; \widehat{\expc}(Z^{2}) - \widehat{\expc}(Z)^{2},
+  \quad
+  \widehat{\cov}(Z_1, Z_2) \;:=\; \widehat{\expc}(Z_1 Z_2) - \widehat{\expc}(Z_1)\widehat{\expc}(Z_2).
+\]
+For example, $\widehat{\prb}(Y = 1, \hat Y = 1) = \mathrm{TP}/n$, $\widehat{\prb}(Y = 1) = P/n$, and $\widehat{\prb}(\hat Y = 1 \mid Y = 1) = \mathrm{TP}/P$.
+\end{definition}
+
+\subsection{Precision, recall, and F1}\label{sec:3.2.2}
+
+Precision and recall are conditional fractions read off the confusion matrix (\ref{def:confusion}); $F_1$ combines them into a single score.
+
+\begin{definition}[Precision, recall, specificity]\label{def:prec-rec}
+For a binary classifier on the test set,
+
+\begin{ctab}
+\begin{tabular}{l c l}
+\toprule
+\textbf{Metric} & \textbf{Formula} & \textbf{Interpretation} \\
+\midrule
+Precision & $\dfrac{\mathrm{TP}}{\mathrm{TP} + \mathrm{FP}} = \dfrac{\mathrm{TP}}{\hat P}$ & $\widehat{\prb}(Y = 1 \mid \hat Y = 1)$ \\[6pt]
+Recall (TPR, sensitivity) & $\dfrac{\mathrm{TP}}{\mathrm{TP} + \mathrm{FN}} = \dfrac{\mathrm{TP}}{P}$ & $\widehat{\prb}(\hat Y = 1 \mid Y = 1)$ \\[6pt]
+Specificity (TNR) & $\dfrac{\mathrm{TN}}{\mathrm{TN} + \mathrm{FP}} = \dfrac{\mathrm{TN}}{N}$ & $\widehat{\prb}(\hat Y = 0 \mid Y = 0)$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The \emph{false positive rate} is $\mathrm{FPR} := \mathrm{FP}/N = 1 - \mathrm{Specificity}$.
+\end{definition}
+
+\begin{remark}
+Precision and recall share a key trait: both ignore $\mathrm{TN}$, so only the positive class enters either formula. Appropriate when positives are a rare signal against an abundant negative background (fraud, disease, anomaly); unhelpful when both classes matter symmetrically.
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+  \item \textbf{Precision} is conditioned on the prediction: it tracks the cost of false alarms.
+  \item \textbf{Recall} is conditioned on the ground truth: it tracks the cost of missed targets.
+\end{itemize}
+\end{remark}
+
+\begin{definition}[$F_\beta$ score]\label{def:fbeta}
+For $\beta > 0$ and a classifier with precision $p > 0$ and recall $r > 0$, the \emph{$F_\beta$ score} is
+\[
+  F_\beta \;:=\; (1 + \beta^{2}) \cdot \frac{p \cdot r}{\beta^{2} \, p + r}.
+\]
+The \emph{$F_1$ score} is $F_1 = \dfrac{2 p r}{p + r}$, the \emph{harmonic mean} of $p$ and $r$: $F_1^{-1} = \tfrac{1}{2}\bigl(p^{-1} + r^{-1}\bigr)$. By convention $F_\beta = 0$ when $p = 0$ or $r = 0$.
+\end{definition}
+
+\begin{remark}
+Harmonic mean penalizes asymmetry: $F_1 \leqslant 2 \min(p, r)$, so $F_1 \to 0$ if either $p \to 0$ or $r \to 0$. Arithmetic mean $(p + r)/2$ averages: a high $p$ masks a low $r$. The $\beta$ in $F_\beta$ tunes the weight: $\beta > 1$ favors recall ($F_2$ when missing a positive costs more than a false alarm), $\beta < 1$ favors precision.
+\end{remark}
+
+\subsection{Accuracy, balanced accuracy, and MCC}\label{sec:3.2.3}
+
+Three single-number summaries of the confusion matrix.
+
+\begin{definition}[Accuracy and balanced accuracy]\label{def:acc-ba}
+\[
+  \mathrm{Acc} \;:=\; \frac{\mathrm{TP} + \mathrm{TN}}{n},
+  \qquad
+  \mathrm{BA} \;:=\; \tfrac{1}{2}\bigl(\mathrm{TPR} + \mathrm{TNR}\bigr) \;=\; \tfrac{1}{2}\biggl(\frac{\mathrm{TP}}{P} + \frac{\mathrm{TN}}{N}\biggr).
+\]
+\end{definition}
+
+\begin{remark}
+On Unit 1 \S 1.8.3's $99/1$ imbalanced dataset, the trivial $\hat y \equiv 0$ has $\mathrm{Acc} = 0.99$ but $\mathrm{TPR} = 0$. Balanced accuracy corrects this: $\mathrm{BA} = (0 + 1)/2 = 0.5$, the random-baseline value. $\mathrm{BA} = \mathrm{Acc}$ when $P = N$.
+\end{remark}
+
+\begin{definition}[Matthews correlation coefficient]\label{def:mcc}
+Provided $P, N, \hat P, \hat N > 0$,
+\[
+  \mathrm{MCC} \;:=\; \frac{\mathrm{TP} \cdot \mathrm{TN} - \mathrm{FP} \cdot \mathrm{FN}}{\sqrt{P \cdot N \cdot \hat P \cdot \hat N}}.
+\]
+\end{definition}
+
+\begin{lemma}[MCC = sample correlation]\label{lem:mcc-corr}
+$\mathrm{MCC}$ is the sample Pearson correlation between $\{y_i\}$ and $\{\hat y_i\}$, hence lies in $[-1, +1]$: $+1$ iff $\hat y_i = y_i$ for all $i$, $-1$ iff $\hat y_i = 1 - y_i$ for all $i$, $0$ iff $\mathrm{TP} \cdot \mathrm{TN} = \mathrm{FP} \cdot \mathrm{FN}$.
+\end{lemma}
+
+\begin{proof}
+Since $y_i, \hat y_i \in \{0,1\}$, $y_i^{2} = y_i$, so $\widehat{\var}(Y) = \frac{P}{n} - \bigl(\frac{P}{n}\bigr)^{2} = \frac{P N}{n^{2}}$ and likewise $\widehat{\var}(\hat Y) = \frac{\hat P \hat N}{n^{2}}$. The sample covariance is
+\[
+  \widehat{\cov}(Y, \hat Y) \;=\; \frac{\mathrm{TP}}{n} - \frac{P}{n} \cdot \frac{\hat P}{n} \;=\; \frac{n \mathrm{TP} - P \hat P}{n^{2}} \;=\; \frac{\mathrm{TP} \cdot \mathrm{TN} - \mathrm{FP} \cdot \mathrm{FN}}{n^{2}},
+\]
+the last equality by expanding $n = \mathrm{TP} + \mathrm{FP} + \mathrm{TN} + \mathrm{FN}$, $P = \mathrm{TP} + \mathrm{FN}$, $\hat P = \mathrm{TP} + \mathrm{FP}$. Then $\widehat{\cov}(Y, \hat Y) / \sqrt{\widehat{\var}(Y) \widehat{\var}(\hat Y)}$ reduces to the MCC formula. The bound $|\mathrm{Corr}| \leqslant 1$ is Cauchy-Schwarz, with equality at exact agreement or anti-agreement.
+\end{proof}
+
+\begin{remark}
+Acc is fooled by imbalance (Unit 1 \S 1.8.3); BA and MCC are insensitive to the prevalence. $F_1$ (\S\ref{sec:3.2.2}) focuses on positives. Choose by context: Acc for balanced classes; BA or MCC for general single-number use; $F_1$ when only the positive class matters.
+\end{remark}
+
+\subsection{Cost matrices and weighted error}\label{sec:3.2.4}
+
+Most standard metrics embed a rigid, predefined trade-off: Acc weights all errors equally, BA and MCC force a balance between the two classes, and $F_1$ completely ignores TN. Cost matrices invert this paradigm: instead of adopting the metric's implicit assumptions, the analyst explicitly specifies what each error type costs the business.
+
+\begin{definition}[Cost matrix and total cost]\label{def:cost}
+A \emph{cost matrix} is a $2 \times 2$ matrix $C$ whose entry $C_{y, \hat y}$ is the cost of predicting $\hat y$ when the actual class is $y$. The standard choice
+\[
+  C_{00} = C_{11} = 0, \qquad C_{01} = c_{\mathrm{FP}}, \qquad C_{10} = c_{\mathrm{FN}},
+\]
+charges nothing for correct predictions. The \emph{total cost} on the test set is
+\[
+  \mathrm{TotalCost} \;:=\; \sum_{i=1}^{n} C_{y_i, \hat y_i}
+  \;=\; c_{\mathrm{FP}} \cdot \mathrm{FP} + c_{\mathrm{FN}} \cdot \mathrm{FN}.
+\]
+\end{definition}
+
+\begin{remark}
+The trade-off is the ratio $c_{\mathrm{FN}}/c_{\mathrm{FP}}$, not the absolute costs:
+
+\begin{ctab}[0.85]
+\begin{tabular}{l c l}
+\toprule
+\textbf{Setting} & $c_{\mathrm{FN}}/c_{\mathrm{FP}}$ & \textbf{Reading} \\
+\midrule
+Spam filter (precision priority) & $\ll 1$ & a missed spam is cheap; a falsely flagged ham is costly \\
+Fraud detection (recall priority) & $\gg 1$ & a missed fraud loses money; a flagged clean transaction costs review \\
+Disease screening (recall priority) & $\gg 1$ & a missed cancer can be fatal; a follow-up scan is recoverable \\
+Symmetric (textbook accuracy) & $= 1$ & total cost reduces to $\mathrm{FP} + \mathrm{FN} = n(1 - \mathrm{Acc})$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The dataset and the metric do not pick the ratio; the business context does.
+\end{remark}
+
+\begin{lemma}[Acc and BA as cost-weighted errors]\label{lem:acc-cost}
+Under the standard cost matrix:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=1pt]
+\item $1 - \mathrm{Acc} = \mathrm{TotalCost}/n$ when $c_{\mathrm{FP}} = c_{\mathrm{FN}}$.
+\item $1 - \mathrm{BA} = \mathrm{TotalCost}$ when $c_{\mathrm{FP}} = 1/(2N)$ and $c_{\mathrm{FN}} = 1/(2P)$.
+\end{itemize}
+Accuracy thus encodes equal per-error cost; balanced accuracy encodes inverse-class-size weighting.
+\end{lemma}
+
+\begin{proof}
+For Acc: $\sum_i \indc[y_i \neq \hat y_i] = \mathrm{FP} + \mathrm{FN}$, so $1 - \mathrm{Acc} = (\mathrm{FP} + \mathrm{FN})/n$. Setting $c_{\mathrm{FP}} = c_{\mathrm{FN}} = 1$ gives $\mathrm{TotalCost} = \mathrm{FP} + \mathrm{FN}$, and dividing by $n$ matches.
+
+For BA: $\mathrm{BA} = \tfrac{1}{2}(\mathrm{TP}/P + \mathrm{TN}/N) = 1 - \tfrac{1}{2}(\mathrm{FN}/P + \mathrm{FP}/N)$. Setting $c_{\mathrm{FP}} = 1/(2N), c_{\mathrm{FN}} = 1/(2P)$ gives $\mathrm{TotalCost} = \mathrm{FP}/(2N) + \mathrm{FN}/(2P) = 1 - \mathrm{BA}$.
+\end{proof}
+
+\begin{remark}
+Cost-weighted error generalizes Acc and BA (\ref{lem:acc-cost}); the framework exposes the trade-off as a parameter the analyst chooses, rather than embedding it in the metric definition.
+\end{remark}
+
+\section{ROC and PR Curves}\label{sec:3.3}
+
+\subsection{From scores to predictions: the threshold}\label{sec:3.3.1}
+
+Until \S\ref{sec:3.2}, metrics were functions of $\hat y_i \in \{0, 1\}$. The classifier itself produces a continuous \emph{score}; thresholding yields $\hat y_i$. The threshold trades precision against recall (equivalently, FP against FN); ROC and PR curves visualize this trade-off across all thresholds.
+
+\begin{definition}[Scoring classifier and threshold-indexed counts]\label{def:score}
+A \emph{scoring classifier} produces $s_i \in \mathbb{R}$ for each observation, with larger $s$ favoring class $1$. For threshold $\tau \in \mathbb{R}$, the prediction is $\hat y_i(\tau) := \indc[s_i > \tau]$, and the confusion counts at $\tau$ are
+\[
+  \begin{aligned}
+    \mathrm{TP}(\tau) &:= \textstyle\sum_i \indc[y_i = 1, s_i > \tau], &
+    \mathrm{FN}(\tau) &:= \textstyle\sum_i \indc[y_i = 1, s_i \leqslant \tau], \\
+    \mathrm{FP}(\tau) &:= \textstyle\sum_i \indc[y_i = 0, s_i > \tau], &
+    \mathrm{TN}(\tau) &:= \textstyle\sum_i \indc[y_i = 0, s_i \leqslant \tau].
+  \end{aligned}
+\]
+Every metric of \S\ref{sec:3.2} inherits a $\tau$-dependence: $\mathrm{Recall}(\tau)$, $\mathrm{Precision}(\tau)$, $\mathrm{Acc}(\tau), \ldots$
+\end{definition}
+
+\begin{remark}
+For logistic regression, $s_i$ may be either the linear predictor $x_i^\top \beta$ or the probability $\mu_i = \sigma(x_i^\top \beta)$. $\sigma$ is strictly increasing (\ref{lem:sigmoid}), so the two scales are equivalent for thresholding: $\sigma(x_i^\top \beta) > \tau' \iff x_i^\top \beta > \mathrm{logit}(\tau')$. The probability scale is conventional for plotting.
+\end{remark}
+
+\begin{lemma}[Boundary behavior]\label{lem:tau-boundary}
+$\mathrm{TP}(\tau)$ and $\mathrm{FP}(\tau)$ are non-increasing in $\tau$ (raising the threshold predicts fewer positives), with $\mathrm{TP}(\tau) = \mathrm{FP}(\tau) = 0$ for $\tau > \max_i s_i$ and $\mathrm{TP}(\tau) = P$, $\mathrm{FP}(\tau) = N$ for $\tau < \min_i s_i$.
+\end{lemma}
+
+\begin{proof}
+$\indc[s_i > \tau]$ is non-increasing in $\tau$, so each sum is too. For $\tau > \max_i s_i$, every indicator vanishes. For $\tau < \min_i s_i$, every indicator equals $1$, so $\mathrm{TP}$ counts $\{i : y_i = 1\} = P$ and $\mathrm{FP}$ counts $\{i : y_i = 0\} = N$.
+\end{proof}
+
+\subsection{ROC curve and AUC}\label{sec:3.3.2}
+
+The \emph{ROC curve} (Receiver Operating Characteristic) plots how the false positive rate trades against the true positive rate as the threshold sweeps. Its area, AUC, summarizes ranking quality independent of any threshold.
+
+\begin{definition}[ROC curve]\label{def:roc}
+For a scoring classifier (\ref{def:score}), the \emph{ROC curve} is
+\[
+  \mathrm{ROC} \;:=\; \bigl\{ \bigl(\mathrm{FPR}(\tau),\, \mathrm{TPR}(\tau)\bigr) : \tau \in \mathbb{R} \bigr\} \;\subseteq\; [0, 1]^{2},
+\]
+with $\mathrm{TPR}(\tau) = \mathrm{TP}(\tau)/P$ and $\mathrm{FPR}(\tau) = \mathrm{FP}(\tau)/N$.
+\end{definition}
+
+\begin{remark}
+The curve runs from $(0, 0)$ at $\tau \to +\infty$ to $(1, 1)$ at $\tau \to -\infty$ (\ref{lem:tau-boundary}). Both coordinates are non-increasing in $\tau$, so the curve moves up and to the right as $\tau$ decreases. On $n$ test points it is a step function with at most $n + 1$ vertices: jumps occur at distinct score values.
+\end{remark}
+
+\begin{definition}[Area under the ROC curve]\label{def:auc}
+The \emph{area under the ROC curve} (AUC) is
+\[
+  \mathrm{AUC} \;:=\; \int_{0}^{1} \mathrm{TPR}\bigl(\mathrm{FPR}^{-1}(t)\bigr) \, \dd t,
+\]
+with $\mathrm{FPR}^{-1}(t) := \inf\{\tau : \mathrm{FPR}(\tau) \leqslant t\}$ (generalized inverse, since $\mathrm{FPR}$ is a step function).
+\end{definition}
+
+\begin{lemma}[AUC equals the empirical Mann--Whitney statistic]\label{lem:auc-mw}
+With ties broken by averaging,
+\[
+  \mathrm{AUC} \;=\; \frac{1}{P \cdot N} \sum_{\substack{i:\, y_i = 1 \\ j:\, y_j = 0}} \Bigl( \indc[s_i > s_j] + \tfrac{1}{2}\indc[s_i = s_j] \Bigr).
+\]
+Equivalently, $\mathrm{AUC}$ is the empirical probability that a uniformly random positive scores higher than a uniformly random negative (half-credit on ties).
+\end{lemma}
+
+\begin{proof}
+Sort the negatives' scores in descending order $s_{j(1)} > \cdots > s_{j(N)}$ (distinct case; ties below). As $\tau$ decreases past $s_{j(k)}$, $\mathrm{FPR}$ jumps from $(k-1)/N$ to $k/N$, with $\mathrm{TPR}$ on $\bigl((k-1)/N, k/N\bigr)$ equal to $\frac{1}{P}\#\{i: y_i = 1, s_i > s_{j(k)}\}$. Hence
+\[
+  \mathrm{AUC} \;=\; \sum_{k=1}^{N} \frac{1}{N} \cdot \frac{\#\{i: y_i = 1,\, s_i > s_{j(k)}\}}{P}
+  \;=\; \frac{1}{PN}\sum_{i: y_i = 1}\sum_{j: y_j = 0} \indc[s_i > s_j].
+\]
+A tied pair $(s_i, s_j)$ produces a diagonal segment in the curve, contributing a triangle of area $\tfrac{1}{2}\cdot \tfrac{1}{N}\cdot \tfrac{1}{P}$, the $\tfrac{1}{2}$ factor.
+\end{proof}
+
+\begin{remark}
+Boundary cases and invariance:
+
+\begin{ctab}
+\begin{tabular}{l c l}
+\toprule
+\textbf{Classifier} & \textbf{AUC} & \textbf{ROC geometry} \\
+\midrule
+Perfect ranking ($s_i > s_j$ for all $y_i = 1, y_j = 0$) & $1$ & passes through $(0, 1)$ \\
+Random scores (independent of $y$) & $\tfrac{1}{2}$ & diagonal $\mathrm{TPR} = \mathrm{FPR}$ \\
+Inverted ranking ($s_i < s_j$ for all $y_i = 1, y_j = 0$) & $0$ & passes through $(1, 0)$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent AUC depends only on the ranking of $\{s_i\}$: any strictly increasing transformation $g$ leaves it unchanged, since $g(s_i) > g(s_j) \iff s_i > s_j$. In particular, for logistic regression $\mathrm{AUC}$ is the same on the linear-predictor and probability scales.
+\end{remark}
+
+\subsection{PR curve and average precision}\label{sec:3.3.3}
+
+The PR curve plots precision against recall as the threshold sweeps; its area, average precision (AP), summarizes ranking quality with a different emphasis from AUC.
+
+\begin{definition}[PR curve]\label{def:pr}
+For a scoring classifier (\ref{def:score}), the \emph{precision--recall (PR) curve} is
+\[
+  \mathrm{PR} \;:=\; \bigl\{ \bigl(\mathrm{Recall}(\tau),\, \mathrm{Precision}(\tau)\bigr) : \tau \in \mathbb{R},\ \mathrm{TP}(\tau) + \mathrm{FP}(\tau) > 0 \bigr\}.
+\]
+\end{definition}
+
+\begin{remark}
+At $\tau \to -\infty$, $\mathrm{Recall} = 1$ and $\mathrm{Precision} = P/n$ (the prevalence). At $\tau$ above $\max_i s_i$, no positive is predicted, so $\mathrm{Precision}$ is $0/0$; by convention the curve is anchored at $(0, 1)$ for plotting. Like ROC, PR is a step function with jumps at distinct score values.
+\end{remark}
+
+\begin{definition}[Average precision]\label{def:ap}
+\emph{Average precision} (AP) is the Riemann sum
+\[
+  \mathrm{AP} \;:=\; \sum_{k} \bigl(\mathrm{Recall}(\tau_k) - \mathrm{Recall}(\tau_{k-1})\bigr) \cdot \mathrm{Precision}(\tau_k),
+\]
+summing over thresholds $\tau_k$ at which $\mathrm{Recall}$ jumps (i.e., at distinct positive-class score values).
+\end{definition}
+
+\begin{lemma}[AP as the mean of precision over positives]\label{lem:ap-mean}
+If scores are distinct,
+\[
+  \mathrm{AP} \;=\; \frac{1}{P} \sum_{i:\, y_i = 1} \mathrm{Precision}(s_i^{-}),
+\]
+where $\mathrm{Precision}(s_i^{-})$ is the precision at the threshold just below $s_i$ (when positive $i$ enters the predicted-positive set).
+\end{lemma}
+
+\begin{proof}
+Index the recall-jump thresholds by the $P$ positives in decreasing score order: $\tau_k^{*} = s_{i(k)}^{-}$ for the $k$-th positive. Each jump moves $\mathrm{Recall}$ by exactly $1/P$ (one new TP, $P$ unchanged), so the $k$-th step contributes $\mathrm{Precision}(\tau_k^{*})/P$. Summing $k = 1, \dots, P$ gives the formula.
+\end{proof}
+
+\begin{remark}
+Boundary cases:
+
+\begin{ctab}
+\begin{tabular}{l c l}
+\toprule
+\textbf{Classifier} & \textbf{AP} & \textbf{Reading} \\
+\midrule
+Perfect ranking ($s_i > s_j$ for all $y_i = 1, y_j = 0$) & $1$ & every $\mathrm{Precision}(s_i^{-}) = 1$ \\
+Random scores (independent of $y$) & $\expc[\mathrm{AP}] = P/n$ & by uniform-permutation symmetry \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The random baseline for AP is the prevalence $P/n$, not $1/2$ as for AUC. AP's baseline tracks the imbalance, so AP is a sharper diagnostic than AUC when positives are rare.
+\end{remark}
+
+\begin{remark}[Computation: ties and interpolation]\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Tied scores.} When observations share a score $s$, recall jumps by $k_+/P$ (with $k_+$ positives at $s$), and precision uses the cumulative TP, FP through the tied block. Tree-based models often produce such ties; \texttt{yardstick::pr\_auc} and \texttt{roc\_auc} treat tied groups as a single jump. \ref{lem:ap-mean} generalizes: average $\mathrm{Precision}(s_i^{-})$ within each tied block.
+\item \emph{Linear interpolation in PR space is wrong.} A line segment between $(R_{k-1}, P_{k-1})$ and $(R_k, P_k)$ over-estimates AP: precision $\mathrm{TP}/(\mathrm{TP} + \mathrm{FP})$ traces a hyperbola between the two points, not a chord. Use the step-sum form of \ref{def:ap} directly; for plotting, draw steps, not diagonal connectors.
+\end{itemize}
+\end{remark}
+
+\subsection{ROC vs PR under imbalance}\label{sec:3.3.4}
+
+When $P \ll N$ (positives are rare), ROC and PR diagnose the same classifier differently. ROC normalizes FP by $N$, so a large absolute FP count can register as a small FPR; PR puts FP in the denominator of precision, where it competes directly with TP.
+
+\begin{lemma}[Precision in terms of TPR and FPR]\label{lem:prec-tpr-fpr}
+For any threshold $\tau$ with $\mathrm{TP}(\tau) + \mathrm{FP}(\tau) > 0$,
+\[
+  \mathrm{Precision}(\tau) \;=\; \frac{\mathrm{TPR}(\tau)}{\mathrm{TPR}(\tau) + \dfrac{N}{P}\,\mathrm{FPR}(\tau)}.
+\]
+\end{lemma}
+
+\begin{proof}
+$\mathrm{Precision} = \mathrm{TP}/(\mathrm{TP} + \mathrm{FP})$. Divide numerator and denominator by $P$:
+\[
+  \mathrm{Precision} \;=\; \frac{\mathrm{TP}/P}{\mathrm{TP}/P + \mathrm{FP}/P}.
+\]
+$\mathrm{TP}/P = \mathrm{TPR}$ by definition; $\mathrm{FP}/P = (N/P)(\mathrm{FP}/N) = (N/P)\mathrm{FPR}$. Substituting gives the formula.
+\end{proof}
+
+<<roc-pr-imbalance, fig.width=6, fig.height=2.5, out.width="0.95\\linewidth", echo=FALSE, message=FALSE>>=
+library(ggplot2); library(patchwork)
+set.seed(1)
+P <- 100; N <- 9900
+y <- c(rep(1L, P), rep(0L, N))
+s <- c(rnorm(P, 2.5, 1), rnorm(N, 0, 1))               # well-ranked but rare positives
+ord <- order(s, decreasing = TRUE)
+TP <- cumsum(y[ord] == 1); FP <- cumsum(y[ord] == 0)
+TPR  <- TP / P; FPR <- FP / N; Prec <- TP / (TP + FP)
+
+p_roc <- ggplot(data.frame(FPR = c(0, FPR), TPR = c(0, TPR)), aes(FPR, TPR)) +
+  geom_step() + geom_abline(slope = 1, lty = 2, color = "gray60") +
+  labs(title = "ROC: looks excellent", x = "FPR", y = "TPR") +
+  coord_equal() + theme_minimal(base_size = 9) +
+  theme(plot.title = element_text(size = 10))
+
+p_pr <- ggplot(data.frame(Recall = TPR, Precision = Prec), aes(Recall, Precision)) +
+  geom_step() + geom_hline(yintercept = P/(P+N), lty = 2, color = "gray60") +
+  labs(title = "PR: precision collapses", x = "Recall", y = "Precision") +
+  scale_y_continuous(limits = c(0, 1)) + coord_equal() +
+  theme_minimal(base_size = 9) + theme(plot.title = element_text(size = 10))
+
+p_roc + p_pr
+@
+
+\noindent Same classifier, $N/P = 99$ imbalance: ROC hugs the top-left ($\mathrm{AUC} \approx 0.97$), but precision drops with recall, approaching the prevalence baseline $P/(P+N) = 0.01$ (dashed) at high recall.
+
+\begin{remark}
+The factor $N/P$ amplifies $\mathrm{FPR}$'s contribution to the denominator of precision. On a $1{:}100$-imbalanced dataset ($N/P = 100$), a classifier with $\mathrm{TPR} = 1$ and $\mathrm{FPR} = 0.02$ has
+\[
+  \mathrm{Precision} \;=\; \frac{1}{1 + 100 \cdot 0.02} \;=\; \frac{1}{3},
+\]
+so two-thirds of predicted positives are wrong despite an apparently small $\mathrm{FPR}$. ROC marks this point near the upper-left corner; PR marks it as low precision at $\mathrm{Recall} = 1$. The diagnostic choice between curves therefore depends on the imbalance:
+
+\begin{ctab}[0.92]
+\begin{tabular}{l l}
+\toprule
+\textbf{Setting} & \textbf{Preferred curve / metric} \\
+\midrule
+Balanced classes ($P \approx N$) & ROC / AUC; PR / AP carries the same information \\
+Mild imbalance ($N/P \lesssim 5$) & either; report both \\
+Severe imbalance ($N/P \gg 1$; fraud, rare disease) & PR / AP; AUC over-optimistic \\
+Both classes equally costly & ROC / AUC \\
+Positive class drives the decision (recall priority) & PR / AP \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The choice is not aesthetic: report the curve whose axes track the business cost.
+\end{remark}
+
+\section{Threshold Selection}\label{sec:3.4}
+
+\subsection{Bayes-optimal threshold under a cost matrix}\label{sec:3.4.1}
+
+Sections~\ref{sec:3.3.1}--\ref{sec:3.3.4} traced curves over all $\tau$; deployment forces one. The Bayes-optimal $\tau$ minimizes expected cost under the matrix of \S\ref{sec:3.2.4}.
+
+\textbf{Setup.} Let $\mu(x) := \prb(Y = 1 \mid X = x)$. Assume the score is \emph{calibrated}: $s(x) = \mu(x)$ for all $x$. The prediction rule $\hat y(x; \tau) := \indc\{s(x) \geqslant \tau\}$ then equals $\indc\{\mu(x) \geqslant \tau\}$. Allow nonzero correct-decision costs $c_{00}, c_{11}$ in the cost matrix of \S\ref{sec:3.2.4}, alongside $c_{01} = c_{\mathrm{FP}}$ and $c_{10} = c_{\mathrm{FN}}$. The conditional expected cost at $x$ given $\hat y \in \{0, 1\}$ is
+\[
+  R(\hat y \mid x) \;=\; c_{1, \hat y}\,\mu(x) \;+\; c_{0, \hat y}\,\bigl(1 - \mu(x)\bigr).
+\]
+
+\begin{theorem}[Bayes-optimal threshold]\label{thm:bayes-threshold}
+If $c_{10} > c_{11}$ and $c_{01} > c_{00}$ (mistakes strictly costlier than correct decisions on the same row), the minimizer of $R(\hat y \mid x)$ is $\hat y(x) = \indc\{\mu(x) \geqslant \tau^\star\}$ with
+\[
+  \tau^\star \;=\; \frac{c_{01} - c_{00}}{(c_{01} - c_{00}) + (c_{10} - c_{11})}.
+\]
+\end{theorem}
+
+\begin{proof}
+Predict $\hat y = 1$ iff $R(1 \mid x) \leqslant R(0 \mid x)$:
+\[
+  c_{11}\,\mu(x) + c_{01}\,(1 - \mu(x)) \;\leqslant\; c_{10}\,\mu(x) + c_{00}\,(1 - \mu(x)).
+\]
+Collect $\mu(x)$ on the left:
+\[
+  (c_{10} - c_{11})\,\mu(x) \;\geqslant\; (c_{01} - c_{00})\,(1 - \mu(x)).
+\]
+Both bracketed differences are positive by hypothesis. Solving for $\mu(x)$,
+\[
+  \mu(x)\,\bigl[(c_{10} - c_{11}) + (c_{01} - c_{00})\bigr] \;\geqslant\; c_{01} - c_{00},
+\]
+yields $\mu(x) \geqslant \tau^\star$.
+\end{proof}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Cost-ratio simplification.} With correct decisions free ($c_{00} = c_{11} = 0$, as in \S\ref{sec:3.2.4}), $\tau^\star = c_{\mathrm{FP}} / (c_{\mathrm{FP}} + c_{\mathrm{FN}})$ depends only on the FP:FN ratio. If FN is $9{\times}$ as costly as FP (missed disease vs.\ false alarm), $\tau^\star = 1/10$: predict $\hat y = 1$ whenever $\mu(x) \geqslant 0.1$. The default $\tau = 0.5$ is Bayes-optimal only when $c_{\mathrm{FP}} = c_{\mathrm{FN}}$.
+\item \emph{Calibration is the central assumption.} The logistic MLE fits $s$ within the parametric class $\sigma(x^\top \beta)$; a misspecified model has $s \neq \mu$. With $s = \mu - \delta$, thresholding $s$ at $\tau^\star = 0.1$ flags positives only at $\mu \geqslant 0.1 + \delta$, missing the rare positives the cost ratio was meant to catch. Empirical threshold tuning sidesteps the assumption; post-hoc recalibration restores it.
+\end{itemize}
+\end{remark}
+
+\subsection{Empirical threshold from validation data}\label{sec:3.4.2}
+
+Without calibration, $\tau^\star$ of \ref{thm:bayes-threshold} is unreachable: it is computed from $\mu$ but applied to $s$. The remedy: pick the threshold directly on a held-out sample by minimizing observed cost, with no assumption on $s$.
+
+\textbf{Setup.} Let $\mathcal{D}_{\mathrm{val}} = \{(x_i, y_i)\}_{i=1}^{n_v}$ be labeled and disjoint from training, with model scores $s_i := s(x_i)$.
+
+\begin{definition}[Empirical cost and tuned threshold]\label{def:empirical-cost}
+Under the standard cost matrix ($c_{00} = c_{11} = 0$) of \S\ref{sec:3.2.4},
+\[
+  \widehat{\mathrm{Cost}}(\tau) \;:=\; \sum_{i=1}^{n_v} C_{y_i,\,\hat y_i(\tau)}
+  \;=\; c_{\mathrm{FP}} \cdot \mathrm{FP}(\tau) + c_{\mathrm{FN}} \cdot \mathrm{FN}(\tau),
+\]
+where $\mathrm{FP}(\tau), \mathrm{FN}(\tau)$ are the threshold-indexed counts on $\mathcal{D}_{\mathrm{val}}$ (\ref{def:score}). The \emph{empirical optimal threshold} is
+\[
+  \hat\tau \;:=\; \operatorname*{arg\,min}_{\tau \in \mathbb{R}}\; \widehat{\mathrm{Cost}}(\tau).
+\]
+\end{definition}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Computation.} $\widehat{\mathrm{Cost}}(\tau)$ is piecewise constant, jumping only at $\tau \in \{s_1, \ldots, s_{n_v}\}$. Sort once and sweep, updating $\mathrm{FP}, \mathrm{FN}$ by $\pm 1$ at each crossing: $O(n_v \log n_v)$. Geometrically, $\hat\tau$ is the ROC point (\ref{def:roc}) furthest in direction $(-c_{\mathrm{FP}} N,\, c_{\mathrm{FN}} P)$ from the origin.
+\item \emph{Variance and reuse.} $\hat\tau$ inherits the variance of $\mathcal{D}_{\mathrm{val}}$: at $n_v = 200$ with 1\% positive rate, only 2 positives exist, and a single mislabeled point shifts $\hat\tau$ across many score levels. Cross-validated tuning (Unit~4) reduces variance; bootstrap intervals on $\widehat{\mathrm{Cost}}(\hat\tau)$ quantify what remains. Reusing the test set both to tune $\hat\tau$ and to report final cost double-dips; hold the test set out of threshold selection.
+\end{itemize}
+\end{remark}
+
+\subsection{Calibration: Platt scaling and isotonic regression}\label{sec:3.4.3}
+
+\ref{thm:bayes-threshold} requires $s = \mu$. When this fails, post-hoc \emph{calibration} fits a monotone $g: \mathbb{R} \to [0, 1]$ on held-out data and replaces $s$ with $z := g(s)$.
+
+\begin{definition}[Calibration]\label{def:calibration}
+A score $s$ is \emph{perfectly calibrated} if $\prb(Y = 1 \mid s(X) = p) = p$ for all $p \in [0, 1]$. The \emph{reliability diagram} bins observations by predicted score and plots, for each bin $B_k$, the empirical positive rate $\bar y_k := |B_k|^{-1}\sum_{i \in B_k} y_i$ against the bin-mean $\bar s_k$. Perfect calibration traces the $45^{\circ}$ diagonal.
+\end{definition}
+
+\begin{definition}[Brier score]\label{def:brier}
+For predictions $s_i \in [0,1]$ and labels $y_i \in \{0,1\}$, the \emph{Brier score} is
+\[
+  \mathrm{BS} \;:=\; \frac{1}{n} \sum_{i=1}^{n} (s_i - y_i)^{2}.
+\]
+\end{definition}
+
+\begin{lemma}[Brier decomposition]\label{lem:brier-decomp}
+Partition observations into bins $B_1, \dots, B_K$ with bin-constant predictions $s_i = \bar s_k$ for $i \in B_k$. Then
+\[
+  \mathrm{BS} \;=\; \underbrace{\sum_{k=1}^{K} \frac{|B_k|}{n} (\bar s_k - \bar y_k)^{2}}_{\mathrm{calibration\ loss}} \;+\; \underbrace{\sum_{k=1}^{K} \frac{|B_k|}{n}\, \bar y_k (1 - \bar y_k)}_{\mathrm{refinement\ loss}}.
+\]
+\end{lemma}
+
+\begin{proof}
+For $i \in B_k$, $s_i = \bar s_k$, so $(s_i - y_i)^{2} = (\bar s_k - y_i)^{2}$. The bias-variance identity for binary $y_i$ gives the within-bin mean
+$|B_k|^{-1}\sum_{i \in B_k}(\bar s_k - y_i)^{2} = (\bar s_k - \bar y_k)^{2} + \bar y_k (1 - \bar y_k)$
+(squared bias plus binary-label variance). Summing over bins weighted by $|B_k|/n$ yields the formula.
+\end{proof}
+
+\begin{remark}
+The calibration loss is the squared per-bin gap from the reliability diagram; the refinement loss is the irreducible within-bin label noise (bounded above by $1/4$ at $\bar y_k = 1/2$, equal to $0$ when bins are purely positive or purely negative). A perfectly calibrated score has zero calibration loss; a sharp model ($\bar y_k$ near $0$ or $1$) has small refinement loss. Continuous scores (logistic regression) need binning (typically deciles) for \ref{lem:brier-decomp}; without it, an extra within-bin score-variance term appears. Squared loss was rejected for \emph{training} logistic regression (\ref{lem:sq-nonconvex}: non-convex in $\beta$, vanishing gradients at the extremes); as an \emph{evaluation} scoring rule on fitted probabilities, it is the standard quantitative companion to the reliability diagram. \texttt{yardstick::brier\_class()} computes BS directly.
+\end{remark}
+
+\textbf{Setup (post-hoc calibration).} Let $\mathcal{D}_{\mathrm{cal}} = \{(x_i, y_i)\}_{i=1}^{n_c}$ be a labeled \emph{calibration set} disjoint from training, with raw scores $s_i := s(x_i)$. Goal: a monotone $g$ with $g(s) \approx \mu$ that generalizes.
+
+\begin{definition}[Platt scaling]\label{def:platt}
+Fit $(a, b) \in \mathbb{R}^{2}$ by maximum likelihood under the Bernoulli model
+\[
+  \prb(Y_i = 1 \mid s_i) \;=\; \sigma(a\, s_i + b),
+\]
+and set the recalibrated score $z(x) := \sigma\bigl(a\, s(x) + b\bigr)$.
+\end{definition}
+
+\begin{definition}[Isotonic regression and PAV]\label{def:isotonic}
+The \emph{isotonic} calibrator solves
+\[
+  g_{\mathrm{iso}} \;:=\; \operatorname*{arg\,min}_{g \text{ non-decreasing}} \sum_{i=1}^{n_c} \bigl(y_i - g(s_i)\bigr)^{2}.
+\]
+The \emph{pool-adjacent-violators} algorithm (PAV) returns the unique solution in $O(n_c \log n_c)$: sort by $s_i$, initialize $g_i := y_i$, find any pair $g_j > g_{j+1}$, replace both by their pool's weighted mean; iterate until non-decreasing. Each pool average is a weighted mean of binary labels $y_i \in \{0, 1\}$, so the output $g_i \in [0, 1]$ automatically; no clipping is needed.
+\end{definition}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Calibration vs.\ ranking.} Perfect ranking ($\mathrm{AUC} = 1$, \ref{lem:auc-mw}) does not imply calibration: place positives at $s = 0.6$, negatives at $s = 0.4$. \ref{thm:bayes-threshold} cares about $s = \mu$ pointwise; AUC cares only about pairwise order.
+\item \emph{Platt vs.\ isotonic.} Platt is logistic regression (\ref{def:logistic}) on a single feature; it assumes sigmoid-shaped error and cannot fix non-monotone distortions (overshoot mid-range, undershoot at the extremes). Isotonic is non-parametric: any monotone error is correctable, but the piecewise-constant output overfits on small $\mathcal{D}_{\mathrm{cal}}$. Heuristic: $n_c \gtrsim 1000$ before isotonic dominates Platt; below that, Platt's two-parameter constraint regularizes.
+\item \emph{Calibration set must be separate.} Training-set scores are over-confident (the model fit them), so their calibration error is training noise, not population miscalibration. Cross-validated calibration (score each training fold under a model trained on the others, pool out-of-fold scores) avoids sacrificing test data; the construction belongs to Unit~4.
+\end{itemize}
+\end{remark}
+
+\begin{suppremark}[Beta calibration]
+Between Platt's two-parameter sigmoid and isotonic's piecewise-constant step function sits beta calibration (Kull, Filho, and Flach, JMLR 2017; R package \texttt{betacal}), a smoother three-parameter mapping derived from a Beta-family link. It handles the regime where Platt is misspecified (the score-error shape is monotone but not sigmoidal) yet $n_c$ is too small for isotonic without overfitting.
+\end{suppremark}
+
+\subsection{Reporting threshold-aware metrics}\label{sec:3.4.4}
+
+A bare ``Accuracy 0.92'' pins one \emph{operating point}: the pair $(\tau,\, \text{score type})$ fixing $\hat y = \indc\{s(x) \geqslant \tau\}$. Without both, the reader cannot reproduce the metric or assess its trade-off. ROC and PR visualize all operating points; a single metric pins one. A complete report states:
+\begin{enumerate}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item the cost matrix $C$ (or its FN:FP ratio), with business justification;
+\item the operating point $(\tau,\, \text{score type})$ and how $\tau$ was selected (Bayes formula \ref{thm:bayes-threshold} vs.\ empirical tuning \ref{def:empirical-cost});
+\item the data used to tune $\tau$, with confirmation that the test set was held out;
+\item ROC (\ref{def:roc}) and PR (\ref{def:pr}) curves with the operating point marked;
+\item discrete metrics at the operating point: Acc, BA, Precision, Recall, $F_1$, MCC, $\widehat{\mathrm{Cost}}$;
+\item AUC (\ref{def:auc}) and AP (\ref{def:ap}) for ranking quality independent of $\tau$.
+\end{enumerate}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{No threshold, no metric.} ``Recall $= 0.95$, Precision $= 0.40$'' without $\tau$ is uninterpretable: any classifier hits it by lowering $\tau$ enough. The value is the triple $(\tau,\, \mathrm{Recall},\, \mathrm{Precision})$, paired with the curve showing nearby trade-offs.
+\item \emph{Calibration changes the meaning of $\tau$.} $\tau = 0.5$ on uncalibrated SVM scores is not the Bayes threshold for $c_{\mathrm{FP}} = c_{\mathrm{FN}}$; it is wherever $0.5$ falls on the SVM scale. State whether $\tau$ is on raw scores, Platt probabilities (\ref{def:platt}), or isotonic ones (\ref{def:isotonic}); the same $\tau$ on three scales picks three different operating points.
+\end{itemize}
+\end{remark}
+
+\section{Class Imbalance}\label{sec:3.5}
+
+\subsection{The metric-loss disconnect under imbalance}\label{sec:3.5.1}
+
+Standard cross-entropy weights every observation equally. On imbalanced data ($P \ll N$), the negative class dominates: roughly $n$ contributions pull $\mu(x) \to 0$ on ambiguous $x$, even when the analyst's metric (recall, MCC, $F_1$) values positives more.
+
+\textbf{Setup.} The imbalance ratio is $\rho := P/N$; \emph{imbalanced} means $\rho \ll 1$ (or $\rho \gg 1$ by symmetry). The unweighted cross-entropy (\ref{def:bce}) is $L_{\mathrm{CE}}(\beta) = \sum_i \ell_i$ with $\ell_i = -y_i \log \mu_i - (1 - y_i) \log(1 - \mu_i)$ and $\mu_i = \sigma(x_i^\top \beta)$.
+
+For the intercept-only model $\mu_i \equiv \mu$, $L_{\mathrm{CE}}(\mu) = -P \log \mu - N \log(1 - \mu)$, and $\partial L_{\mathrm{CE}}/\partial \mu = 0$ gives $\mu = P/(P + N)$. Pointwise: wherever features are uninformative, $\mu(x)$ is pulled toward the base rate. With $\rho = 0.01$, this baseline is $0.01$, and $\tau = 0.5$ classifies nearly all such $x$ as negative regardless of the FP:FN ratio.
+
+\begin{definition}[Class-weighted cross-entropy]\label{def:weighted-ce}
+For positive weights $w_+, w_- > 0$,
+\[
+  L_w(\beta) \;:=\; \sum_{i=1}^{n} \bigl[w_+\, y_i + w_-\,(1 - y_i)\bigr]\, \ell_i.
+\]
+The \emph{balanced} choice $w_+ = n/(2P)$, $w_- = n/(2N)$ gives equal total weight to each class; the same calculus then yields intercept-only minimizer $\mu = 1/2$.
+\end{definition}
+
+\begin{remark}
+Reweighting and oversampling are loss-equivalent: duplicating each positive $w_+/w_-$ times reproduces $L_w$ exactly. Reweighting avoids both the variance of duplicates and the distortion of synthetic samples, but cannot fix calibration: $\mu$ now estimates $\prb(Y = 1 \mid X = x)$ under the \emph{reweighted} distribution, so deployment still needs a prior correction (treated below).
+\end{remark}
+
+\subsection{Resampling: oversampling, undersampling, SMOTE}\label{sec:3.5.2}
+
+A second remedy modifies the training set rather than the loss.
+
+\begin{definition}[Resampling methods]\label{def:resample}
+Three balanced-set constructions on the minority class:
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Random oversampling.} Sample $N - P$ positives with replacement and append; size $2N$.
+\item \emph{Random undersampling.} Sample $P$ negatives without replacement, discard the rest; size $2P$.
+\item \emph{SMOTE.} For each positive $x_i$, find its $k$ nearest minority-class neighbors. Pick a neighbor $x_j$ uniformly at random and create a synthetic positive
+\[
+  \tilde x \;=\; x_i + \alpha\,(x_j - x_i), \qquad \alpha \sim \mathrm{Uniform}[0, 1],
+\]
+labeled $\tilde y = 1$; repeat until balanced.
+\end{itemize}
+\end{definition}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Decision-boundary effects.} Oversampling shifts the boundary toward the majority without changing the positive region's geometry (duplicates are coincident). Undersampling discards majority information and inflates variance on small data. SMOTE places synthetic positives on segments between nearest minority neighbors, smoothing the boundary into majority territory; it also distorts categorical features into meaningless fractional values.
+\item \emph{Resampling leakage.} Resampling must occur \emph{after} the train/test split and \emph{inside} CV folds. SMOTE on the full dataset creates synthetic positives that interpolate between train and test points; the test set then contains training-derived structures, and reported performance over-estimates. Inside a CV fold: fit on the resampled training portion, evaluate on the original validation portion.
+\end{itemize}
+\end{remark}
+
+\subsection{Threshold adjustment vs.\ retraining}\label{sec:3.5.3}
+
+Reweighting (\ref{def:weighted-ce}) and resampling (\ref{def:resample}) modify the training data; threshold adjustment (\S\ref{sec:3.4}) only changes $\tau$. At the population level, both yield the same Bayes-optimal decision.
+
+\begin{lemma}[Equivalence of threshold tuning and class weighting]\label{lem:threshold-vs-weight}
+Assume the model class attains the population minimum of its training loss. Both procedures predict identically on every $x$:
+\begin{enumerate}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item train unweighted cross-entropy; predict $\indc\{\mu(x) \geqslant \tau^\star\}$ with $\tau^\star = c_{\mathrm{FP}}/(c_{\mathrm{FP}} + c_{\mathrm{FN}})$;
+\item train weighted cross-entropy with $w_+/w_- = c_{\mathrm{FN}}/c_{\mathrm{FP}}$; predict $\indc\{\mu_w(x) \geqslant 0.5\}$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+At the population minimum, unweighted CE recovers $\mu(x) := \prb(Y = 1 \mid X = x)$ (\ref{lem:mle-ce}). The weighted population loss at $x$ is $-w_+ \mu(x) \log \hat\mu - w_-(1 - \mu(x)) \log(1 - \hat\mu)$; differentiating in $\hat\mu$ and setting to zero gives
+\[
+  \mu_w(x) \;=\; \frac{w_+\, \mu(x)}{w_+\, \mu(x) + w_-\,(1 - \mu(x))}.
+\]
+Thresholding $\mu_w(x) \geqslant 0.5$ rearranges to $\mu(x) \geqslant w_-/(w_+ + w_-)$. Setting $w_+/w_- = c_{\mathrm{FN}}/c_{\mathrm{FP}}$:
+\[
+  \frac{w_-}{w_+ + w_-} \;=\; \frac{1}{1 + w_+/w_-} \;=\; \frac{c_{\mathrm{FP}}}{c_{\mathrm{FP}} + c_{\mathrm{FN}}} \;=\; \tau^\star.
+\]
+Both procedures therefore predict $\hat y = 1 \iff \mu(x) \geqslant \tau^\star$.
+\end{proof}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \textbf{Threshold tuning is a leaner approach.} It adjusts only a single scalar $\tau$, avoiding training-data distortion and information loss. It requires \emph{calibrated} scores: logistic regression provides them under correct specification, but boosted trees and SVMs do not without post-hoc correction (\ref{def:platt}, \ref{def:isotonic}).
+\item \textbf{When retraining still helps.} Severe imbalance ($\rho \lesssim 10^{-3}$): the optimizer rarely sees positives, and reweighting amplifies the positive gradient. Tree-based or non-probabilistic models lacking calibration, when no calibration split is affordable. Too few positives for local structure: SMOTE adds support where threshold tuning on sparse positives is unstable.
+\end{itemize}
+\end{remark}
+
+\subsection{Prior correction under deployment shift}\label{sec:3.5.4}
+
+Resampling and reweighting shift the training prior. A model trained on a balanced set ($\pi_{\mathrm{t}} = 0.5$) and deployed at $\pi_{\mathrm{d}} \neq 0.5$ over-predicts positives; the correction is a one-line logit shift.
+
+\begin{lemma}[Prior correction]\label{lem:prior-correction}
+Let $\mu_{\mathrm{t}}(x)$ be the model's posterior under training prior $\pi_{\mathrm{t}}$. Assume the class-conditional density $f(x \mid Y)$ is the same on training and deployment (only the prior shifts). The deployment posterior is
+\[
+  \mu_{\mathrm{d}}(x) \;=\; \sigma\!\left(\mathrm{logit}(\mu_{\mathrm{t}}(x))\, +\, \log \frac{\pi_{\mathrm{d}} / (1 - \pi_{\mathrm{d}})}{\pi_{\mathrm{t}} / (1 - \pi_{\mathrm{t}})}\right).
+\]
+\end{lemma}
+
+\begin{proof}
+Bayes' rule gives $\mu(x)/(1 - \mu(x)) = [f(x \mid Y = 1)/f(x \mid Y = 0)] \cdot \pi/(1 - \pi)$, so
+\[
+  \mathrm{logit}\,\mu(x) \;=\; \log \frac{f(x \mid Y = 1)}{f(x \mid Y = 0)} + \log \frac{\pi}{1 - \pi}.
+\]
+The likelihood-ratio term is assumption-invariant, so subtracting training from deployment cancels it:
+\[
+  \mathrm{logit}\,\mu_{\mathrm{d}}(x) - \mathrm{logit}\,\mu_{\mathrm{t}}(x) \;=\; \log \frac{\pi_{\mathrm{d}}}{1 - \pi_{\mathrm{d}}} - \log \frac{\pi_{\mathrm{t}}}{1 - \pi_{\mathrm{t}}}.
+\]
+Applying $\sigma$ to both sides recovers the stated $\mu_{\mathrm{d}}(x)$.
+\end{proof}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Pure arithmetic correction.} Optimize on whatever class balance simplifies training; then shift the logits at deployment by the difference in prior log-odds. Reweighting and resampling implicitly assume $\pi_{\mathrm{d}} = 0.5$; deploying a balanced-trained model at $\pi_{\mathrm{d}} = 0.01$ without correction over-predicts positive odds by nearly $100\times$.
+\item \emph{Covariate-shift assumption.} The assumption that $f(x \mid Y)$ is unchanged is strong. If the deployment class-conditional distribution differs (covariate shift on $X$, or concept drift in $Y \mid X$), the likelihood-ratio term itself moves and prior correction fails. Validity checks were the subject of Unit~1; remediation lies outside Unit~3's scope.
+\end{itemize}
+\end{remark}
+
+\section{Implementation Tour}\label{sec:3.6}
+
+Three moves implement the theory of \S\S\ref{sec:3.1}--\ref{sec:3.5}: fit a probabilistic classifier (tidymodels), evaluate ranking and threshold-aware metrics (yardstick), tune the threshold under the operating cost. A from-scratch IRLS closes the loop in twenty lines. Examples use \texttt{ISLR2::Default} (10\,000 credit-card holders, $\sim 3.3\%$ defaulters).
+
+\subsection{tidymodels workflow}\label{sec:3.6.1}
+
+Five objects: \emph{split} (partition), \emph{recipe} (preprocessing), \emph{model spec} (algorithm), \emph{workflow} (recipe + spec), \emph{fit}. \texttt{augment()} appends class predictions \texttt{.pred\_class} and class probabilities \texttt{.pred\_Yes}, \texttt{.pred\_No} to a held-out frame.
+
+<<lr-tidymodels, message=FALSE, warning=FALSE>>=
+library(tidymodels); library(ISLR2)
+data(Default)
+
+set.seed(1)
+split <- initial_split(Default, prop = 0.8, strata = default)
+train <- training(split); test <- testing(split)
+
+rec <- recipe(default ~ ., data = train) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors())
+
+mod <- logistic_reg() |> set_engine("glm")
+wf  <- workflow() |> add_recipe(rec) |> add_model(mod)
+fit <- fit(wf, data = train)
+
+pred <- augment(fit, new_data = test)         # adds .pred_class, .pred_Yes
+head(pred[, c("default", ".pred_class", ".pred_Yes")], 5)
+@
+
+\begin{remark}
+\texttt{strata = default} preserves the imbalance ratio across the split. \texttt{step\_normalize} is harmless for \texttt{glm} but required for \texttt{glmnet}; keeping normalization in the recipe (not in upstream feature engineering) reuses the \texttt{train} parameters on \texttt{test} without leakage.
+\end{remark}
+
+\subsection{Evaluation and threshold tuning}\label{sec:3.6.2}
+
+\texttt{yardstick} reports threshold-free (AUC, AP) and threshold-fixed (accuracy, $F_1$, MCC) metrics from one prediction frame. \texttt{event\_level = "second"} treats the second factor level (\texttt{Yes}) as positive.
+
+<<lr-eval>>=
+# Threshold-free ranking metrics
+roc_auc(pred, default, .pred_Yes, event_level = "second")
+pr_auc (pred, default, .pred_Yes, event_level = "second")
+
+# Threshold-fixed metrics at default tau = 0.5 (positive class = "Yes")
+metric_set(accuracy, bal_accuracy, mcc, f_meas)(
+  pred, truth = default, estimate = .pred_class, event_level = "second"
+)
+
+# Empirical threshold sweep under cost (c_FP = 1, c_FN = 50):
+# vectorized O(n_v log n_v) sort-and-sweep matching the theory of \ref{def:empirical-cost}
+ord      <- order(pred$.pred_Yes, decreasing = TRUE)
+y_sorted <- pred$default[ord] == "Yes"
+TP <- cumsum( y_sorted)
+FP <- cumsum(!y_sorted)
+FN <- sum(y_sorted) - TP
+costs    <- 1 * FP + 50 * FN                      # c_FP = 1, c_FN = 50
+opt_idx  <- which.min(costs)
+
+c(tau_hat     = pred$.pred_Yes[ord][opt_idx],
+  cost_min    = costs[opt_idx],
+  cost_at_0.5 = sum(pred$.pred_Yes >= 0.5 & pred$default == "No") +
+                50 * sum(pred$.pred_Yes <  0.5 & pred$default == "Yes"))
+@
+
+\begin{remark}
+The sweep implements \ref{def:empirical-cost} at every distinct score. In production, $\hat\tau$ is tuned on a validation split (\texttt{validation\_split()} or \texttt{vfold\_cv()}) before the final test report; tuning on \texttt{test} above is a shortcut for exposition. For production, wrap $\widehat{\mathrm{Cost}}$ as a custom \texttt{yardstick} metric so it composes with \texttt{metric\_set()} and \texttt{tune\_grid()}.
+\end{remark}
+
+\begin{suppremark}[Modern parsnip-native threshold tuning]
+The production idiom is \texttt{probably::threshold\_perf()}, which sweeps a yardstick metric over a grid of $\tau$ values from a prediction frame and returns a long-format tibble for plotting or argmin selection; \texttt{tune::tune\_grid()} composes with it via the \texttt{post = } argument so $\tau$ is tuned within the resampling loop. The from-scratch sort-and-sweep above remains pedagogically valuable because it exposes the $O(n_v \log n_v)$ structure of \ref{def:empirical-cost} that \texttt{probably} hides behind a uniform grid.
+\end{suppremark}
+
+\subsection{IRLS from scratch}\label{sec:3.6.3}
+
+Each Newton iteration of \ref{lem:grad-hess} is a weighted least-squares fit on the working response $z_i := \eta_i + (y_i - \mu_i)/[\mu_i(1 - \mu_i)]$. Twenty lines match \texttt{glm()} to machine precision.
+
+<<irls-scratch>>=
+irls <- function(X, y, max_iter = 50, tol = 1e-8) {
+  beta <- rep(0, ncol(X))
+  for (k in seq_len(max_iter)) {
+    eta <- as.vector(X %*% beta)
+    mu  <- 1 / (1 + exp(-eta))                 # sigmoid
+    mu  <- pmin(pmax(mu, 1e-15), 1 - 1e-15)    # clip to avoid div-by-zero in z
+    W   <- mu * (1 - mu)                       # diagonal weights, length n
+    z   <- eta + (y - mu) / W                  # working response
+    # W * X recycles W column-wise: equivalent to diag(W) %*% X
+    beta_new <- solve(crossprod(X, W * X), crossprod(X, W * z))
+    if (max(abs(beta_new - beta)) < tol) break
+    beta <- as.vector(beta_new)
+  }
+  list(beta = beta, iter = k)
+}
+
+# Smoke test: recover glm() coefficients on simulated data
+set.seed(1)
+n <- 1000
+X <- cbind(1, matrix(rnorm(n * 3), n, 3))
+beta_true <- c(-2, 0.8, -0.5, 0.3)
+y <- rbinom(n, 1, plogis(X %*% beta_true))
+
+fit_irls <- irls(X, y)
+fit_glm  <- glm(y ~ X[, -1], family = binomial())
+cbind(scratch = fit_irls$beta, glm = unname(coef(fit_glm)))
+@
+
+\begin{remark}
+Diagonal weights $W = \mathrm{diag}(\mu_i(1 - \mu_i))$ shrink toward zero as $\mu_i \to 0$ or $1$, so confident points barely move the next step. Clipping $\mu$ to $[10^{-15}, 1 - 10^{-15}]$ avoids $W = 0$ (and \texttt{Inf} in $z$) when $\mu$ rounds to $\{0, 1\}$; \texttt{glm.fit} uses analogous bounds. Beyond clipping, failure signals either (i) perfect separation or (ii) collinearity ($X^\top W X$ rank-deficient). \texttt{glm()} reports (i) as ``\texttt{fitted probabilities numerically 0 or 1 occurred}''.
+\end{remark}
+
+\section{Pitfalls and Misapplications}\label{sec:3.7}
+
+Each entry pairs a misuse with a diagnostic and a runnable demo. This catalog collects what \S\S\ref{sec:3.1}--\ref{sec:3.5} forbid and seed the trap bank for the final project.
+
+\subsection{Accuracy on imbalanced data}\label{sec:3.7.1}
+
+Accuracy = 0.99 on a 1\%-positive dataset is meaningless: ``predict 0'' achieves it with zero recall. Accuracy is the default in introductory treatments and in tidymodels' \texttt{accuracy()}, so the trap is one keystroke away.
+
+<<pitfall-acc>>=
+set.seed(1)
+n <- 1000
+y <- rbinom(n, 1, 0.01)                    # 1% positives
+yhat <- rep(0L, n)                         # always predict 0
+P <- sum(y); N <- n - P
+acc <- mean(yhat == y)
+ba  <- 0.5 * (sum(yhat == 0 & y == 0)/N + sum(yhat == 1 & y == 1)/P)
+c(base_rate = P/n, accuracy = acc, recall = 0, balanced_acc = ba)
+@
+
+\textbf{Diagnostic.} Compare accuracy against the base-rate baseline $1 - P/n$ (intercept-only minimizer, \S\ref{sec:3.5.1}); equality means the classifier learned nothing.
+
+\textbf{Fix.} Balanced accuracy (\ref{def:acc-ba}), MCC (\ref{def:mcc}), or cost-weighted error (\ref{def:cost}) tied to the business asymmetry.
+
+\subsection{ROC over-optimistic under extreme imbalance}\label{sec:3.7.2}
+
+AUC near $1$ hides poor precision when $N/P \gg 1$. ROC is the textbook curve, looks symmetric, and reports favorably even when most positive predictions are false.
+
+<<pitfall-roc>>=
+P <- 100; N <- 9900                        # 1% positive rate
+TPR <- 1.0; FPR <- 0.02                    # excellent on ROC
+TP <- TPR * P; FP <- FPR * N
+precision <- TP / (TP + FP)
+c(TPR = TPR, FPR = FPR, precision = precision, false_pos_count = FP)
+@
+
+\textbf{Diagnostic.} Report AP alongside AUC; mark the operating point on a PR curve. Under severe imbalance, precision $\to 0$ as $N/P \to \infty$ at any fixed $\mathrm{FPR} > 0$ (\ref{lem:prec-tpr-fpr}); prefer PR/AP (\ref{def:ap}) as the primary curve.
+
+\subsection{Threshold defaulted to $0.5$}\label{sec:3.7.3}
+
+$\tau = 0.5$ is Bayes-optimal only when $c_{\mathrm{FP}} = c_{\mathrm{FN}}$ (\ref{thm:bayes-threshold}). It is the default in \texttt{predict\_class}/\texttt{glm}, the sigmoid midpoint, and intuitive; under asymmetric costs it is wrong.
+
+<<pitfall-tau>>=
+set.seed(1)
+n <- 1000
+mu <- runif(n, 0, 1)                       # true conditional probability
+y  <- rbinom(n, 1, mu)
+score <- pmin(pmax(mu + rnorm(n, 0, 0.05), 0), 1)  # near-calibrated
+
+emp_cost <- function(tau, cfp = 1, cfn = 50) {
+  yhat <- score >= tau
+  cfp * sum(yhat & y == 0) + cfn * sum(!yhat & y == 1)
+}
+taus <- seq(0, 1, 0.01)
+costs <- vapply(taus, emp_cost, numeric(1))
+c(cost_at_0.5 = emp_cost(0.5),
+  cost_tuned  = min(costs),
+  tau_star    = taus[which.min(costs)])
+@
+
+\textbf{Diagnostic.} Tune $\tau$ on validation data under the cost ratio; $\tau^\star \neq 0.5$ unless costs are symmetric. Use the Bayes formula (\ref{thm:bayes-threshold}) when calibrated, the empirical sweep (\ref{def:empirical-cost}) otherwise.
+
+\subsection{SMOTE before the train/test split}\label{sec:3.7.4}
+
+SMOTE on the full dataset puts synthetic positives in the test set; many interpolate between training rows, so the test set reports the model's training fit. Tutorials show ``balance, then split'' for visual cleanliness; that is the temptation.
+
+<<pitfall-smote-split, message=FALSE, warning=FALSE>>=
+library(themis)
+default_tagged <- Default |> mutate(row_id = seq_len(nrow(Default)))
+
+# WRONG: SMOTE on full data, then split
+set.seed(1)
+prepped <- recipe(default ~ ., data = default_tagged) |>
+  update_role(row_id, new_role = "id") |>
+  step_dummy(student) |>
+  step_smote(default) |> prep() |> bake(new_data = NULL)
+test_wrong <- testing(initial_split(prepped, prop = 0.8))
+
+# RIGHT: split first; balance the training subset only (step_smote in the recipe)
+set.seed(1)
+test_right <- testing(initial_split(Default, prop = 0.8, strata = default))
+
+c(orig_pos_rate    = mean(Default$default == "Yes"),
+  test_pos_wrong   = mean(test_wrong$default == "Yes"),
+  test_pos_right   = mean(test_right$default == "Yes"),
+  synth_share_test = mean(is.na(test_wrong$row_id)))
+@
+
+\textbf{Diagnostic.} The test positive rate should match deployment; tag rows by origin to surface synthetic leakage.
+
+\textbf{Fix.} Place \texttt{themis::step\_smote()} inside the recipe so \texttt{fit\_resamples()} and final-fit regenerate synthetic positives from the appropriate training subset only.
+
+\subsection{SMOTE outside the CV folds}\label{sec:3.7.5}
+
+SMOTE applied once before cross-validation makes every fold share the same synthetic structure: the inflated set is identical across folds, validation rows can contain synthetic positives derived from training, and per-fold variance shrinks artificially. Pre-resampling looks cheaper than per-fold resampling; that is the temptation.
+
+<<pitfall-smote-cv, message=FALSE, warning=FALSE>>=
+set.seed(1)
+sp <- initial_split(Default, prop = 0.8, strata = default)
+tr <- training(sp)
+
+# RIGHT: step_smote inside the recipe -> applied to each training fold
+rec_in  <- recipe(default ~ ., data = tr) |>
+  step_dummy(all_nominal_predictors()) |> step_smote(default)
+
+# WRONG: balance the entire training set once, then run CV on it
+balanced <- recipe(default ~ ., data = tr) |>
+  step_dummy(all_nominal_predictors()) |> step_smote(default) |>
+  prep() |> bake(new_data = NULL)
+rec_out <- recipe(default ~ ., data = balanced)
+
+mod    <- logistic_reg() |> set_engine("glm")
+wf_in  <- workflow() |> add_recipe(rec_in)  |> add_model(mod)
+wf_out <- workflow() |> add_recipe(rec_out) |> add_model(mod)
+
+set.seed(2)
+res_in  <- fit_resamples(wf_in,  vfold_cv(tr,       v = 5, strata = default),
+                         metrics = metric_set(bal_accuracy))
+res_out <- fit_resamples(wf_out, vfold_cv(balanced, v = 5),
+                         metrics = metric_set(bal_accuracy))
+
+list(inside  = collect_metrics(res_in),
+     outside = collect_metrics(res_out))
+@
+
+\textbf{Diagnostic.} Outside-CV scores are more optimistic and lower-variance than honest inside-CV estimates.
+
+\textbf{Fix.} Place \texttt{themis::step\_smote()} inside the recipe; \texttt{fit\_resamples()} refits the recipe per training fold, leaving validation rows untouched.
+
+\subsection{Tree-based scores treated as calibrated probabilities}\label{sec:3.7.6}
+
+Random-forest and boosted-tree scores are not calibrated: vote/leaf averages cluster at discrete values and concentrate away from $0$ and $1$ (\ref{def:calibration}). Logistic regression's MLE is calibrated by construction under correct specification. Both output a number in $[0,1]$, and the analyst silently reads ``probability'' off either.
+
+<<pitfall-cal, message=FALSE, warning=FALSE>>=
+library(probably); library(ranger)
+set.seed(1)
+sp <- initial_split(Default, prop = 0.6, strata = default)
+tr <- training(sp); te <- testing(sp)
+
+fit_lr <- workflow() |> add_recipe(rec) |>
+  add_model(logistic_reg() |> set_engine("glm")) |> fit(tr)
+fit_rf <- workflow() |> add_recipe(rec) |>
+  add_model(rand_forest(trees = 500) |> set_engine("ranger") |>
+              set_mode("classification")) |> fit(tr)
+
+pred_lr <- augment(fit_lr, te); pred_rf <- augment(fit_rf, te)
+
+# Reliability gap per decile bin: empirical positive rate minus mean score.
+# Empty bins explicitly return NA via `default = NA_real_`; an NA in
+# the random-forest column is itself a diagnostic signal (the model
+# never predicts in that score range).
+reliab <- function(p, K = 10) {
+  bin      <- cut(p$.pred_Yes, breaks = seq(0, 1, length.out = K + 1), include.lowest = TRUE)
+  emp_rate <- tapply(as.integer(p$default == "Yes"), bin, mean, default = NA_real_)
+  pred_avg <- tapply(p$.pred_Yes,                    bin, mean, default = NA_real_)
+  emp_rate - pred_avg
+}
+round(cbind(logistic = reliab(pred_lr), random_forest = reliab(pred_rf)), 3)
+@
+
+\textbf{Diagnostic.} Reliability diagram (\ref{def:calibration}) on a held-out split; large per-bin gaps and missing extreme bins (RF rarely predicts $> 0.7$) signal miscalibration.
+
+\textbf{Fix.} Platt scaling (\ref{def:platt}) for sigmoid-shaped error, isotonic (\ref{def:isotonic}) for arbitrary monotone error, fit on a separate calibration split. The \texttt{probably} package provides \texttt{cal\_estimate\_logistic()} and \texttt{cal\_estimate\_isotonic()}.
+
+\subsection{Threshold tuned on training data}\label{sec:3.7.7}
+
+Tuning $\tau$ on training scores and reporting test metrics double-dips: the training set fitted both the score and the threshold, biasing the reported test cost downward. Training data is the largest, easiest source of scores; the lowest-effort default.
+
+<<pitfall-tau-train>>=
+set.seed(1); n <- 1000
+X <- matrix(rnorm(n * 3), n, 3)
+beta_true <- c(-2, 0.8, -0.5, 0.3)
+y <- rbinom(n, 1, plogis(cbind(1, X) %*% beta_true))
+
+i_train <- 1:600; i_val <- 601:800; i_test <- 801:1000
+fit <- glm(y[i_train] ~ X[i_train, ], family = binomial())
+score <- function(idx) as.vector(plogis(cbind(1, X[idx, ]) %*% coef(fit)))
+
+emp_cost <- function(s, yy, tau, cfp = 1, cfn = 10) {
+  yhat <- s >= tau
+  cfp * sum(yhat & yy == 0) + cfn * sum(!yhat & yy == 1)
+}
+tune <- function(s, yy) {
+  taus <- sort(unique(s))
+  taus[which.min(vapply(taus, emp_cost, numeric(1), s = s, yy = yy))]
+}
+tau_tr <- tune(score(i_train), y[i_train])
+tau_va <- tune(score(i_val),   y[i_val])
+c(tau_train = tau_tr, tau_val = tau_va,
+  test_cost_with_train_tau = emp_cost(score(i_test), y[i_test], tau_tr),
+  test_cost_with_val_tau   = emp_cost(score(i_test), y[i_test], tau_va))
+@
+
+\textbf{Diagnostic.} A three-way split (train / validation / test) eliminates the leakage by construction; when data is scarce, cross-validate the threshold instead. Final test reports must use a $\tau$ chosen without seeing test labels.
+
+\end{document}

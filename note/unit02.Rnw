@@ -1,0 +1,1363 @@
+% Compile pipeline (two steps):
+%   Rscript -e "knitr::knit('lecture.Rnw')"   # produces lecture.tex
+%   xelatex -shell-escape lecture.tex          # run twice to settle the toc
+\documentclass[17pt]{extarticle}
+
+\input{bda_preamble.tex}
+
+% Unit 2 specific
+\fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ 2 Linear Models and Regularization}}
+
+\setcounter{theorem}{0}\setcounter{example}{0}
+\renewcommand\thedefinition{2.\arabic{theorem}}
+\renewcommand\thetheorem  {2.\arabic{theorem}}
+\renewcommand\theexample  {2.\arabic{example}}
+\renewcommand\theexercise {2.\arabic{exercise}}
+\renewcommand\thefigure   {2.\arabic{figure}}
+
+% Hyperlinkable Gauss--Markov assumption labels.
+\newcommand{\Atarget}[1]{\hypertarget{ass:A#1}{A#1}}
+\newcommand{\Aref}[1]{\hyperlink{ass:A#1}{A#1}}
+
+\title{\color{hdrBG}\bfseries\Huge Linear Models and Regularization}
+\author{}\date{}
+
+\begin{document}
+
+<<setup, include=FALSE>>=
+source("bda_knitr_setup.R")
+knitr::opts_chunk$set(fig.path = "figs/unit02-")
+@
+
+\begin{titlepage}
+\thispagestyle{empty}\vspace*{\fill}
+\begin{center}
+{\color{hdrBG}\bfseries\fontsize{28}{32}\selectfont Unit 2.\ Linear Models and Regularization}\\[1em]
+\rule{70mm}{0.8pt}\\[0.8em]
+{\large Business Data Analytics: Introductory Machine Learning}
+\end{center}\vspace*{\fill}
+\end{titlepage}
+
+\setcounter{page}{1}
+
+\section{The OLS Setup}\label{sec:2.1}
+
+\subsection{Linear-algebra preliminaries}\label{sec:2.1.1}
+
+\begin{definition}[Linear-algebra vocabulary]\label{def:linalg-prelim}
+A nonempty \(V \subseteq \mathbb{R}^n\) is a \emph{subspace} if it is closed under linear combinations (so \(0 \in V\), \(u + v \in V\), \(\alpha u \in V\) for all \(u, v \in V, \alpha \in \mathbb{R}\)). For \(A \in \mathbb{R}^{m \times n}\), viewed as the linear map \(\mathbb{R}^n \to \mathbb{R}^m\), \(v \mapsto Av\):
+
+\vspace{2mm}
+{\centering\footnotesize
+\begin{tabular}{l l}
+\toprule
+\textbf{Concept} & \textbf{Definition} \\
+\midrule
+Span of \(v_1, \ldots, v_k\) & \(\{\sum_i c_i v_i : c_i \in \mathbb{R}\}\); always a subspace \\
+Linear independence & \(\sum_i c_i v_i = 0 \Rightarrow c_i = 0\) for every \(i\) \\
+Basis of \(V\) & linearly independent spanning set \\
+Dimension \(\dim V\) & cardinality of any basis (independent of choice) \\
+Image \(\img(A) = \col(A)\) & \(\{Av : v \in \mathbb{R}^n\}\) = span of columns; subspace of \(\mathbb{R}^m\) \\
+Kernel \(\ker(A)\) & \(\{v \in \mathbb{R}^n : Av = 0\}\); subspace of \(\mathbb{R}^n\) \\
+Rank \(\rk(A)\) & \(\dim \img(A)\) \\
+Nullity \(\nul(A)\) & \(\dim \ker(A)\) \\
+Orthogonal vectors & \(u \perp v \;\Leftrightarrow\; u^\top v = 0\) \\
+Orthogonal subspaces & \(U \perp V \;\Leftrightarrow\; u^\top v = 0\) for all \(u \in U, v \in V\) \\
+Orthogonal complement \(V^\perp\) & \(\{u : u \perp v\ \forall v \in V\}\); subspace of \(\mathbb{R}^n\) \\
+Orthogonal direct sum & \(\mathbb{R}^n = V \oplus V^\perp\); every \(x = v + u\) uniquely, \(\dim V + \dim V^\perp = n\) \\
+\bottomrule
+\end{tabular}\par}
+\vspace{2mm}
+\end{definition}
+
+\begin{theorem}[Rank--nullity]\label{thm:rank-nullity}
+Let \(A \in \mathbb{R}^{m \times n}\), viewed as a linear map \(\mathbb{R}^n \to \mathbb{R}^m\). Then
+\[
+  n \;=\; \rk(A) + \nul(A),
+\]
+where \(\rk(A) := \dim\,\img(A)\) and \(\nul(A) := \dim\ker(A)\).
+\end{theorem}
+
+\begin{proof}
+Let \(k = \nul(A)\) and fix a basis \(\{v_1, \ldots, v_k\}\) of \(\ker(A)\); extend to a basis \(\{v_1, \ldots, v_k, u_1, \ldots, u_{n-k}\}\) of \(\mathbb{R}^n\). It suffices to show that \(\{Au_1, \ldots, Au_{n-k}\}\) is a basis of \(\img(A)\): then \(\rk(A) = n-k\), giving \(n = k + (n-k) = \nul(A) + \rk(A)\).
+
+\textbf{Spanning.} For any \(w = Av \in \img(A)\), write \(v = \sum_i c_i v_i + \sum_j d_j u_j\). Each \(v_i \in \ker(A)\), so \(Av_i = 0\), and
+\[
+  Av \;=\; \sum_i c_i \cdot 0 \,+\, \sum_j d_j Au_j \;=\; \sum_j d_j Au_j.
+\]
+Hence \(\{Au_j\}\) spans \(\img(A)\).
+
+\textbf{Linear independence.} Suppose \(\sum_j d_j Au_j = 0\). Then \(A\bigl(\sum_j d_j u_j\bigr) = 0\), so \(\sum_j d_j u_j \in \ker(A)\), which we expand in the kernel basis as \(\sum_j d_j u_j = \sum_i c_i v_i\) for some \(c_i\). Rearranging,
+\[
+  \sum_j d_j u_j \,-\, \sum_i c_i v_i \;=\; 0.
+\]
+Linear independence of the extended basis \(\{v_i\} \cup \{u_j\}\) forces every \(c_i = 0\) and every \(d_j = 0\); the \(\{Au_j\}\) are therefore linearly independent.
+\end{proof}
+
+\begin{definition}[Matrix types]\label{def:matrix-types}
+For \(A \in \mathbb{R}^{p \times p}\):
+
+\vspace{2mm}
+{\centering\footnotesize
+\begin{tabular}{l l}
+\toprule
+\textbf{Concept} & \textbf{Definition} \\
+\midrule
+Symmetric matrix & \(A^\top = A\) \\
+Diagonal matrix \(\diag(\lambda_1, \ldots, \lambda_p)\) & off-diagonal entries zero; \((i,i)\)-entry equal to \(\lambda_i\) \\
+Orthogonal matrix \(Q\) & square with \(Q^\top Q = QQ^\top = I_p\) (columns orthonormal) \\
+Positive semidefinite \(A \succcurlyeq 0\) & symmetric \(A\) with \(v^\top A v \geqslant 0\) for every \(v \in \mathbb{R}^p\) \\
+Positive definite \(A \succ 0\) & symmetric \(A\) with \(v^\top A v > 0\) for every \(v \in \mathbb{R}^p, v \neq 0\) \\
+\bottomrule
+\end{tabular}\par}
+\vspace{2mm}
+\end{definition}
+
+\begin{lemma}[Left inverse equals right inverse for square matrices]\label{lem:left-right-inv}
+For square \(Q \in \mathbb{R}^{p \times p}\), if \(Q^\top Q = I_p\) then \(Q\) is invertible with \(Q^{-1} = Q^\top\); in particular, \(QQ^\top = I_p\). (So defining an orthogonal matrix by orthonormal columns automatically gives orthonormal rows.)
+\end{lemma}
+
+\begin{proof}
+\(Q^\top Q = I_p\) implies \(\ker(Q)\) is trivial: if \(Qv = 0\), then \(v = Q^\top Q v = Q^\top \cdot 0 = 0\). By Theorem~\ref{thm:rank-nullity}, \(\rk(Q) = p - \nul(Q) = p\). Since \(Q\) is \(p \times p\) with rank \(p\), \(Q : \mathbb{R}^p \to \mathbb{R}^p\) is bijective, so \(Q^{-1}\) exists. Right-multiplying \(Q^\top Q = I_p\) by \(Q^{-1}\) gives \(Q^\top = Q^{-1}\); hence \(QQ^\top = QQ^{-1} = I_p\).
+\end{proof}
+
+\begin{definition}[Eigenvalue and eigenvector]\label{def:eigenvalue}
+For symmetric \(A \in \mathbb{R}^{p \times p}\), \(\lambda \in \mathbb{R}\) is an \emph{eigenvalue} with \emph{eigenvector} \(v \in \mathbb{R}^p, v \neq 0\), if \(Av = \lambda v\). (Reality of every eigenvalue of a real symmetric \(A\) is part of the spectral theorem proven below.)
+\end{definition}
+
+\begin{theorem}[Spectral theorem]\label{thm:spectral}
+Every symmetric \(A \in \mathbb{R}^{p \times p}\) admits an \emph{orthogonal diagonalization}
+\[
+  A \;=\; Q \Lambda Q^\top, \qquad \Lambda = \diag(\lambda_1, \ldots, \lambda_p),\ Q^\top Q = QQ^\top = I_p,
+\]
+with real eigenvalues \(\lambda_j\) and orthonormal eigenvectors \(q_1, \ldots, q_p\) (the columns of \(Q\)). When \(A \succ 0\), all \(\lambda_j > 0\) and \(A^{-1} = Q\diag(\lambda_j^{-1}) Q^\top\).
+\end{theorem}
+
+\begin{proof}
+We construct \(q_1, \ldots, q_p\) iteratively as solutions of constrained Rayleigh-quotient maximizations. Set \(W_1 := \mathbb{R}^p\); for \(j = 1, 2, \ldots, p\), define
+\[
+  q_j \;:=\; \arg\max_{x \in W_j,\ \|x\| = 1} x^\top A x, \qquad \lambda_j \;:=\; q_j^\top A q_j, \qquad W_{j+1} \;:=\; W_j \cap \{q_j\}^\perp.
+\]
+
+\textbf{Step 1: \(q_j\) exists.} \(\{x \in W_j : \|x\| = 1\}\) is closed and bounded in finite-dimensional \(\mathbb{R}^p\), hence compact (Heine--Borel); \(x \mapsto x^\top A x\) is continuous, so by the Weierstrass extreme value theorem the maximum is attained.
+
+\textbf{Step 2: \(q_j\) is an eigenvector with eigenvalue \(\lambda_j\).} Unfolding the recursion \(W_{j+1} = W_j \cap \{q_j\}^\perp\) starting from \(W_1 = \mathbb{R}^p\) gives
+\[
+  W_j \;=\; \mathrm{span}(q_1, \ldots, q_{j-1})^\perp, \qquad W_{j+1} \;=\; \mathrm{span}(q_1, \ldots, q_j)^\perp,
+\]
+so \(W_j^\perp = \mathrm{span}(q_1, \ldots, q_{j-1})\) and \(W_{j+1}^\perp = \mathrm{span}(q_1, \ldots, q_j)\).
+
+For any direction \(w \in W_{j+1}\) (so \(w \in W_j\) and \(w \perp q_j\)), the curve
+\[
+  x(t) \;:=\; \frac{q_j + tw}{\|q_j + tw\|}, \quad t \in (-\delta, \delta) \text{ small},
+\]
+stays in \(W_j\) (linear combinations of \(q_j, w \in W_j\)) and on the unit sphere by construction, so the function \(g(t) := x(t)^\top A x(t)\) attains its maximum at \(t = 0\). Hence \(g'(0) = 0\). Using \(\|q_j\| = 1\), \(q_j \perp w\), and \(A^\top = A\), expand the numerator and denominator:
+\begin{align*}
+  (q_j + tw)^\top A (q_j + tw) &= q_j^\top A q_j + 2t (Aq_j)^\top w + t^2 w^\top A w \;=\; \lambda_j + 2t (Aq_j)^\top w + O(t^2), \\
+  \|q_j + tw\|^2 &= 1 + t^2 \|w\|^2.
+\end{align*}
+Their ratio gives \(g(t) = \lambda_j + 2t (Aq_j)^\top w + O(t^2)\), so
+\[
+  0 \;=\; g'(0) \;=\; 2 (A q_j)^\top w.
+\]
+Since this holds for every \(w \in W_{j+1}\), \(A q_j \in W_{j+1}^\perp = \mathrm{span}(q_1, \ldots, q_j)\). Write
+\[
+  A q_j \;=\; \lambda\, q_j + \sum_{i=1}^{j-1} \alpha_i\, q_i.
+\]
+
+To eliminate the \(\alpha_k\) for \(k < j\), take the inner product of both sides with \(q_k\):
+\[
+  q_k^\top A q_j \;=\; \lambda\,(q_k^\top q_j) + \sum_i \alpha_i\,(q_k^\top q_i) \;=\; \alpha_k,
+\]
+using orthonormality of \((q_1, \ldots, q_j)\). Independently, the previous iterations of the construction already produced \(A q_k = \lambda_k q_k\), so
+\[
+  q_k^\top A q_j \;=\; (A q_k)^\top q_j \;=\; \lambda_k\,(q_k^\top q_j) \;=\; 0,
+\]
+using \(A^\top = A\). Hence \(\alpha_k = 0\) for every \(k < j\), and \(A q_j = \lambda q_j\). Taking the inner product with \(q_j\) gives \(\lambda = q_j^\top A q_j = \lambda_j\), which is real since \(q_j^\top A q_j\) is a real expression.
+
+\textbf{Step 3: \((q_1, \ldots, q_p)\) is an orthonormal basis of \(\mathbb{R}^p\).} \(\|q_j\| = 1\) by construction; \(q_j \perp q_i\) for every \(i < j\) by the constraint defining \(W_j\). The \(q_j\) are pairwise orthogonal unit vectors, and any \(p\) such vectors in \(\mathbb{R}^p\) form a basis.
+
+\textbf{Step 4: Assemble.} Set \(Q := [q_1\ q_2\ \cdots\ q_p]\) and \(\Lambda := \diag(\lambda_1, \ldots, \lambda_p)\). Orthonormality of the columns gives \(Q^\top Q = QQ^\top = I_p\); the eigenvalue equations \(A q_j = \lambda_j q_j\) (\(j = 1, \ldots, p\)) read \(AQ = Q\Lambda\), and right-multiplying by \(Q^\top\) yields \(A = Q\Lambda Q^\top\).
+
+\textbf{PSD case.} If \(A \succ 0\), then for each unit eigenvector \(q_j\), \(\lambda_j = q_j^\top A q_j > 0\); \(\Lambda^{-1} = \diag(\lambda_j^{-1})\) exists, and \((Q\Lambda Q^\top)(Q\Lambda^{-1} Q^\top) = Q\Lambda\Lambda^{-1} Q^\top = QQ^\top = I_p\), so \(A^{-1} = Q\Lambda^{-1} Q^\top\).
+\end{proof}
+
+The construction in the proof of Theorem~\ref{thm:spectral} defines each $q_j$ as the argmax of $x^\top A x$ over $\{x \in W_j : \|x\| = 1\}$. Reading this off as a numbered statement gives the Rayleigh-quotient characterization of every eigenvalue, used in Unit~7 \S 7.2 (PCA variance maximization) and the Eckart--Young proof.
+
+\begin{theorem}[Rayleigh-quotient maxima]\label{thm:rayleigh}
+Let \(A \in \mathbb{R}^{p \times p}\) be symmetric with eigenvalues \(\lambda_1 \geqslant \cdots \geqslant \lambda_p\) and orthonormal eigenvectors \(q_1, \ldots, q_p\) as in Theorem~\ref{thm:spectral}. Then
+\[
+\lambda_1 \;=\; \max_{x \neq \mathbf{0}}\, \frac{x^\top A x}{x^\top x} \;=\; \max_{\|x\| = 1} x^\top A x,
+\]
+attained at \(x = q_1\). For \(k = 2, \ldots, p\),
+\[
+\lambda_k \;=\; \max_{\substack{\|x\| = 1 \\ x \perp q_1, \ldots, q_{k-1}}} x^\top A x,
+\]
+attained at \(x = q_k\). Symmetrically, \(\lambda_p\) is the minimum of \(x^\top A x\) on the unit sphere, attained at \(q_p\).
+\end{theorem}
+
+\begin{proof}
+Expand a unit vector \(x\) in the basis \(q_1, \ldots, q_p\): \(x = \sum_j c_j q_j\) with \(\sum_j c_j^2 = 1\). Using \(A q_j = \lambda_j q_j\) and orthonormality,
+\[
+x^\top A x \;=\; \sum_{j=1}^{p} c_j^2 \lambda_j,
+\]
+a convex combination of \(\lambda_1, \ldots, \lambda_p\), hence in \([\lambda_p, \lambda_1]\), with maximum \(\lambda_1\) at \(c_1 = 1\), \(c_2 = \cdots = c_p = 0\), i.e.\ \(x = q_1\). Homogeneity of the Rayleigh quotient $x^\top A x / x^\top x$ gives the unconstrained form. The constraint \(x \perp q_1, \ldots, q_{k-1}\) forces \(c_1 = \cdots = c_{k-1} = 0\), so \(x^\top A x = \sum_{j \geqslant k} c_j^2 \lambda_j \leqslant \lambda_k\), attained at \(x = q_k\). The minimum statement follows by applying the maximum to \(-A\) (eigenvalues \(-\lambda_p \geqslant \cdots \geqslant -\lambda_1\)).
+\end{proof}
+
+\subsection{Matrix model and classical assumptions}\label{sec:2.1.2}
+
+\begin{definition}[Linear regression model and Gauss--Markov assumptions]\label{def:lin-model}
+The \emph{linear regression model} is
+\[
+  y \;=\; X\beta + \varepsilon, \qquad y \in \mathbb{R}^n,\; X \in \mathbb{R}^{n \times p},\; \beta \in \mathbb{R}^p,\; \varepsilon \in \mathbb{R}^n,
+\]
+with \(X\)'s first column typically \(\mathbf{1}_n\) for an intercept. Linearity is in \(\beta\); columns of \(X\) may be nonlinear transforms (powers, logs, interactions) of raw features. The classical Gauss--Markov framework adds:
+
+\vspace{2mm}
+{\centering
+\begin{tabular}{c l l}
+\toprule
+\textbf{ID} & \textbf{Statement} & \textbf{Yields} \\
+\midrule
+\Atarget{1} & \textbf{Linearity}: \(y = X\beta + \varepsilon\) for fixed \(\beta\) & the target \(\beta\) is well-defined \\
+\Atarget{2} & \textbf{Full column rank}: \(\rk(X) = p\) & \(\hat\beta = (X^\top X)^{-1} X^\top y\) is unique \\
+\Atarget{3} & \textbf{Exogeneity}: \(\expc[\varepsilon \mid X] = 0\) & \(\expc[\hat\beta \mid X] = \beta\) (unbiased) \\
+\Atarget{4} & \textbf{Spherical errors}: \(\var(\varepsilon \mid X) = \sigma^2 I_n\) & \(\hat\beta\) is BLUE (Gauss--Markov) \\
+\bottomrule
+\end{tabular}\par}
+\vspace{2mm}
+\end{definition}
+
+\subsection{Normal equations and the OLS estimator}\label{sec:2.1.3}
+
+OLS minimizes the squared-error objective
+\[
+  Q(\beta) \;=\; \|y - X\beta\|^2 \;=\; (y - X\beta)^\top (y - X\beta).
+\]
+
+\begin{lemma}[Rank of \(X^\top X\)]\label{lem:rank-xtx}
+For any \(X \in \mathbb{R}^{n \times p}\), \(\rk(X^\top X) = \rk(X)\). Under \Aref{2}, \(X^\top X\) is therefore invertible.
+\end{lemma}
+
+\begin{proof}
+\(X\) and \(X^\top X\) share their null space: \(Xv = 0 \Rightarrow X^\top X v = 0\) by left-multiplying by \(X^\top\); conversely \(X^\top X v = 0 \Rightarrow v^\top X^\top X v = \|Xv\|^2 = 0 \Rightarrow Xv = 0\). Both \(X : \mathbb{R}^p \to \mathbb{R}^n\) and \(X^\top X : \mathbb{R}^p \to \mathbb{R}^p\) have input dimension \(p\) and the same nullity, so Theorem~\ref{thm:rank-nullity} applied to each gives
+\[
+  \rk(X) \;=\; p - \nul(X) \;=\; p - \nul(X^\top X) \;=\; \rk(X^\top X).
+\]
+Under \Aref{2}, \(\rk(X) = p\); hence \(X^\top X\) is a full-rank \(p \times p\) matrix and is invertible.
+\end{proof}
+
+\begin{lemma}[Gradients of linear and quadratic forms]\label{lem:matrix-calc}
+For \(\beta \in \mathbb{R}^p\), constant \(a \in \mathbb{R}^p\), and symmetric \(A \in \mathbb{R}^{p \times p}\), with \(D(\cdot)\) denoting the row-vector gradient (\(D f = (\partial f/\partial \beta_1, \ldots, \partial f/\partial \beta_p)\)):
+\[
+  D(a^\top \beta) \;=\; a^\top, \qquad D(\beta^\top A \beta) \;=\; 2\beta^\top A.
+\]
+\end{lemma}
+
+\begin{proof}
+For the linear form, \(a^\top \beta = \sum_i a_i \beta_i\), so \(\partial(a^\top\beta)/\partial\beta_k = a_k\), giving \(D(a^\top\beta) = a^\top\).
+
+For the quadratic form, \(\beta^\top A \beta = \sum_{i, j} A_{ij}\, \beta_i \beta_j\). Differentiate term by term:
+\[
+  \frac{\partial(\beta^\top A \beta)}{\partial \beta_k} \;=\; \sum_j A_{kj} \beta_j + \sum_i A_{ik} \beta_i \;=\; \sum_j (A_{kj} + A_{jk}) \beta_j \;=\; 2 \sum_j A_{kj} \beta_j \;=\; 2 (A\beta)_k,
+\]
+using \(A_{jk} = A_{kj}\) (symmetry). Hence \(D(\beta^\top A \beta) = 2(A\beta)^\top = 2\beta^\top A\) (again by symmetry).
+\end{proof}
+
+\begin{theorem}[OLS estimator]\label{thm:ols-estimator}
+Under \Aref{2}, \(Q\) has a unique minimizer
+\[
+  \hat\beta \;=\; (X^\top X)^{-1} X^\top y.
+\]
+\end{theorem}
+
+\begin{proof}
+\textbf{Step 1: Expand.} Using \(y^\top X\beta = \beta^\top X^\top y\) (a scalar equals its transpose),
+\[
+  Q(\beta) \;=\; y^\top y - 2\beta^\top X^\top y + \beta^\top X^\top X \beta.
+\]
+
+\textbf{Step 2: First-order condition.} Apply Lemma~\ref{lem:matrix-calc} with \(a = X^\top y\) and \(A = X^\top X\):
+\[
+  DQ(\beta) \;=\; -2\, y^\top X + 2\,\beta^\top X^\top X.
+\]
+Setting \(DQ(\beta) = 0\) and transposing gives the \emph{normal equation}
+\[
+  X^\top X \hat\beta \;=\; X^\top y.
+\]
+
+\textbf{Step 3: Solve.} By Lemma~\ref{lem:rank-xtx} and \Aref{2}, \(X^\top X\) is invertible, so
+\[
+  \hat\beta \;=\; (X^\top X)^{-1} X^\top y.
+\]
+
+\textbf{Step 4: Second-order condition.} The Hessian \(\nabla^2 Q = 2 X^\top X\). For any \(v \neq 0\), under \Aref{2}, \(v^\top X^\top X v = \|Xv\|^2 > 0\), so \(X^\top X \succ 0\). Hence \(Q\) is strictly convex on \(\mathbb{R}^p\) and \(\hat\beta\) is the unique global minimum.
+\end{proof}
+
+\subsection{Geometric reading: orthogonal projection}\label{sec:2.1.4}
+
+Under \Aref{2}, \(\dim \col(X) = \rk(X) = p\), so OLS searches for the closest point in a \(p\)-dimensional subspace of \(\mathbb{R}^n\). The resulting fit has a clean geometric description.
+
+\begin{theorem}[Orthogonality characterization of OLS]\label{thm:orth-char}
+For \(\hat y \in \col(X)\), the following are equivalent:
+\begin{enumerate}[leftmargin=2.4em,itemsep=2pt,topsep=2pt]
+\item[(i)]   \(\hat y\) minimizes \(\|y - \tilde y\|^2\) over \(\tilde y \in \col(X)\);
+\item[(ii)]  \(y - \hat y \perp \col(X)\), i.e.\ \(v^\top(y - \hat y) = 0\) for every \(v \in \col(X)\);
+\item[(iii)] \(X^\top(y - \hat y) = 0\).
+\end{enumerate}
+The minimizer is unique under \Aref{2} and equals \(\hat y = X\hat\beta\) with \(\hat\beta = (X^\top X)^{-1} X^\top y\).
+\end{theorem}
+
+\begin{proof}
+\textbf{(ii) \(\Leftrightarrow\) (iii).} The columns of \(X\) span \(\col(X)\), so \(y - \hat y\) is orthogonal to every \(v \in \col(X)\) iff orthogonal to each column iff \(X^\top(y - \hat y) = 0\).
+
+\textbf{(ii) \(\Rightarrow\) (i).} Let \(\tilde y \in \col(X)\). Since \(\col(X)\) is a subspace, \(\hat y - \tilde y \in \col(X)\), so \((y - \hat y) \perp (\hat y - \tilde y)\). Pythagoras applied to \(y - \tilde y = (y - \hat y) + (\hat y - \tilde y)\) gives
+\[
+  \|y - \tilde y\|^2 \;=\; \|y - \hat y\|^2 + \|\hat y - \tilde y\|^2 \;\geqslant\; \|y - \hat y\|^2,
+\]
+with equality iff \(\tilde y = \hat y\).
+
+\textbf{(i) \(\Rightarrow\) (ii).} Suppose \(\hat y\) minimizes but some \(v \in \col(X)\) has \(v^\top(y - \hat y) \neq 0\); rescale to \(\|v\| = 1\). For \(\tilde y(t) = \hat y + tv \in \col(X)\),
+\[
+  \|y - \tilde y(t)\|^2 \;=\; \|y - \hat y\|^2 - 2t\,v^\top(y - \hat y) + t^2,
+\]
+minimized at \(t^\star = v^\top(y - \hat y) \neq 0\) with value \(\|y - \hat y\|^2 - (t^\star)^2 < \|y - \hat y\|^2\), contradicting (i).
+
+\textbf{Closed form.} Writing \(\hat y = X\hat\beta\), condition (iii) becomes \(X^\top X \hat\beta = X^\top y\), the normal equation of \S\ref{sec:2.1.3}. Under \Aref{2}, \(\hat\beta = (X^\top X)^{-1} X^\top y\), and since the orthogonal projection onto a closed subspace is unique, so is \(\hat y\).
+\end{proof}
+
+%\begin{center}
+%\begin{tikzpicture}[scale=1.2, line cap=round, line join=round,
+%                    every node/.style={font=\small}]
+%  % col(X) plane (parallelogram) in light blue
+%  \fill[blue!12] (-1.4,-0.6) -- (5.0,-1.0) -- (5.6,1.4) -- (-0.8,1.8) -- cycle;
+%  \draw[blue!55, thick] (-1.4,-0.6) -- (5.0,-1.0) -- (5.6,1.4) -- (-0.8,1.8) -- cycle;
+%  \node[blue!65!black] at (4.7, -0.6) {$\col(X)$};
+%
+%  % key points
+%  \coordinate (O)    at (0,0);
+%  \coordinate (yhat) at (3.0, 0.6);
+%  \coordinate (y)    at (3.6, 3.2);
+%
+%  % yhat arrow from origin
+%  \fill (O) circle (0.05);
+%  \node[below left] at (O) {$0$};
+%  \draw[->, very thick, blue!60!black] (O) -- (yhat);
+%  \node at ($(O)!0.55!(yhat) + (0.05,-0.30)$) {$\hat y = P_X\, y$};
+%
+%  % y arrow from origin (out of the plane)
+%  \draw[->, very thick] (O) -- (y);
+%  \node at ($(O)!0.55!(y) + (-0.32, 0.18)$) {$y$};
+%
+%  % residual: yhat -> y, perpendicular to col(X)
+%  \draw[->, very thick, red!70!black] (yhat) -- (y);
+%  \node[red!70!black] at ($(yhat)!0.5!(y) + (0.7, 0.0)$) {$y - \hat y$};
+%
+%  % right-angle indicator at yhat
+%  \coordinate (a) at ($(yhat) + (-0.18, 0.05)$);
+%  \coordinate (b) at ($(yhat) + (-0.13, 0.27)$);
+%  \coordinate (c) at ($(yhat) + (0.05, 0.22)$);
+%  \draw[red!70!black, thin] (a) -- (b) -- (c);
+%
+%  % decorative dots at endpoints
+%  \fill (yhat) circle (0.05);
+%  \fill (y)    circle (0.05);
+%\end{tikzpicture}
+%\end{center}
+%
+%\noindent The hat matrix $P_X$ projects $y$ orthogonally onto $\col(X)$: the residual $y - \hat y$ is perpendicular to every direction in the plane, equivalently $X^\top(y - \hat y) = 0$ (Theorem~\ref{thm:orth-char} (iii)).
+%
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>=stealth, thick, scale=1.6]
+  % Define the geometric nodes based on exact orthogonal dot product
+  % Origin O=(0,0), Yhat=(3, 1.5). Vector O->Yhat = (3, 1.5)
+  % To make Y-Yhat orthogonal to O-Yhat: Vector Yhat->Y = (-1, 2)
+  % Hence Y = (3-1, 1.5+2) = (2, 3.5)
+  \coordinate (O) at (0, 0);
+  \coordinate (Yhat) at (3, 1.5);
+  \coordinate (Y) at (2, 3.5);
+
+  % Draw the subspace plane col(X)
+  % Parallelogram corners chosen to enclose O and Yhat smoothly
+  \coordinate (P1) at (-2.0, -1.0);
+  \coordinate (P2) at (4, 0);
+  \coordinate (P3) at (5.5, 2.5);
+  \coordinate (P4) at (-0.5, 1.5);
+  
+  \filldraw[fill=blue!5, draw=blue!40, line width=0.8pt] (P1) -- (P2) -- (P3) -- (P4) -- cycle;
+  \node[text=blue!70!black] at (4.2, 1.7) {$\mathrm{col}(X)$};
+
+  % Draw vectors
+  \draw[->, color=black, line width=1pt] (O) -- (Y) node[above] {$y$};
+  \draw[->, color=red!80!black, line width=1pt] (O) -- (Yhat) node[below, yshift=-6mm] {$\hat{y} = X\hat{\beta} = P_X y$};
+  \draw[->, color=green!50!black, dashed, line width=1pt] (Yhat) -- (Y) node[midway, right, xshift=2pt] {$y - \hat{y}$};
+
+  % Draw right-angle symbol using calc library
+  \coordinate (U) at ($(Yhat)!0.3cm!(O)$);
+  \coordinate (V) at ($(Yhat)!0.3cm!(Y)$);
+  \coordinate (W) at ($(U)+(V)-(Yhat)$);
+  \draw[line width=0.6pt, color=black!70] (U) -- (W) -- (V);
+
+  % Origin label
+  \filldraw[black] (O) circle (1.5pt) node[left, xshift=-2pt] {$0$};
+\end{tikzpicture}
+\caption{Orthogonal projection of $y$ onto $\mathrm{col}(X)$: The residual $y - \hat{y}$ is orthogonal to every vector in $\mathrm{col}(X)$, yielding the normal equations $X^\top(y - X\hat{\beta}) = 0$; equivalently $X^\top(y - \hat y) = 0$ (Theorem~\ref{thm:orth-char} (iii)).}
+\label{fig:ols-projection}
+\end{figure}
+
+\begin{definition}[Hat matrix]\label{def:hat-matrix}
+The \emph{hat matrix} (orthogonal projector onto \(\col(X)\)) is
+\[
+  P_X \;:=\; X(X^\top X)^{-1} X^\top \;\in\; \mathbb{R}^{n \times n},
+\]
+so that \(\hat y = P_X y\).
+\end{definition}
+
+\(P_X\) has three structural properties characterizing an orthogonal projection:
+
+\vspace{2mm}
+{\centering
+\begin{tabular}{l l l}
+\toprule
+\textbf{Property} & \textbf{Statement} & \textbf{Verification} \\
+\midrule
+\textbf{Symmetric}  & \(P_X^\top = P_X\) & \((X(X^\top X)^{-1} X^\top)^\top = X(X^\top X)^{-1} X^\top\) \\
+\textbf{Idempotent} & \(P_X^2 = P_X\) & \(X(X^\top X)^{-1} (X^\top X)(X^\top X)^{-1} X^\top = X(X^\top X)^{-1} X^\top\) \\
+\textbf{Range}      & \(\img(P_X) = \col(X)\) & \(P_X(Xb) = Xb\) for every \(b \in \mathbb{R}^p\); \(P_X y \in \col(X)\) by inspection \\
+\bottomrule
+\end{tabular}\par}
+\vspace{2mm}
+
+Symmetry uses \(((X^\top X)^{-1})^\top = (X^\top X)^{-1}\), since the inverse of a symmetric matrix is symmetric. Idempotence collapses the middle factor \((X^\top X)(X^\top X)^{-1}\) to \(I_p\).
+
+\subsection{Ill-conditioning: variance blow-up and the case for regularization}\label{sec:2.1.5}
+
+\begin{lemma}[Linear transformation of variance]\label{lem:var-linear}
+For a random vector \(z \in \mathbb{R}^n\) with finite second moments and any constant matrix \(B \in \mathbb{R}^{m \times n}\), \(\var(Bz) = B\,\var(z)\,B^\top\). Conditionally, if \(B\) is a function of variables in the conditioning set,
+\[
+  \var(Bz \mid X) \;=\; B\,\var(z \mid X)\,B^\top.
+\]
+\end{lemma}
+
+\begin{proof}
+By definition, \(\var(Bz) = \expc\bigl[(Bz - \expc[Bz])(Bz - \expc[Bz])^\top\bigr]\). Linearity of expectation gives \(\expc[Bz] = B\expc[z]\), hence \(Bz - \expc[Bz] = B(z - \expc z)\). Substituting,
+\[
+  \var(Bz) \;=\; \expc\bigl[B(z - \expc z)(z - \expc z)^\top B^\top\bigr] \;=\; B\,\expc\bigl[(z - \expc z)(z - \expc z)^\top\bigr]\,B^\top \;=\; B\,\var(z)\,B^\top,
+\]
+pulling \(B\) and \(B^\top\) out of the (linear) expectation. The conditional version is identical with \(\expc[\cdot \mid X]\) throughout, since \(B\) is constant given \(X\).
+\end{proof}
+
+\begin{theorem}[Variance of OLS]\label{thm:ols-var}
+Under \Aref{1}--\Aref{4}, conditional on \(X\),
+\[
+  \var(\hat\beta \mid X) \;=\; \sigma^2 (X^\top X)^{-1}.
+\]
+\end{theorem}
+
+\begin{proof}
+Set \(M := (X^\top X)^{-1} X^\top\). Substitute \(y = X\beta + \varepsilon\):
+\[
+  \hat\beta \;=\; My \;=\; MX\beta + M\varepsilon \;=\; \beta + M\varepsilon,
+\]
+using \(MX = (X^\top X)^{-1} X^\top X = I_p\). Conditional on \(X\), \(M\) is constant; by Lemma~\ref{lem:var-linear} and \Aref{4} (\(\var(\varepsilon \mid X) = \sigma^2 I_n\)),
+\[
+  \var(\hat\beta \mid X) \;=\; \var(M\varepsilon \mid X) \;=\; M (\sigma^2 I_n) M^\top \;=\; \sigma^2 M M^\top.
+\]
+Compute \(M M^\top = (X^\top X)^{-1} X^\top X (X^\top X)^{-1} = (X^\top X)^{-1}\).
+\end{proof}
+
+\begin{definition}[Condition number]\label{def:cond}
+For symmetric \(A \succ 0\) with eigenvalues \(\lambda_1 \geqslant \cdots \geqslant \lambda_p > 0\), the \emph{condition number} is \(\kappa(A) := \lambda_1 / \lambda_p\). \(\kappa\) is large when some eigenvalue is much smaller than the largest.
+\end{definition}
+
+Apply Theorem~\ref{thm:spectral} to \(X^\top X\) with eigenvalues \(\lambda_1 \geqslant \cdots \geqslant \lambda_p\) and orthonormal eigenvectors \(q_j\). By Theorem~\ref{thm:ols-var},
+\[
+  \var(\hat\beta \mid X) \;=\; \sigma^2 (X^\top X)^{-1} \;=\; \sigma^2 \sum_{j=1}^p \lambda_j^{-1} q_j q_j^\top.
+\]
+The variance along the \(j\)-th principal direction is \(\sigma^2 / \lambda_j\). When \(\lambda_p\) is small, the variance along \(q_p\) explodes; this is the algebraic face of \emph{near-collinearity} in the columns of \(X\).
+
+\vspace{2mm}
+{\centering
+\begin{tabular}{l l l}
+\toprule
+\textbf{Failure mode} & \textbf{Algebraic signature} & \textbf{OLS consequence} \\
+\midrule
+Near-collinearity & \(\lambda_p \to 0^+\), high \(\kappa(X^\top X)\) & some \(\var(\hat\beta_j) \to \infty\) \\
+Exact collinearity & \(\lambda_p = 0\) & \(X^\top X\) singular; \Aref{2} fails; \(\hat\beta\) undefined \\
+\(p > n\) & \(\lambda_{n+1} = \cdots = \lambda_p = 0\) & \Aref{2} fails; \(\hat\beta\) undefined \\
+\bottomrule
+\end{tabular}\par}
+\vspace{2mm}
+
+All three share the same algebraic root: an eigenvalue of \(X^\top X\) is too small or zero. Regularization addresses this by perturbing \(X^\top X\) so its eigenvalues are bounded away from zero.
+
+\section{Ridge Regression}\label{sec:2.2}
+
+\subsection{The ridge problem and closed-form solution}\label{sec:2.2.1}
+
+\begin{definition}[Ridge regression]\label{def:ridge}
+For a tuning parameter \(\lambda \geqslant 0\), the \emph{ridge regression} estimator minimizes the average squared-error loss with an \(\ell_2\) penalty on \(\beta\):
+\[
+  \hat\beta_\lambda \;:=\; \arg\min_{\beta \in \mathbb{R}^p}\, R_\lambda(\beta), \qquad R_\lambda(\beta) \;:=\; \tfrac{1}{2n}\|y - X\beta\|^2 + \tfrac{\lambda}{2}\|\beta\|^2.
+\]
+At \(\lambda = 0\) this recovers OLS; for \(\lambda > 0\) the penalty pulls \(\hat\beta_\lambda\) toward the origin, trading bias for variance. The factor \(1/(2n)\) follows the modern ML convention (\texttt{glmnet}, scikit-learn): it makes \(\lambda\) approximately invariant to sample size and lets the formulas below match production solvers without rescaling.
+\end{definition}
+
+\begin{lemma}[Invertibility of \(X^\top X + n\lambda I_p\)]\label{lem:ridge-inv}
+For any \(X \in \mathbb{R}^{n \times p}\) and any \(\lambda > 0\), \(X^\top X + n\lambda I_p\) is positive definite, hence invertible. No assumption on \(\rk(X)\) is needed; the ridge estimator is well-defined even when \Aref{2} fails.
+\end{lemma}
+
+\begin{proof}
+For any \(v \in \mathbb{R}^p\) with \(v \neq 0\),
+\[
+  v^\top (X^\top X + n\lambda I_p)\, v \;=\; \|Xv\|^2 + n\lambda \|v\|^2 \;\geqslant\; n\lambda \|v\|^2 \;>\; 0,
+\]
+so \(X^\top X + n\lambda I_p \succ 0\). By Theorem~\ref{thm:spectral}, all its eigenvalues are positive, and the inverse exists in spectral form.
+\end{proof}
+
+\begin{theorem}[Closed-form ridge estimator]\label{thm:ridge-closed}
+For any \(\lambda > 0\), the unique minimizer of \(R_\lambda\) on \(\mathbb{R}^p\) is
+\[
+  \hat\beta_\lambda \;=\; (X^\top X + n\lambda I_p)^{-1}\, X^\top y.
+\]
+\end{theorem}
+
+\begin{proof}
+Expand \(R_\lambda\):
+\[
+  R_\lambda(\beta) \;=\; \tfrac{1}{2n}\bigl(y^\top y - 2 \beta^\top X^\top y + \beta^\top X^\top X \beta\bigr) + \tfrac{\lambda}{2} \beta^\top \beta.
+\]
+By Lemma~\ref{lem:matrix-calc}, the row-vector gradient is
+\[
+  D R_\lambda(\beta) \;=\; -\tfrac{1}{n}\, y^\top X + \tfrac{1}{n}\,\beta^\top X^\top X + \lambda\, \beta^\top \;=\; \tfrac{1}{n}\,\beta^\top (X^\top X + n\lambda I_p) - \tfrac{1}{n}\,y^\top X.
+\]
+Setting \(D R_\lambda(\beta) = 0\) and transposing gives the \emph{ridge normal equation}
+\[
+  (X^\top X + n\lambda I_p)\, \hat\beta_\lambda \;=\; X^\top y.
+\]
+By Lemma~\ref{lem:ridge-inv}, the coefficient matrix is invertible, so \(\hat\beta_\lambda = (X^\top X + n\lambda I_p)^{-1} X^\top y\). The Hessian \(\nabla^2 R_\lambda = \tfrac{1}{n}(X^\top X + n\lambda I_p) \succ 0\), so \(R_\lambda\) is strictly convex and \(\hat\beta_\lambda\) is the unique global minimum.
+\end{proof}
+
+When \(X^\top X\) has eigenvalues \(\sigma_1^2 \geqslant \cdots \geqslant \sigma_p^2\) (the squared singular values of \(X\)), the perturbed matrix \(X^\top X + n\lambda I_p\) has eigenvalues \(\sigma_j^2 + n\lambda\). The ridge condition number drops from \(\kappa(X^\top X) = \sigma_1^2/\sigma_p^2\) to
+\[
+  \kappa(X^\top X + n\lambda I_p) \;=\; \frac{\sigma_1^2 + n\lambda}{\sigma_p^2 + n\lambda},
+\]
+which is much smaller when \(\sigma_p^2 \ll n\lambda\): the penalty term lifts the spectrum away from zero, remedying the failures catalogued in \S\ref{sec:2.1.5}.
+
+\subsection{Principal-component shrinkage}\label{sec:2.2.2}
+
+By Theorem~\ref{thm:spectral} applied to the PSD matrix \(X^\top X\), there exist orthonormal eigenvectors \(v_1, \ldots, v_p \in \mathbb{R}^p\) (the \emph{right singular vectors} of \(X\)) and eigenvalues \(\lambda_1 \geqslant \cdots \geqslant \lambda_p \geqslant 0\), giving
+\[
+  X^\top X \;=\; V \Lambda V^\top, \qquad V := [v_1\ \cdots\ v_p],\ \Lambda := \diag(\lambda_1, \ldots, \lambda_p).
+\]
+The \emph{singular values} of \(X\) are \(\sigma_j := \sqrt{\lambda_j} \geqslant 0\) (so \(\sigma_1 \geqslant \cdots \geqslant \sigma_p \geqslant 0\)). For indices with \(\sigma_j > 0\), define the corresponding \emph{left singular vectors} in \(\mathbb{R}^n\) by
+\[
+  u_j \;:=\; \frac{X v_j}{\sigma_j}.
+\]
+
+\begin{lemma}[Orthonormality of left singular vectors]\label{lem:left-sing-orth}
+For indices \(j, k\) with \(\sigma_j, \sigma_k > 0\), \(u_j^\top u_k = \delta_{jk}\). \(X v_j = \sigma_j u_j\) for those \(j\), and \(X v_j = 0\) when \(\sigma_j = 0\).
+\end{lemma}
+
+\begin{proof}
+\(u_j^\top u_k = (Xv_j)^\top (Xv_k) / (\sigma_j \sigma_k) = v_j^\top X^\top X v_k / (\sigma_j \sigma_k) = \lambda_k\, (v_j^\top v_k) / (\sigma_j \sigma_k) = \delta_{jk}\) on simplifying \(\lambda_k v_j^\top v_k = \sigma_k^2 \delta_{jk}\) and \(\sigma_j \sigma_k = \sigma_k^2\) when \(j = k\). The relation \(X v_j = \sigma_j u_j\) for \(\sigma_j > 0\) is the definition. When \(\sigma_j = 0\), \(\|X v_j\|^2 = v_j^\top X^\top X v_j = \lambda_j = 0\), so \(X v_j = 0\).
+\end{proof}
+
+\begin{theorem}[Ridge as principal-component shrinkage]\label{thm:ridge-svd-shrink}
+The ridge estimator and fitted values decompose as
+\[
+  \hat\beta_\lambda \;=\; \sum_{j : \sigma_j > 0} \frac{\sigma_j (u_j^\top y)}{\sigma_j^2 + n\lambda}\, v_j, \qquad \hat y_\lambda \;:=\; X \hat\beta_\lambda \;=\; \sum_{j : \sigma_j > 0} \frac{\sigma_j^2}{\sigma_j^2 + n\lambda}\, (u_j^\top y)\, u_j.
+\]
+Each \emph{shrinkage factor} \(\sigma_j^2 / (\sigma_j^2 + n\lambda) \in [0, 1)\) for \(\lambda > 0\), approaching 1 as \(\sigma_j^2 \to \infty\) and 0 as \(\sigma_j^2 \to 0\).
+\end{theorem}
+
+\begin{proof}
+Since \(VV^\top = I_p\), \(X^\top X + n\lambda I_p = V \Lambda V^\top + n\lambda VV^\top = V(\Lambda + n\lambda I_p) V^\top\), and inverting (Lemma~\ref{lem:left-right-inv}) gives \((X^\top X + n\lambda I_p)^{-1} = V(\Lambda + n\lambda I_p)^{-1} V^\top\). Therefore
+\[
+  \hat\beta_\lambda \;=\; (X^\top X + n\lambda I_p)^{-1} X^\top y \;=\; V(\Lambda + n\lambda I_p)^{-1} V^\top X^\top y.
+\]
+The \(j\)-th coordinate of \(V^\top \hat\beta_\lambda\) is
+\[
+  v_j^\top \hat\beta_\lambda \;=\; \frac{v_j^\top X^\top y}{\sigma_j^2 + n\lambda} \;=\; \frac{(X v_j)^\top y}{\sigma_j^2 + n\lambda} \;=\; \begin{cases} \sigma_j (u_j^\top y) / (\sigma_j^2 + n\lambda) & \text{if } \sigma_j > 0, \\ 0 & \text{if } \sigma_j = 0,\end{cases}
+\]
+using \(X v_j = \sigma_j u_j\) (Lemma~\ref{lem:left-sing-orth}). Reassembling \(\hat\beta_\lambda = \sum_j (v_j^\top \hat\beta_\lambda) v_j\) gives the first formula; substituting into \(\hat y_\lambda = X \hat\beta_\lambda\) and applying \(X v_j = \sigma_j u_j\) gives the second.
+\end{proof}
+
+\textbf{Interpretation.} At \(\lambda = 0\) under \Aref{2}, \(\hat y = \sum_j (u_j^\top y)\, u_j\) is the orthogonal projection of \(y\) onto \(\col(X) = \mathrm{span}(u_1, \ldots, u_p)\). Ridge with \(\lambda > 0\) damps each principal direction \(u_j\) by \(\sigma_j^2/(\sigma_j^2 + n\lambda)\): high-signal directions (\(\sigma_j^2 \gg n\lambda\)) pass nearly unchanged, while low-signal directions (\(\sigma_j^2 \ll n\lambda\)), precisely those exposed by ill-conditioning in \S\ref{sec:2.1.5}, are damped almost to zero.
+
+\subsection{Effective degrees of freedom}\label{sec:2.2.3}
+
+OLS fits exactly \(p\) parameters; ridge constrains all of them simultaneously. To compare model complexity across \(\lambda\), we replace the parameter count with a matrix-valued generalization.
+
+\begin{definition}[Ridge hat matrix; effective degrees of freedom]\label{def:ridge-df}
+The \emph{ridge hat matrix} is
+\[
+  H_\lambda \;:=\; X (X^\top X + n\lambda I_p)^{-1} X^\top \;\in\; \mathbb{R}^{n \times n}, \qquad \hat y_\lambda \;=\; H_\lambda\, y.
+\]
+The \emph{effective degrees of freedom} is \(\df(\lambda) := \tr(H_\lambda)\), where \(\tr(M) := \sum_i M_{ii}\) is the \emph{trace} (sum of diagonal entries) of a square matrix \(M\).
+\end{definition}
+
+\begin{lemma}[Cyclic property of trace]\label{lem:trace-cyclic}
+For any \(A \in \mathbb{R}^{m \times n}\) and \(B \in \mathbb{R}^{n \times m}\), \(\tr(AB) = \tr(BA)\).
+\end{lemma}
+
+\begin{proof}
+\(\tr(AB) = \sum_i (AB)_{ii} = \sum_{i, k} A_{ik} B_{ki} = \sum_{k, i} B_{ki} A_{ik} = \sum_k (BA)_{kk} = \tr(BA)\).
+\end{proof}
+
+For OLS (\(\lambda = 0\) under \Aref{2}), \(H_\lambda\) reduces to \(P_X\) (Definition~\ref{def:hat-matrix}) and Lemma~\ref{lem:trace-cyclic} gives
+\[
+  \df(0) \;=\; \tr(X(X^\top X)^{-1} X^\top) \;=\; \tr((X^\top X)^{-1} X^\top X) \;=\; \tr(I_p) \;=\; p,
+\]
+recovering the familiar count of fitted parameters.
+
+\begin{theorem}[Ridge effective degrees of freedom]\label{thm:ridge-df}
+\[
+  \df(\lambda) \;=\; \sum_{j=1}^p \frac{\sigma_j^2}{\sigma_j^2 + n\lambda}.
+\]
+At \(\lambda = 0\), \(\df(0) = \rk(X)\) (so \(p\) under \Aref{2}). As \(\lambda \to \infty\), \(\df(\lambda) \to 0\). The map \(\lambda \mapsto \df(\lambda)\) is smooth and strictly monotone-decreasing on \([0, \infty)\) whenever \(X\) has at least one nonzero singular value.
+\end{theorem}
+
+\begin{proof}
+Apply Lemma~\ref{lem:trace-cyclic} with \(A = X(X^\top X + n\lambda I_p)^{-1}\) and \(B = X^\top\):
+\[
+  \tr(H_\lambda) \;=\; \tr\bigl(X^\top X (X^\top X + n\lambda I_p)^{-1}\bigr).
+\]
+Substitute \(X^\top X = V \Lambda V^\top\) and \((X^\top X + n\lambda I_p)^{-1} = V (\Lambda + n\lambda I_p)^{-1} V^\top\); applying \(V^\top V = I_p\) and Lemma~\ref{lem:trace-cyclic} again,
+\[
+  \tr(H_\lambda) \;=\; \tr\bigl(\Lambda (\Lambda + n\lambda I_p)^{-1}\bigr) \;=\; \sum_j \frac{\sigma_j^2}{\sigma_j^2 + n\lambda}.
+\]
+
+At \(\lambda \downarrow 0\), each summand with \(\sigma_j > 0\) tends to 1; summands with \(\sigma_j = 0\) are 0 throughout. Hence \(\df(0) = \#\{j : \sigma_j > 0\} = \rk(X)\). As \(\lambda \to \infty\), each summand \(\to 0\). Each summand has derivative \(-n\sigma_j^2/(\sigma_j^2 + n\lambda)^2 < 0\) when \(\sigma_j > 0\); strict monotonicity follows.
+\end{proof}
+
+\textbf{Interpretation.} Ridge produces a continuous family of fits indexed by \(\lambda \in [0, \infty)\), interpolating between full OLS (\(\df = \rk(X)\)) and the zero predictor (\(\df = 0\)). The map \(\lambda \mapsto \df(\lambda)\) is monotone and smooth, so practitioners often parameterize ridge by \(\df\) directly: the \(\lambda\) yielding \(\df(\lambda) = p/2\) sits halfway between OLS and zero in complexity.
+
+\subsection{Bias--variance tradeoff}\label{sec:2.2.4}
+
+\emph{Ridge trades a controllable deterministic bias for a reduction in stochastic variance.} OLS is unbiased under \Aref{3} (Theorem~\ref{thm:ols-estimator}); ridge biases toward zero, paying off when the variance reduction outweighs the squared bias. The next theorems quantify both terms.
+
+\begin{theorem}[Bias and variance of ridge]\label{thm:ridge-bias-var}
+Let \(M_\lambda := (X^\top X + n\lambda I_p)^{-1}\). Under \Aref{1}--\Aref{4}, conditional on \(X\):
+\begin{align*}
+  \expc[\hat\beta_\lambda \mid X] - \beta &\;=\; -n\lambda\, M_\lambda\, \beta, \\
+  \var(\hat\beta_\lambda \mid X) &\;=\; \sigma^2\, M_\lambda\, X^\top X\, M_\lambda \;=\; \sigma^2 (M_\lambda - n\lambda\, M_\lambda^2).
+\end{align*}
+In the eigenbasis \(V\) of \(X^\top X\), writing \(\beta_j := v_j^\top \beta\),
+\[
+  v_j^\top\bigl(\expc[\hat\beta_\lambda \mid X] - \beta\bigr) \;=\; -\frac{n\lambda\, \beta_j}{\sigma_j^2 + n\lambda}, \qquad v_j^\top \var(\hat\beta_\lambda \mid X)\, v_j \;=\; \frac{\sigma^2\, \sigma_j^2}{(\sigma_j^2 + n\lambda)^2}.
+\]
+\end{theorem}
+
+\begin{proof}
+Substitute \(y = X\beta + \varepsilon\) into \(\hat\beta_\lambda = M_\lambda X^\top y\):
+\[
+  \hat\beta_\lambda \;=\; M_\lambda X^\top X \beta + M_\lambda X^\top \varepsilon.
+\]
+Conditional on \(X\), \Aref{3} gives \(\expc[\varepsilon \mid X] = 0\), so \(\expc[\hat\beta_\lambda \mid X] = M_\lambda X^\top X\, \beta\). From \((X^\top X + n\lambda I_p) M_\lambda = I_p\) we get \(X^\top X M_\lambda = I_p - n\lambda M_\lambda\); commuting \(X^\top X\) and \(M_\lambda\) (both diagonal in \(V\)) gives \(M_\lambda X^\top X = I_p - n\lambda M_\lambda\). Hence
+\[
+  \expc[\hat\beta_\lambda \mid X] - \beta \;=\; -n\lambda\, M_\lambda\, \beta.
+\]
+For the variance, apply Lemma~\ref{lem:var-linear} with \(B = M_\lambda X^\top\) and \Aref{4}:
+\[
+  \var(\hat\beta_\lambda \mid X) \;=\; \sigma^2\, M_\lambda X^\top X M_\lambda \;=\; \sigma^2(M_\lambda - n\lambda\, M_\lambda^2).
+\]
+The eigenbasis expressions follow from \(M_\lambda v_j = (\sigma_j^2 + n\lambda)^{-1} v_j\).
+\end{proof}
+
+\begin{theorem}[Ridge strictly improves OLS for some \(\lambda > 0\)]\label{thm:ridge-mse-beats-ols}
+Under \Aref{1}--\Aref{4} and \Aref{2} (so all \(\sigma_j > 0\)), define the conditional MSE
+\[
+  \mathrm{MSE}(\lambda) \;:=\; \expc[\|\hat\beta_\lambda - \beta\|^2 \mid X] \;=\; \|\expc[\hat\beta_\lambda \mid X] - \beta\|^2 + \tr\bigl(\var(\hat\beta_\lambda \mid X)\bigr).
+\]
+Then \(\mathrm{MSE}\) is differentiable on \([0, \infty)\) with \(\mathrm{MSE}'(0) = -2 n\sigma^2 \sum_j \sigma_j^{-4} < 0\). Consequently \(\mathrm{MSE}(\lambda) < \mathrm{MSE}(0)\) for all sufficiently small \(\lambda > 0\): ridge strictly improves on OLS in MSE for some positive \(\lambda\).
+\end{theorem}
+
+\begin{proof}
+By Theorem~\ref{thm:ridge-bias-var}, summing over the eigenbasis,
+\[
+  \mathrm{MSE}(\lambda) \;=\; \sum_{j=1}^p \frac{(n\lambda)^2 \beta_j^2 + \sigma^2 \sigma_j^2}{(\sigma_j^2 + n\lambda)^2}.
+\]
+Differentiating the \(j\)-th summand at \(\lambda = 0\) gives \(-2 n\sigma^2 / \sigma_j^4\); summing,
+\[
+  \mathrm{MSE}'(0) \;=\; -2 n\sigma^2 \sum_{j=1}^p \sigma_j^{-4} \;<\; 0.
+\]
+By continuity, \(\mathrm{MSE}(\lambda) < \mathrm{MSE}(0)\) for all sufficiently small \(\lambda > 0\).
+\end{proof}
+
+\textbf{Caveats.} The MSE-optimal \(\lambda^\star\) depends on the unknown \(\beta\) (through the \(\beta_j\)), the unknown \(\sigma^2\), and the eigenvalue structure of \(X^\top X\), so \(\lambda^\star\) cannot be computed from data alone. Practitioners select \(\lambda\) by cross-validation (Unit~4); the theorem only guarantees that some positive \(\lambda\) is theoretically beneficial. The result also requires \Aref{2}: when \Aref{2} fails, OLS is undefined, and ridge is the only option.
+
+\subsection{Standardization is non-negotiable}\label{sec:2.2.5}
+
+OLS is invariant under non-singular column rescaling: if \(\tilde X = X D\) for invertible diagonal \(D = \diag(d_1, \ldots, d_p)\), then
+\[
+  \hat\beta_{\mathrm{OLS}}^{\tilde X} \;=\; (\tilde X^\top \tilde X)^{-1} \tilde X^\top y \;=\; D^{-1} (X^\top X)^{-1} D^{-1} \cdot D X^\top y \;=\; D^{-1} \hat\beta_{\mathrm{OLS}}^X,
+\]
+so the fitted values \(\tilde X \hat\beta^{\tilde X} = XDD^{-1} \hat\beta^X = X \hat\beta^X\) are unchanged: rescaling columns alters the coefficients but not the predictions. Ridge does not enjoy this invariance.
+
+\begin{theorem}[Ridge fit depends on column scales]\label{thm:ridge-scale-dep}
+For ridge at the same \(\lambda > 0\), the fitted values \(X \hat\beta_\lambda^X\) and \(\tilde X \hat\beta_\lambda^{\tilde X}\) generally differ when \(\tilde X = XD\) and \(D \neq I_p\).
+\end{theorem}
+
+\begin{proof}
+Take \(p = 1\), \(X = (1, 1)^\top\), \(y = (1, 0)^\top\), and \(\tilde X = (c, c)^\top = X \cdot c\) for some \(c > 0\), \(c \neq 1\). Direct computation:
+\[
+  \hat\beta_\lambda^X \;=\; \frac{X^\top y}{X^\top X + n\lambda} \;=\; \frac{1}{2 + 2\lambda}, \qquad \hat\beta_\lambda^{\tilde X} \;=\; \frac{c}{2c^2 + 2\lambda},
+\]
+using \(n = 2\). The fitted value at any row of \(X\) is \(1/(2 + 2\lambda)\); at any row of \(\tilde X\) it is \(c \cdot \hat\beta_\lambda^{\tilde X} = c^2/(2c^2 + 2\lambda) = 1/(2 + 2\lambda c^{-2})\). These differ whenever \(c \neq 1\) and \(\lambda > 0\).
+\end{proof}
+
+The penalty \((\lambda/2) \|\beta\|^2\) implicitly assumes coefficients live on a common scale; rescaling column \(j\) by \(d_j\) changes the \emph{effective} penalty on that coordinate from \(\lambda\) to \(\lambda d_j^{-2}\).
+
+\textbf{Practical consequence: standardize.} Before fitting ridge, transform each column of \(X\) to mean zero and unit variance:
+\[
+  X_{ij} \;\leftarrow\; \frac{X_{ij} - \bar{X}_j}{s_j}, \qquad \bar{X}_j := \frac{1}{n}\sum_i X_{ij}, \quad s_j := \sqrt{\frac{1}{n} \sum_i (X_{ij} - \bar{X}_j)^2}.
+\]
+With standardized columns, all coefficients live on a comparable unit-variance scale, so a single \(\lambda\) treats them uniformly.
+
+\textbf{Intercept handling.} The intercept is excluded from the penalty: penalizing it would let the ridge fit depend on the location of \(y\), violating \emph{translation invariance}. A simple shift of the target (Celsius to Kelvin, log-prices in cents to dollars) would change predictions, which is unacceptable. Standard practice: center \(y\) (subtract \(\bar y\)) and \(X\) (subtract column means), drop the intercept column, fit \(\hat\beta\) on the centered, standardized data.
+
+\textbf{Un-scaling for prediction.} The coefficient vector returned by the algorithm lives on the standardized scale; before applying it to raw data, transform back:
+\[
+  \hat\beta_j^{\mathrm{orig}} \;=\; \frac{\hat\beta_j}{s_j}, \qquad \hat\beta_0^{\mathrm{orig}} \;=\; \bar y \;-\; \sum_{j=1}^{p} \bar X_j\, \hat\beta_j^{\mathrm{orig}}.
+\]
+The first formula reverses the column scaling; the second reconstructs the intercept on the original $y$-scale. \texttt{glmnet} returns coefficients already un-scaled by default; a custom solver must perform this transformation explicitly before predicting on new data.
+
+Standardize columns, exclude the intercept from the penalty, un-scale before prediction: forgetting any of the three is the most common ridge misuse.
+
+\section{Lasso}\label{sec:2.3}
+
+Ridge shrinks every coefficient toward zero but leaves all $p$ of them nonzero. Selection requires a penalty that yields exact zeros: the \emph{Lasso} replaces $\ell_2$ by $\ell_1$.
+
+\subsection{The Lasso problem and \(\ell_1\) geometry}\label{sec:2.3.1}
+
+\begin{definition}[Lasso regression]\label{def:lasso}
+For tuning parameter $\lambda \geqslant 0$, the \emph{Lasso} estimator minimizes the average squared-error loss with an $\ell_1$ penalty on $\beta$:
+\[
+  \hat\beta_\lambda^{\mathrm{L}} \;:=\; \arg\min_{\beta \in \mathbb{R}^p}\, R_\lambda^{\mathrm{L}}(\beta), \qquad R_\lambda^{\mathrm{L}}(\beta) \;:=\; \tfrac{1}{2n}\|y - X\beta\|^2 + \lambda \|\beta\|_1,
+\]
+where $\|\beta\|_1 := \sum_{j=1}^{p} |\beta_j|$. At $\lambda = 0$ this recovers OLS; for $\lambda$ large enough, $\hat\beta_\lambda^{\mathrm{L}} = 0$. The $1/(2n)$ scaling matches \ref{def:ridge}, keeping $\lambda$ comparable across Ridge, Lasso, and Elastic Net (and matching \texttt{glmnet}).
+\end{definition}
+
+Ridge's $\ell_2$ penalty is everywhere differentiable; the $\ell_1$ penalty has kinks at $\beta_j = 0$. The kinks are the source of sparsity: the optimum can sit at one, fixing $\beta_j$ to exactly $0$. The next subsection makes this precise via subgradients and KKT.
+
+\textbf{Constrained reformulation.} For every $\lambda > 0$ there is $t = t(\lambda) > 0$ with
+\[
+  \hat\beta_\lambda^{\mathrm{L}} \;=\; \arg\min_{\|\beta\|_1 \leqslant t} \|y - X\beta\|^2.
+\]
+This is the standard Lagrangian duality for convex problems (Unit 6 develops the full theory). The constrained form makes the geometry transparent: minimize the squared-error contour over the $\ell_1$ ball $B_1(t) := \{\beta : \|\beta\|_1 \leqslant t\}$.
+
+\textbf{$\ell_1$ ball vs $\ell_2$ ball.} In $\mathbb{R}^p$, the $\ell_1$ ball is a polytope with $2p$ vertices on the coordinate axes; the $\ell_2$ ball is a sphere with no vertices. Each axis-aligned vertex of $B_1(t)$ has $p - 1$ coordinates equal to zero.
+
+<<lasso-l1-l2-ball, fig.width=6, fig.height=2.6, out.width="0.95\\linewidth", echo=FALSE, message=FALSE>>=
+library(ggplot2); library(patchwork)
+theta <- seq(0, 2*pi, length.out = 400)
+ols <- c(1.4, 0.8); ols_norm <- sqrt(sum(ols^2))
+
+ball_l1 <- data.frame(x = c(1, 0, -1, 0, 1), y = c(0, 1, 0, -1, 0))
+ball_l2 <- data.frame(x = cos(theta), y = sin(theta))
+v <- c(1, 0); r1 <- sqrt(sum((ols - v)^2))
+contour_l1 <- data.frame(x = ols[1] + r1*cos(theta), y = ols[2] + r1*sin(theta))
+r2 <- ols_norm - 1
+contour_l2 <- data.frame(x = ols[1] + r2*cos(theta), y = ols[2] + r2*sin(theta))
+
+base <- function() list(
+  geom_point(aes(x = ols[1], y = ols[2]), color = "red3", size = 1.4),
+  annotate("text", x = ols[1] + 0.08, y = ols[2] + 0.18, label = "hat(beta)[OLS]", parse = TRUE, hjust = 0, size = 3),
+  coord_equal(), xlim(-1.4, 2.4), ylim(-1.3, 1.6),
+  labs(x = expression(beta[1]), y = expression(beta[2])),
+  theme_minimal(base_size = 9), theme(plot.title = element_text(size = 9))
+)
+
+p1 <- ggplot() + geom_polygon(data = ball_l1, aes(x, y), fill = "skyblue", alpha = 0.4, color = "steelblue") +
+  geom_path(data = contour_l1, aes(x, y), color = "red3", lty = 2) +
+  geom_point(aes(x = v[1], y = v[2]), size = 1.4) +
+  annotate("text", x = v[1] + 0.07, y = v[2] - 0.18, label = expression(beta[2] == 0), hjust = 0, size = 2.8) +
+  base() + labs(title = expression("Lasso: " * ell[1] * " ball, touch at corner"))
+
+p2 <- ggplot() + geom_polygon(data = ball_l2, aes(x, y), fill = "skyblue", alpha = 0.4, color = "steelblue") +
+  geom_path(data = contour_l2, aes(x, y), color = "red3", lty = 2) +
+  geom_point(aes(x = ols[1]/ols_norm, y = ols[2]/ols_norm), size = 1.4) +
+  base() + labs(title = expression("Ridge: " * ell[2] * " ball, smooth tangent"))
+
+p1 + p2
+@
+
+\noindent The OLS objective has elliptical (here circular for clarity) contours centered at $\hat\beta_{\mathrm{OLS}}$. The constrained minimum is the smallest contour that still touches the ball.
+
+\begin{remark}[Why corners $\Rightarrow$ sparsity]
+When $\hat\beta_{\mathrm{OLS}}$ lies outside the $\ell_1$ ball, the contact point is generically a vertex of $B_1(t)$, which has $p - 1$ zero coordinates. The same construction with $B_2(t)$ produces a tangency on the smooth sphere, where all coordinates are generically nonzero. Lasso's sparsity is a corner phenomenon, not a shrinkage one. The next subsection makes this precise via subgradient calculus.
+\end{remark}
+
+\subsection{Subgradient and KKT conditions}\label{sec:2.3.2}
+
+$R_\lambda^{\mathrm{L}}$ is convex (sum of a convex quadratic and the convex $\ell_1$ norm) but non-differentiable at any $\beta$ with a zero coordinate. The \emph{subgradient} generalizes the gradient to such points; Lasso optimality reads cleanly via subgradient calculus.
+
+\begin{definition}[Subdifferential of $|\cdot|$]\label{def:subdiff-abs}
+The \emph{subdifferential} of the absolute-value function at $x \in \mathbb{R}$ is
+\[
+  \partial |x| \;=\; \begin{cases}
+    \{+1\} & x > 0, \\
+    \{-1\} & x < 0, \\
+    [-1, 1] & x = 0.
+  \end{cases}
+\]
+A vector $g \in \mathbb{R}^p$ is a \emph{subgradient} of $\beta \mapsto \|\beta\|_1$ at $\beta$ if $g_j \in \partial |\beta_j|$ for every $j$.
+\end{definition}
+
+\begin{theorem}[Lasso KKT optimality]\label{thm:lasso-kkt}
+$\hat\beta \in \mathbb{R}^p$ minimizes $R_\lambda^{\mathrm{L}}$ if and only if there exists a subgradient $g$ of $\|\cdot\|_1$ at $\hat\beta$ with
+\[
+  \tfrac{1}{n}\, X_j^\top (y - X\hat\beta) \;=\; \lambda\, g_j, \qquad g_j \in \partial |\hat\beta_j|, \qquad j = 1, \ldots, p.
+\]
+\end{theorem}
+
+\begin{proof}
+$R_\lambda^{\mathrm{L}}$ is convex; the smooth term has gradient $\nabla[\tfrac{1}{2n}\|y - X\beta\|^2] = -\tfrac{1}{n} X^\top (y - X\beta)$, and the non-smooth term has subdifferential $\lambda\, \partial \|\beta\|_1$. The convex sum rule gives
+\[
+  \partial R_\lambda^{\mathrm{L}}(\beta) \;=\; -\tfrac{1}{n} X^\top(y - X\beta) + \lambda\, \partial \|\beta\|_1.
+\]
+Fermat's rule: $\hat\beta$ minimizes $R_\lambda^{\mathrm{L}}$ iff $0 \in \partial R_\lambda^{\mathrm{L}}(\hat\beta)$, equivalently $\tfrac{1}{n} X^\top(y - X\hat\beta) = \lambda g$ for some $g \in \partial \|\hat\beta\|_1$.
+\end{proof}
+
+\noindent Unpacking $\partial |\hat\beta_j|$ from \ref{def:subdiff-abs}, the optimality system splits into two cases:
+\[
+  \tfrac{1}{n}\, X_j^\top (y - X\hat\beta) \;=\; \lambda\, \mathrm{sign}(\hat\beta_j) \quad\text{when } \hat\beta_j \neq 0; \qquad
+  \bigl|\tfrac{1}{n}\, X_j^\top (y - X\hat\beta)\bigr| \;\leqslant\; \lambda \quad\text{when } \hat\beta_j = 0.
+\]
+
+\begin{lemma}[Active/inactive thresholding]\label{lem:lasso-active}
+Let $\hat\beta$ be a Lasso minimizer and $r := y - X\hat\beta$. Then
+\[
+  \bigl|\tfrac{1}{n} X_j^\top r\bigr| \;\leqslant\; \lambda \quad \text{for all } j; \qquad \bigl|\tfrac{1}{n} X_j^\top r\bigr| < \lambda \;\Rightarrow\; \hat\beta_j = 0.
+\]
+\end{lemma}
+
+\begin{proof}
+By Theorem~\ref{thm:lasso-kkt}, $\tfrac{1}{n} X_j^\top r = \lambda g_j$ with $g_j \in [-1, 1]$, so $|\tfrac{1}{n} X_j^\top r| \leqslant \lambda$. If $|\tfrac{1}{n} X_j^\top r| < \lambda$ but $\hat\beta_j \neq 0$, then $g_j \in \{\pm 1\}$, forcing $|\tfrac{1}{n} X_j^\top r| = \lambda$, a contradiction.
+\end{proof}
+
+\begin{remark}
+$\tfrac{1}{n} X_j^\top r$ is the empirical correlation between feature $j$ and the current residual (after standardization, exactly the Pearson correlation). Below threshold $\lambda$, the feature carries less signal than the cost of activating it, and Lasso drives $\hat\beta_j$ to exactly $0$.
+\end{remark}
+
+\subsection{Soft-thresholding: the orthonormal case}\label{sec:2.3.3}
+
+For $X$ with orthonormal columns, the Lasso decouples across coordinates and admits a closed form. The result is the building block for coordinate descent (\S\ref{sec:2.3.4}).
+
+\begin{definition}[Soft-thresholding operator]\label{def:soft-thresh}
+For $a \in \mathbb{R}$ and $\lambda \geqslant 0$,
+\[
+  S_\lambda(a) \;:=\; \mathrm{sign}(a)\, \max(|a| - \lambda,\, 0) \;=\; \begin{cases}
+    a - \lambda & a > \lambda, \\
+    0 & |a| \leqslant \lambda, \\
+    a + \lambda & a < -\lambda.
+  \end{cases}
+\]
+$S_\lambda$ shrinks $a$ toward $0$ by exactly $\lambda$ when $|a| > \lambda$ and clips to $0$ otherwise.
+\end{definition}
+
+\begin{theorem}[Lasso under orthonormal design]\label{thm:lasso-orth}
+If $\tfrac{1}{n} X^\top X = I_p$ (columns scaled so $\tfrac{1}{n} X_j^\top X_j = 1$, mutually orthogonal), then for each $j$,
+\[
+  \hat\beta_j^{\mathrm{L}} \;=\; S_\lambda\bigl(\tfrac{1}{n} X_j^\top y\bigr).
+\]
+\end{theorem}
+
+\begin{proof}
+Under $\tfrac{1}{n} X^\top X = I_p$,
+\[
+  R_\lambda^{\mathrm{L}}(\beta) \;=\; \tfrac{1}{2n}\bigl(\|y\|^2 - 2\beta^\top X^\top y + \beta^\top X^\top X \beta\bigr) + \lambda \|\beta\|_1
+  \;=\; \tfrac{1}{2n}\|y\|^2 + \sum_{j=1}^{p} \bigl[\tfrac{1}{2}\beta_j^2 - a_j \beta_j + \lambda |\beta_j|\bigr],
+\]
+with $a_j := \tfrac{1}{n} X_j^\top y$. The minimization separates across $j$. For each $j$, minimize $f(b) := \tfrac{1}{2}b^2 - a_j b + \lambda |b|$. Three cases:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $b > 0$: $f'(b) = b - a_j + \lambda = 0 \Rightarrow b = a_j - \lambda$, valid iff $a_j > \lambda$.
+\item $b < 0$: $f'(b) = b - a_j - \lambda = 0 \Rightarrow b = a_j + \lambda$, valid iff $a_j < -\lambda$.
+\item $b = 0$: subgradient condition $-a_j + \lambda g = 0$ with $g \in [-1, 1]$, i.e.\ $|a_j| \leqslant \lambda$.
+\end{itemize}
+Combining gives $\hat\beta_j = S_\lambda(a_j)$.
+\end{proof}
+
+\begin{remark}
+Compare ridge under the same design: $\hat\beta_j^{\mathrm{R}} = a_j / (1 + \lambda)$, proportional shrinkage on every coordinate. Lasso's $S_\lambda(a_j)$ kills small $a_j$ exactly and shrinks the survivors by a constant $\lambda$. The two estimators differ qualitatively: ridge softens; Lasso selects.
+\end{remark}
+
+\subsection{Coordinate descent}\label{sec:2.3.4}
+
+Real designs are not orthonormal. The standard fit algorithm exploits the per-coordinate result of \ref{thm:lasso-orth} via \emph{coordinate descent}: cycle through coordinates, optimizing one $\beta_j$ at a time with the others held fixed. Each update is a soft-threshold.
+
+\begin{theorem}[Coordinate-wise Lasso update]\label{thm:lasso-coord}
+Fix $\beta_{-j} := (\beta_1, \ldots, \beta_{j-1}, \beta_{j+1}, \ldots, \beta_p)$ and let $r_{-j} := y - \sum_{k \neq j} X_k \beta_k$ be the partial residual excluding coordinate $j$. The minimizer in $\beta_j$ alone is
+\[
+  \hat\beta_j \;=\; \frac{S_\lambda\bigl(\tfrac{1}{n} X_j^\top r_{-j}\bigr)}{\tfrac{1}{n} X_j^\top X_j}.
+\]
+\end{theorem}
+
+\begin{proof}
+With $\beta_{-j}$ fixed, $R_\lambda^{\mathrm{L}}$ as a function of $\beta_j$ alone is (after expanding the square and dropping additive constants)
+\[
+  \tfrac{1}{2n}(X_j^\top X_j)\,\beta_j^2 - \tfrac{1}{n}(X_j^\top r_{-j})\,\beta_j + \lambda |\beta_j|.
+\]
+Setting $c := \tfrac{1}{n} X_j^\top X_j$ and $a := \tfrac{1}{n} X_j^\top r_{-j}$ reduces to $\tfrac{c}{2} \beta_j^2 - a\beta_j + \lambda|\beta_j|$; the case analysis of \ref{thm:lasso-orth} gives $\hat\beta_j = S_\lambda(a)/c$.
+\end{proof}
+
+\begin{remark}
+After standardization (\S\ref{sec:2.2.5}), $\tfrac{1}{n} X_j^\top X_j = 1$ for every $j$, and the update collapses to
+\[
+  \hat\beta_j \;=\; S_\lambda\bigl(\tfrac{1}{n} X_j^\top r_{-j}\bigr).
+\]
+This is the form \texttt{glmnet} ships: $\lambda$ is comparable across coordinates, and the threshold matches the value reported by the \texttt{cv.glmnet} object directly.
+\end{remark}
+
+\begin{theorem}[Coordinate-descent convergence]\label{thm:cd-conv}
+Let $\beta^{(0)} \in \mathbb{R}^p$. The cyclic coordinate-descent iterates of \ref{thm:lasso-coord} converge to a Lasso minimizer.
+\end{theorem}
+
+\begin{proof}
+Write $f(\beta) := R_\lambda^{\mathrm{L}}(\beta) = g(\beta) + h(\beta)$ where $g(\beta) = \tfrac{1}{2n}\|y - X\beta\|^2$ is convex differentiable and $h(\beta) = \lambda \|\beta\|_1 = \sum_{j=1}^p \lambda |\beta_j|$ is convex and \emph{separable} in the coordinates.
+
+\textbf{Step 1: monotone descent.} Each cyclic update minimizes $f$ exactly along one coordinate (\ref{thm:lasso-coord}), so $f(\beta^{(k+1)}) \leqslant f(\beta^{(k)})$ for every $k$. The sequence $f(\beta^{(k)})$ is bounded below by $0$, so $f^\star := \lim_k f(\beta^{(k)})$ exists.
+
+\textbf{Step 2: bounded iterates.} On the level set $L := \{\beta : f(\beta) \leqslant f(\beta^{(0)})\}$, $\lambda \|\beta\|_1 \leqslant f(\beta^{(0)})$, so $L$ is bounded. Each $\beta^{(k)} \in L$.
+
+\textbf{Step 3: a limit point exists.} By Bolzano--Weierstrass, $\{\beta^{(k)}\}$ has a convergent subsequence $\beta^{(k_l)} \to \beta^\star$.
+
+\textbf{Step 4: $\beta^\star$ satisfies KKT.} Suppose $\beta^\star$ violates \ref{thm:lasso-kkt} at coordinate $j$. The soft-threshold update for coordinate $j$ (\ref{thm:lasso-coord}) is continuous in the other coordinates; at $\beta^\star$ it yields a new value $v \neq \beta_j^\star$ with strict drop $\delta := f(\beta^\star) - f(\beta^\star_{[j \to v]}) > 0$. By continuity, the drop is at least $\delta/2$ at every $\beta^{(k_l)}$ for large $l$, so $f(\beta^{(k_l + 1)}) \leqslant f(\beta^{(k_l)}) - \delta/2$ infinitely often, contradicting $f(\beta^{(k)}) \to f^\star$. Hence $\beta^\star$ satisfies \ref{thm:lasso-kkt} and minimizes $f$.
+
+\textbf{Step 5: full sequence converges.} A second limit point would also satisfy \ref{thm:lasso-kkt} with the same active set $\mathcal{A}$ (under the genericity assumption used in Theorem~\ref{thm:lasso-path}; without it, distinct limit points may have different active sets but identical objective values), hence the same KKT system; strict convexity of $g$ on $\col(X_{\mathcal{A}})$ makes the system's solution unique, so the two limits coincide.
+\end{proof}
+
+\begin{remark}
+Separability is essential: cyclic CD on $\ell_1$ converges, but a non-separable penalty like $\|A\beta\|_1$ with non-diagonal $A$ can stall away from the optimum. \texttt{glmnet} adds active-set strategies, warm starts along the $\lambda$-path, and strong screening rules; runtime drops from $O(np)$ per pass to near-$O(n |\mathcal{A}|)$ for sparse paths.
+\end{remark}
+
+\subsection{Sparsity, paths, and Lasso vs.\ Ridge}\label{sec:2.3.5}
+
+The Lasso solution $\hat\beta_\lambda^{\mathrm{L}}$ traces a continuous, piecewise-linear path in $\beta$ as $\lambda$ varies; coordinates enter and leave the active set at specific knots determined by \ref{lem:lasso-active}.
+
+\begin{theorem}[Piecewise linearity of the Lasso path]\label{thm:lasso-path}
+The map $\lambda \mapsto \hat\beta_\lambda^{\mathrm{L}}$ is continuous and piecewise linear in $\lambda$ on $(0, \infty)$. The active set $\mathcal{A}(\lambda) := \{j : \hat\beta_{\lambda, j}^{\mathrm{L}} \neq 0\}$ is constant on each linear piece, changing only at finitely many knots $\lambda_1 > \lambda_2 > \cdots$.
+\end{theorem}
+
+\begin{proof}
+Fix $\lambda_0 > 0$ and let $\mathcal{A} := \{j : \hat\beta_{\lambda_0, j}^{\mathrm{L}} \neq 0\}$, $s_j := \mathrm{sign}(\hat\beta_{\lambda_0, j}^{\mathrm{L}})$ for $j \in \mathcal{A}$. Assume $X_{\mathcal{A}}$ has full column rank (genericity; holds outside a measure-zero set of designs and is the standard condition for Lasso uniqueness).
+
+\textbf{Affine on each piece.} By the case-split form of \ref{thm:lasso-kkt} for active coordinates,
+\[
+  \tfrac{1}{n}\,X_{\mathcal{A}}^\top \bigl(y - X_{\mathcal{A}}\,\beta_{\mathcal{A}}\bigr) \;=\; \lambda\, s_{\mathcal{A}}.
+\]
+Since $X_{\mathcal{A}}^\top X_{\mathcal{A}}$ is invertible,
+\[
+  \beta_{\mathcal{A}}(\lambda) \;=\; \bigl(X_{\mathcal{A}}^\top X_{\mathcal{A}}\bigr)^{-1} \bigl(X_{\mathcal{A}}^\top y - n\lambda\, s_{\mathcal{A}}\bigr),
+\]
+which is affine in $\lambda$ (off-active coordinates remain $0$).
+
+\textbf{Locally constant active set.} On a neighborhood of $\lambda_0$ where (a) $\mathrm{sign}(\beta_{\mathcal{A}}(\lambda)) = s_{\mathcal{A}}$ and (b) every inactive coordinate satisfies $|\tfrac{1}{n} X_j^\top (y - X_{\mathcal{A}}\,\beta_{\mathcal{A}}(\lambda))| < \lambda$, the formula above gives a Lasso minimizer (it satisfies \ref{thm:lasso-kkt}); by the genericity assumption stated above, the Lasso minimizer is unique, so $\hat\beta_\lambda^{\mathrm{L}}$ is piecewise linear on this neighborhood.
+
+\textbf{Knots.} The active set or sign vector changes at $\lambda$ exactly when one of (a)~(b) becomes a tight equality:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=1pt]
+\item \emph{Departure}: an active coefficient $\beta_{\mathcal{A}, j}(\lambda)$ crosses $0$. Since $\beta_{\mathcal{A}, j}(\lambda)$ is affine in $\lambda$, this happens at a single $\lambda$ value per active coordinate.
+\item \emph{Entry}: an inactive correlation $|\tfrac{1}{n} X_j^\top r(\lambda)|$ rises to $\lambda$. Both sides are affine in $\lambda$ on the current piece, so the equality holds at a single $\lambda$ value per inactive coordinate.
+\end{itemize}
+Each piece thus terminates at a single $\lambda$ (the next knot below). Sweeping $\lambda$ down from $\lambda_{\max} := \max_j |\tfrac{1}{n} X_j^\top y|$ (where $\hat\beta = 0$, by \ref{thm:lasso-kkt}) to $0$ generates finitely many pieces.
+
+\textbf{Continuity.} At a knot, $\beta_{\mathcal{A}}(\lambda)$ from the upper piece matches $\beta_{\mathcal{A}'}(\lambda)$ from the lower piece on the intersection of the two active sets (both formulas reduce to the same KKT system), and the changing coefficient is exactly zero at the knot in both pieces.
+\end{proof}
+
+\begin{lemma}[Active-set cap]\label{lem:n-cap}
+For any $\lambda > 0$, assume $X_{\mathcal{A}(\lambda)}$ has full column rank (genericity, as in Theorem~\ref{thm:lasso-path}). Then $|\mathcal{A}(\lambda)| \leqslant \min(n, p)$.
+\end{lemma}
+
+\begin{proof}
+The genericity assumption gives $X_{\mathcal{A}}^\top X_{\mathcal{A}}$ invertible, so $\rk(X_{\mathcal{A}}) = |\mathcal{A}|$. Since $\rk(X_{\mathcal{A}}) \leqslant \min(n, p)$, we have $|\mathcal{A}| \leqslant \min(n, p)$.
+\end{proof}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{Ridge vs.\ Lasso.} Ridge shrinks every coordinate continuously; the path is everywhere differentiable in $\lambda$ and never produces exact zeros. Lasso has piecewise-linear paths with kinks at knots; coordinates take values exactly $0$ on long intervals.
+\item \emph{Variable-selection cap.} \ref{lem:n-cap} is the source of Lasso's $p > n$ behavior: the Lasso can select at most $n$ variables. With $p \gg n$ (genomics, text features), this is a hard ceiling; if the truth has more than $n$ relevant features, Lasso cannot recover all of them. The Elastic Net (\S\ref{sec:2.4}) lifts this cap.
+\item \emph{Where Ridge wins.} Ridge handles collinearity via spectral lift (\S\ref{sec:2.2.2}) but does not select. When the analyst wants stable predictions and does not need a sparse model (e.g.\ all features genuinely matter), ridge is the right tool.
+\end{itemize}
+\end{remark}
+
+\section{Elastic Net}\label{sec:2.4}
+
+\subsection{Motivation: Lasso under correlated features}\label{sec:2.4.1}
+
+When two features are highly correlated, Lasso picks one and zeros the other, and the choice flips on small noise perturbations. The Elastic Net adds an $\ell_2$ term to the penalty, stabilizing the choice and lifting the $|\mathcal{A}| \leqslant n$ cap.
+
+\begin{example}[Lasso instability under perfect collinearity]\label{ex:lasso-instability}
+Let $X_1 = X_2$ exactly and consider the Lasso with $\lambda > 0$. By Theorem~\ref{thm:lasso-kkt}, any $\hat\beta$ with $\hat\beta_1 + \hat\beta_2 = c^\star$ (some fixed value) and matching signs satisfies the KKT conditions; the partition of $c^\star$ between $\hat\beta_1$ and $\hat\beta_2$ is undetermined. With $X_1 \approx X_2$ (near-collinear), the same instability holds approximately: tiny noise perturbations produce wildly different selections.
+\end{example}
+
+\subsection{Elastic Net definition and the grouping effect}\label{sec:2.4.2}
+
+\begin{definition}[Elastic Net]\label{def:elastic-net}
+For $\lambda \geqslant 0$ and mixing parameter $\alpha \in [0, 1]$,
+\[
+  \hat\beta_{\lambda, \alpha} \;:=\; \arg\min_{\beta \in \mathbb{R}^p} \tfrac{1}{2n}\|y - X\beta\|^2 + \lambda \bigl[\alpha \|\beta\|_1 + \tfrac{1-\alpha}{2}\|\beta\|^2\bigr].
+\]
+$\alpha = 1$ recovers Lasso; $\alpha = 0$ recovers ridge (with the same $1/(2n)$ scaling as \ref{def:ridge}). Intermediate $\alpha$ blends $\ell_1$-sparsity with $\ell_2$-stability. The form matches \texttt{glmnet} exactly.
+\end{definition}
+
+\begin{lemma}[Grouping effect]\label{lem:grouping}
+For perfectly correlated features $X_j = X_k$ and Elastic Net with $\alpha < 1$, the unique minimizer satisfies $\hat\beta_j = \hat\beta_k$.
+\end{lemma}
+
+\begin{proof}
+With $X_j = X_k$, the data fit depends on $\beta_j + \beta_k$ alone. The penalty $\alpha (|\beta_j| + |\beta_k|) + \tfrac{1-\alpha}{2}(\beta_j^2 + \beta_k^2)$ subject to $\beta_j + \beta_k = c$ is minimized at $\beta_j = \beta_k = c/2$ when $\alpha < 1$ (the strict convexity of the squared term breaks the indifference). The optimum is unique, with $\hat\beta_j = \hat\beta_k$.
+\end{proof}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{No active-set cap.} The $\ell_2$ component restores invertibility of $X_{\mathcal{A}}^\top X_{\mathcal{A}} + \lambda(1-\alpha) I$ (cf.\ \ref{lem:ridge-inv}); the $\min(n, p)$ ceiling on $|\mathcal{A}|$ disappears.
+\item \emph{Tuning.} $\alpha$ and $\lambda$ are both selected by cross-validation (\S\ref{sec:2.5}). Common starting choices: $\alpha = 0.5$ for moderate sparsity with stability; $\alpha \to 1$ when sparsity is the goal; $\alpha \to 0$ when collinearity dominates.
+\item \emph{Coordinate update.} With the $\ell_2$ term, the standardized coordinate-descent update becomes $\hat\beta_j = S_{\lambda \alpha}(\tfrac{1}{n} X_j^\top r_{-j}) / (1 + \lambda(1-\alpha))$, an inexpensive modification to \ref{thm:lasso-coord}.
+\end{itemize}
+\end{remark}
+
+\section{Selecting \(\lambda\)}\label{sec:2.5}
+
+\subsection{Cross-validation}\label{sec:2.5.1}
+
+The penalty parameter $\lambda$ is a tuning hyperparameter; estimating it from training error alone overfits ($\lambda = 0$ minimizes training error). The standard remedy is $K$-fold cross-validation.
+
+\begin{definition}[$K$-fold CV for $\lambda$]\label{def:cv-lambda}
+Partition the training set into $K$ folds. For each candidate $\lambda$ in a grid and each fold $k \in \{1, \ldots, K\}$:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item Fit $\hat\beta_\lambda^{(-k)}$ on the data with fold $k$ removed.
+\item Evaluate $\mathrm{MSE}_k(\lambda) := |\mathcal{I}_k|^{-1} \sum_{i \in \mathcal{I}_k} (y_i - x_i^\top \hat\beta_\lambda^{(-k)})^2$ on fold $k$ (index set $\mathcal{I}_k$).
+\end{itemize}
+The CV criterion is $\mathrm{CV}(\lambda) := K^{-1} \sum_k \mathrm{MSE}_k(\lambda)$. Two natural choices:
+\begin{itemize}[leftmargin=2em, itemsep=2pt, topsep=2pt]
+\item $\hat\lambda_{\min} := \arg\min_\lambda \mathrm{CV}(\lambda)$ (best CV score).
+\item $\hat\lambda_{1\mathrm{se}} := \max\{\lambda : \mathrm{CV}(\lambda) \leqslant \mathrm{CV}(\hat\lambda_{\min}) + \mathrm{SE}(\hat\lambda_{\min})\}$ (one-standard-error rule: largest $\lambda$ within $1\,\mathrm{SE}$ of the minimum).
+\end{itemize}
+\end{definition}
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{The 1-SE rule biases toward stronger regularization} (sparser models, more shrinkage): the minimum CV score has nontrivial standard error, and a slightly worse CV often gives a meaningfully simpler model. Report both. \texttt{glmnet} returns them as \texttt{lambda.min} and \texttt{lambda.1se}.
+\item \emph{The CV grid is data-driven.} \texttt{glmnet} starts at $\lambda_{\max} := \max_j |\tfrac{1}{n} X_j^\top y|$ (the smallest $\lambda$ giving $\hat\beta = 0$, by \ref{thm:lasso-kkt}) and runs down to $\lambda_{\max} \cdot 10^{-3}$ on a geometric grid. Warm starts along the path exploit the piecewise-linear structure of \ref{thm:lasso-path}: the solution at $\lambda_k$ initializes the descent at $\lambda_{k+1}$.
+\end{itemize}
+\end{remark}
+
+\subsection{Information criteria caveat}\label{sec:2.5.2}
+
+AIC and BIC penalize model complexity directly, an alternative to CV. For Lasso this requires an unbiased estimator of $\df(\lambda)$, the effective degrees of freedom (\S\ref{sec:2.2.3} for Ridge).
+
+\begin{lemma}[Lasso degrees of freedom]\label{lem:lasso-df}
+Under standard regularity, $\expc[\df(\hat\beta_\lambda^{\mathrm{L}})] = \expc[|\mathcal{A}(\lambda)|]$. The active-set size is an unbiased estimator of $\df$.
+\end{lemma}
+
+\begin{proof}
+Take $y \sim \mathcal{N}(\mu, \sigma^2 I_n)$ for the noise model. Define the effective degrees of freedom via the covariance form
+\[
+  \df(\hat\mu) \;:=\; \sigma^{-2} \sum_{i=1}^{n} \cov\bigl(\hat\mu_i, y_i\bigr).
+\]
+
+\textbf{Stein's identity (prerequisite).} For $y \sim \mathcal{N}(\mu, \sigma^2 I_n)$ and a weakly differentiable $g: \mathbb{R}^n \to \mathbb{R}^n$ with finite second moments,
+\[
+  \sigma^{-2} \sum_{i=1}^{n} \cov\bigl(g_i(y), y_i\bigr) \;=\; \expc\Bigl[\sum_{i=1}^{n} \tfrac{\partial g_i}{\partial y_i}(y)\Bigr] \;=\; \expc\bigl[\tr\bigl(\partial g(y) / \partial y\bigr)\bigr].
+\]
+This is integration by parts against the Gaussian density: $\partial_{y_i} \log \phi(y_i; \mu_i, \sigma^2) = -(y_i - \mu_i)/\sigma^2$, so $\sigma^{-2} \cov(g_i, y_i) = \sigma^{-2} \expc[(y_i - \mu_i) g_i] = \expc[\partial g_i / \partial y_i]$ when boundary terms vanish.
+
+\textbf{Lasso fitted values on an active piece.} On any open set where $\mathcal{A}(\lambda; y)$ and $s$ are constant, \ref{thm:lasso-path}'s formula gives
+\[
+  \hat\mu(y) \;=\; X_{\mathcal{A}}\, \hat\beta_{\mathcal{A}}(y) \;=\; X_{\mathcal{A}}\bigl(X_{\mathcal{A}}^\top X_{\mathcal{A}}\bigr)^{-1} X_{\mathcal{A}}^\top y \;-\; n\lambda\, X_{\mathcal{A}}\bigl(X_{\mathcal{A}}^\top X_{\mathcal{A}}\bigr)^{-1} s.
+\]
+The Jacobian $\partial \hat\mu / \partial y$ equals the projection $P_{\col(X_{\mathcal{A}})} := X_{\mathcal{A}}(X_{\mathcal{A}}^\top X_{\mathcal{A}})^{-1} X_{\mathcal{A}}^\top$.
+
+\textbf{Trace of a projection.} A projection onto a $k$-dimensional subspace has trace $k$ (sum of $k$ ones and $n - k$ zeros along its eigenvalues). Hence $\tr(\partial \hat\mu / \partial y) = |\mathcal{A}|$ on each active piece.
+
+\textbf{Combining.} Stein's identity gives $\df(\hat\mu) = \expc[\tr(\partial \hat\mu / \partial y)]$. The set of $y$ with multiple knots is measure zero (a finite union of measure-zero hyperplanes from the entry/departure equations), so
+\[
+  \df(\hat\mu) \;=\; \expc[|\mathcal{A}(\lambda)|].
+\]
+\end{proof}
+
+\begin{remark}
+With $\df \approx |\mathcal{A}(\lambda)|$, BIC for Lasso reads $\mathrm{BIC}(\lambda) = n\, \log\widehat{\mathrm{MSE}}(\lambda) + |\mathcal{A}(\lambda)|\, \log n$. BIC asymptotically selects the true sparse model when one exists; AIC tends to over-select. Use CV when the goal is predictive risk; use AIC/BIC when the goal is support recovery.
+\end{remark}
+
+\section{Implementation Tour}\label{sec:2.6}
+
+The theory of \S\S\ref{sec:2.2}--\ref{sec:2.5} maps onto two production tools: \texttt{glmnet} (the canonical solver, the engine inside tidymodels) and the tidymodels unified API. A from-scratch coordinate-descent Lasso closes the loop in twenty lines.
+
+\subsection{Glmnet workflow}\label{sec:2.6.1}
+
+\texttt{glmnet} fits Lasso, Ridge, and Elastic Net via cyclic coordinate descent along a $\lambda$-path. \texttt{cv.glmnet} performs $K$-fold CV automatically.
+
+<<glmnet-tour>>=
+library(glmnet)
+set.seed(1)
+n <- 200; p <- 100
+X <- matrix(rnorm(n * p), n, p)
+beta_true <- c(rep(2, 5), rep(0, p - 5))
+y <- as.vector(X %*% beta_true + rnorm(n, sd = 1))
+
+# Lasso (alpha = 1) along a default lambda grid; standardization is on by default
+fit_lasso <- glmnet(X, y, alpha = 1)
+plot(fit_lasso, xvar = "lambda", label = TRUE)        # coefficient paths
+
+# Cross-validated lambda
+cv <- cv.glmnet(X, y, alpha = 1, nfolds = 10)
+c(lambda_min = cv$lambda.min, lambda_1se = cv$lambda.1se)
+
+# Active set at lambda.1se
+nz <- which(coef(cv, s = "lambda.1se")[-1] != 0)      # drop intercept
+nz                                                    # should contain {1,...,5}, likely with some noise features
+@
+
+\begin{remark}
+\texttt{glmnet}'s loss matches \ref{def:lasso}, \ref{def:ridge}, and \ref{def:elastic-net} term for term, so $\lambda$ values reported by \texttt{cv.glmnet} are directly the $\lambda$ of the theorems above. No rescaling is needed when comparing analytic results to fitted output.
+\end{remark}
+
+\subsection{Coordinate descent from scratch}\label{sec:2.6.2}
+
+The full Lasso solver in twenty lines, matching \texttt{glmnet} on standardized data.
+
+<<lasso-scratch>>=
+soft_thresh <- function(a, lambda) sign(a) * pmax(abs(a) - lambda, 0)
+
+lasso_cd <- function(X, y, lambda, max_iter = 1000, tol = 1e-7) {
+  n <- nrow(X); p <- ncol(X)
+  Xs <- scale(X, center = TRUE, scale = TRUE) * sqrt(n / (n - 1))   # var = 1 with n-divisor
+  ys <- y - mean(y)
+  beta <- rep(0, p)
+  r    <- as.vector(ys - Xs %*% beta)                                 # running full residual (vector, not n x 1 matrix)
+  for (it in seq_len(max_iter)) {
+    beta_old <- beta
+    for (j in seq_len(p)) {
+      r_j        <- r + Xs[, j] * beta[j]                             # add j back: O(n)
+      beta_j_new <- soft_thresh(sum(Xs[, j] * r_j) / n, lambda)       # standardized update
+      r          <- r_j - Xs[, j] * beta_j_new                        # remove new j: O(n)
+      beta[j]    <- beta_j_new
+    }
+    if (max(abs(beta - beta_old)) < tol) break
+  }
+  list(beta = beta, iter = it, intercept = mean(y))
+}
+
+# Smoke test against glmnet (compare on standardized scale: glmnet stores
+# beta on the original X scale, so multiply by n-divisor SD to match)
+set.seed(1); n <- 200; p <- 50
+X <- matrix(rnorm(n * p), n, p)
+beta_true <- c(rep(1.5, 5), rep(0, p - 5))
+y <- as.vector(X %*% beta_true + rnorm(n))
+fit   <- lasso_cd(X, y, lambda = 0.05)
+fit_g <- glmnet::glmnet(X, y, alpha = 1, lambda = 0.05, standardize = TRUE)
+sds_n <- apply(X, 2, sd) * sqrt((n - 1) / n)
+max(abs(fit$beta - as.vector(fit_g$beta) * sds_n))                    # O(1e-5)
+@
+
+\begin{remark}\leavevmode
+\begin{itemize}[leftmargin=2em, itemsep=4pt, topsep=2pt]
+\item \emph{$O(np)$ per epoch via the running residual.} The residual $r$ updates in $O(n)$ per coordinate (one add, one subtract); a full pass over $p$ coordinates is $O(np)$, not $O(np^2)$. Production \texttt{glmnet} adds active-set strategies (skip coordinates zeroed in the previous pass), warm starts along the $\lambda$-path, and strong screening rules, cutting per-pass cost to near-$O(n|\mathcal{A}|)$ on sparse solutions.
+\item \emph{Un-scaling for prediction.} \texttt{fit\$beta} is on the standardized scale; to predict on raw new data, compute the population SD and column means directly from $X$ (avoiding any dependence on \texttt{Xs}, which is local to the solver), and reconstruct $\hat\beta$ on the original scale:
+\begin{verbatim}
+  s_pop          <- apply(X, 2, sd) * sqrt((nrow(X) - 1) / nrow(X))
+  beta_orig      <- fit$beta / s_pop
+  intercept_orig <- mean(y) - sum(colMeans(X) * beta_orig)
+\end{verbatim}
+The factor $\sqrt{(n-1)/n}$ converts R's sample SD (\texttt{sd()} uses $n-1$) to the population SD ($n$ divisor) used inside \texttt{lasso\_cd}. \texttt{glmnet} performs both transformations internally; a custom solver must do it explicitly.
+\end{itemize}
+\end{remark}
+
+\subsection{Tidymodels integration}\label{sec:2.6.3}
+
+The same pipeline through \texttt{tidymodels}: a recipe (preprocessing, including standardization) feeds into \texttt{parsnip::linear\_reg(penalty, mixture)}; \texttt{tune\_grid} tunes both $\lambda$ (\texttt{penalty}) and $\alpha$ (\texttt{mixture}) by CV.
+
+<<tidymodels-tour>>=
+library(tidymodels); library(glmnet)
+set.seed(1)
+df <- tibble::tibble(y = y, as.data.frame(X))         # X, y from previous chunk
+
+split <- initial_split(df, prop = 0.8)
+train <- training(split); test <- testing(split)
+
+rec <- recipe(y ~ ., data = train) |>
+  step_normalize(all_numeric_predictors())            # standardization in-recipe
+
+mod <- linear_reg(penalty = tune(), mixture = tune()) |> set_engine("glmnet")
+wf  <- workflow() |> add_recipe(rec) |> add_model(mod)
+
+grid <- grid_regular(penalty(range = c(-4, 0)), mixture(range = c(0, 1)),
+                     levels = c(20, 5))
+folds <- vfold_cv(train, v = 10)
+res <- tune_grid(wf, resamples = folds, grid = grid, metrics = metric_set(rmse))
+
+best     <- select_by_one_std_err(res, metric = "rmse", desc(penalty))
+final_wf <- finalize_workflow(wf, best)
+
+# Generalization estimate: refits on train, predicts on test, reports metrics
+final_res <- last_fit(final_wf, split)
+collect_metrics(final_res)
+
+# Deployment-ready fit on full training data (uncomment when needed)
+# final_fit <- fit(final_wf, data = train)
+@
+
+\begin{remark}
+Placing \texttt{step\_normalize} inside the recipe (not as preprocessing on the full dataset) is the central convention: standardization parameters fit on each training fold, applied to its corresponding validation portion, never crossing the train/test boundary. \S\ref{sec:2.7.2} treats the leakage trap that arises when this convention is violated.
+\end{remark}
+
+\section{Pitfalls and Misapplications}\label{sec:2.7}
+
+Each entry pairs a misuse with a diagnostic and a runnable demo. Standardization, leakage, and instability dominate the list because Lasso/Ridge are sensitive to data preparation in ways OLS is not.
+
+\subsection{Forgetting to standardize}\label{sec:2.7.1}
+
+The penalty $\lambda \|\beta\|^2$ (Ridge) or $\lambda \|\beta\|_1$ (Lasso) treats every coordinate identically; rescaling column $j$ by $d_j$ changes the effective penalty on that coordinate from $\lambda$ to $\lambda d_j^{-2}$ (\S\ref{sec:2.2.5}). Mixing scales (income in dollars, age in years) without standardization arbitrary-weights the penalty across features.
+
+<<pitfall-standardize>>=
+library(glmnet)
+set.seed(1); n <- 200; p <- 5
+X <- matrix(rnorm(n * p), n, p)
+X[, 1] <- X[, 1] * 1000                               # blow up scale of column 1
+beta_true <- c(0.001, rep(1, p - 1))                  # corresponding small true coef
+y <- as.vector(X %*% beta_true + rnorm(n))
+
+# Ridge without standardization: column 1 is shrunk far more than the others
+fit_no_std <- glmnet(X, y, alpha = 0, lambda = 1, standardize = FALSE)
+fit_std    <- glmnet(X, y, alpha = 0, lambda = 1, standardize = TRUE)
+cbind(no_std = as.vector(fit_no_std$beta),
+      with_std = as.vector(fit_std$beta),
+      truth = beta_true)
+@
+
+\textbf{Diagnostic.} Any column with non-unit variance after preprocessing breaks scale-invariance.
+
+\textbf{Fix.} \texttt{glmnet}'s \texttt{standardize = TRUE} default; in tidymodels, \texttt{step\_normalize(all\_numeric\_predictors())} in the recipe.
+
+\subsection{Preprocessing outside CV folds}\label{sec:2.7.2}
+
+Preprocessing parameters fit once on the full training set leak validation-fold information into every training-fold model. Standardization is the textbook case but its bias is mild for iid Lasso/Ridge; the principle becomes pedagogically dramatic when preprocessing is response-aware. Pick the top-$20$ features by their full-data $|\mathrm{cor}(X_j, y)|$, then $10$-fold CV the resulting OLS. Below, $y$ is pure noise.
+
+<<pitfall-leakage>>=
+library(tidymodels)
+set.seed(2026); n <- 60; p <- 2000
+X <- matrix(rnorm(n * p), n, p)
+y <- rnorm(n)                                         # null signal
+df_raw <- data.frame(y = y, X)
+
+# WRONG: pre-screen by full-data |cor(X, y)|, then CV the resulting OLS.
+# Each fold's training-portion model sees 20 features chosen with help from
+# that fold's validation portion.
+cors  <- abs(cor(X, y))[, 1]
+top20 <- order(cors, decreasing = TRUE)[1:20]
+df_w  <- data.frame(y = y, X[, top20])
+mod_ols <- linear_reg() |> set_engine("lm")
+set.seed(7)
+fit_wrong <- fit_resamples(
+  workflow() |> add_recipe(recipe(y ~ ., df_w)) |> add_model(mod_ols),
+  resamples = vfold_cv(df_w, v = 10), metrics = metric_set(rmse))
+
+# RIGHT: keep all p features; Lasso selects inside each fold's training
+# portion. Selection never sees the validation rows.
+mod_lasso <- linear_reg(penalty = 0.1, mixture = 1) |> set_engine("glmnet")
+set.seed(7)
+fit_right <- fit_resamples(
+  workflow() |> add_recipe(recipe(y ~ ., df_raw)) |> add_model(mod_lasso),
+  resamples = vfold_cv(df_raw, v = 10), metrics = metric_set(rmse))
+
+c(honest_baseline = sd(y),                            # truth: no signal
+  wrong_screen    = collect_metrics(fit_wrong)$mean,
+  right_in_fold   = collect_metrics(fit_right)$mean)
+@
+
+The honest baseline is $\mathrm{sd}(y)$ since $y$ is independent of $X$. Leakage roughly halves the WRONG CV-RMSE; the RIGHT pipeline recovers the truth.
+
+\textbf{Diagnostic.} CV scores noticeably better than the naive $\hat y = \bar y_{\mathrm{train}}$ baseline, or far better than a held-out test score, are the symptom.
+
+\textbf{Fix.} Every preprocessing step lives inside the recipe (\texttt{step\_normalize}, \texttt{step\_corr}, \texttt{step\_pca}, \texttt{step\_dummy}, response-aware screening via \texttt{step\_select\_*} from \texttt{recipeselectors} or \texttt{colino}); \texttt{tune\_grid} then refits the recipe per fold, isolating each fold's preprocessing parameters from its validation portion.
+
+\subsection{Lasso instability under collinearity}\label{sec:2.7.3}
+
+When two features are nearly collinear, Lasso picks one and zeros the other; the choice flips on small data perturbations (\ref{ex:lasso-instability}). The reported active set is unstable.
+
+<<pitfall-instability>>=
+set.seed(1); n <- 100
+x1 <- rnorm(n); x2 <- x1 + rnorm(n, sd = 0.1)         # near-collinear
+X  <- cbind(x1, x2, matrix(rnorm(n * 3), n, 3))
+y  <- 1.0 * x1 + rnorm(n)                             # truth: only x1
+
+# Refit on bootstrap samples; track which of x1, x2 is selected
+set.seed(2)
+selected <- replicate(100, {
+  idx <- sample(n, replace = TRUE)
+  fit <- glmnet(X[idx, ], y[idx], alpha = 1, lambda = 0.1, standardize = TRUE)
+  c(x1 = fit$beta[1, 1] != 0, x2 = fit$beta[2, 1] != 0)
+})
+rowMeans(selected)                                    # x1 and x2 each appear < 100% of the time
+@
+
+\textbf{Diagnostic.} Bootstrap stability of the active set; if a coefficient is selected in $< 70\%$ of bootstraps, treat its inclusion as noise.
+
+\textbf{Fix.} Elastic Net with $\alpha < 1$ (\ref{def:elastic-net}); the $\ell_2$ component induces grouping (\ref{lem:grouping}) and stabilizes selection.
+
+\subsection{Lasso on a correlated group: arbitrary picks}\label{sec:2.7.4}
+
+A subtler version of \S\ref{sec:2.7.3}: if features $X_1, \ldots, X_5$ are equally correlated with $y$ and with each other, Lasso may pick any one (or a random subset); the others are zeroed despite being equally informative.
+
+<<pitfall-arbitrary>>=
+# Five equally informative correlated features
+set.seed(1); n <- 200
+z <- rnorm(n)
+X <- sapply(1:5, function(j) z + rnorm(n, sd = 0.2)) # all near-z
+y <- z + rnorm(n)
+fit_l  <- glmnet(X, y, alpha = 1,   lambda = 0.05, standardize = TRUE)
+fit_en <- glmnet(X, y, alpha = 0.5, lambda = 0.05, standardize = TRUE)
+cbind(lasso = as.vector(fit_l$beta), enet = as.vector(fit_en$beta))
+# lasso: arbitrary subset retained with uneven sizes; enet: more spread, all
+# correlated features carry comparable nonzero weight.
+@
+
+\textbf{Diagnostic.} Domain knowledge that a group is equally informative, conflicting with Lasso picking only one.
+
+\textbf{Fix.} Elastic Net with $\alpha \in (0, 1)$, which by \ref{lem:grouping} assigns equal coefficients to perfectly correlated features and approximately so to near-correlated ones.
+
+\subsection{Lasso's $\min(n, p)$ active-set cap}\label{sec:2.7.5}
+
+\ref{lem:n-cap} bounds the Lasso active set by $\min(n, p)$. In high-dimensional settings ($p \gg n$, e.g.\ genomics with $p = 20{,}000$ genes and $n = 200$ patients), at most $200$ features can be selected. If the truth involves more, Lasso cannot recover them.
+
+<<pitfall-cap>>=
+# p > n; truth has 50 active coefficients but n = 30
+set.seed(1); n <- 30; p <- 200
+X <- matrix(rnorm(n * p), n, p)
+beta_true <- c(rep(0.5, 50), rep(0, p - 50))
+y <- as.vector(X %*% beta_true + rnorm(n))
+
+fit <- glmnet(X, y, alpha = 1, lambda = 0.1, standardize = TRUE)
+sum(fit$beta != 0)                                    # at most n, regardless of truth
+@
+
+\textbf{Diagnostic.} Count the active-set size relative to $n$; if $|\mathcal{A}| = n$ at the chosen $\lambda$, the cap is binding.
+
+\textbf{Fix.} Elastic Net with $\alpha < 1$ removes the cap (the $\ell_2$ term restores the active block's invertibility); or pre-screening to reduce $p$ below $n$.
+
+\subsection{Ridge does not perform selection}\label{sec:2.7.6}
+
+Ridge handles collinearity via spectral lift (\S\ref{sec:2.2.2}), but every coefficient stays nonzero for any $\lambda < \infty$. Reporting ``the most important variables'' from Ridge by ranking $|\hat\beta_j|$ confuses shrinkage with selection.
+
+<<pitfall-ridge-select>>=
+set.seed(1); n <- 200; p <- 20
+X <- matrix(rnorm(n * p), n, p)
+beta_true <- c(rep(2, 3), rep(0, p - 3))
+y <- as.vector(X %*% beta_true + rnorm(n))
+
+fit_ridge <- glmnet(X, y, alpha = 0, lambda = 0.5, standardize = TRUE)
+sum(fit_ridge$beta == 0)                              # 0: all coefs nonzero
+
+fit_lasso <- glmnet(X, y, alpha = 1, lambda = 0.1, standardize = TRUE)
+which(as.vector(fit_lasso$beta) != 0)                 # exact selection
+@
+
+\textbf{Diagnostic.} Count zero coefficients; if all are nonzero, Ridge is shrinking, not selecting.
+
+\textbf{Fix.} Lasso (\ref{def:lasso}) or Elastic Net (\ref{def:elastic-net}) when sparsity is the goal. Ridge coefficients are continuous shrinkage estimates; thresholding them for variable importance is a misuse.
+
+\end{document}

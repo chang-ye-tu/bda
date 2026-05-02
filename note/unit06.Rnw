@@ -1,0 +1,1731 @@
+% Compile pipeline:
+%   Rscript -e "knitr::knit('lecture.Rnw')"   # produces lecture.tex
+%   xelatex -shell-escape lecture.tex
+%   bibtex lecture
+%   xelatex -shell-escape lecture.tex
+%   xelatex -shell-escape lecture.tex          # final pass to settle refs
+\documentclass[17pt]{extarticle}
+
+\input{bda_preamble.tex}
+
+% Unit 6 specific
+\fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ 6 Support Vector Machines, Kernels, and Neural Networks}}
+
+\setcounter{theorem}{0}\setcounter{example}{0}
+\renewcommand\thedefinition{6.\arabic{theorem}}
+\renewcommand\thetheorem  {6.\arabic{theorem}}
+\renewcommand\theexample  {6.\arabic{example}}
+\renewcommand\theexercise {6.\arabic{exercise}}
+\renewcommand\thefigure   {6.\arabic{figure}}
+
+\title{\color{hdrBG}\bfseries\Huge Support Vector Machines, Kernels, and Neural Networks}
+\author{}\date{}
+
+\begin{document}
+
+<<setup, include=FALSE>>=
+source("bda_knitr_setup.R")
+knitr::opts_chunk$set(fig.path = "figs/unit06-")
+@
+
+\begin{titlepage}
+\thispagestyle{empty}\vspace*{\fill}
+\begin{center}
+{\color{hdrBG}\bfseries\fontsize{28}{32}\selectfont Unit 6.\ Support Vector Machines, Kernels, and Neural Networks}\\[1em]
+\rule{70mm}{0.8pt}\\[0.8em]
+{\large Business Data Analytics: Introductory Machine Learning}
+\end{center}\vspace*{\fill}
+\end{titlepage}
+
+\setcounter{page}{1}
+
+\begin{motivation}[From hyperplanes to margins]
+Logistic regression in Unit~3 placed a hyperplane to maximize the data likelihood. The support vector machine places a hyperplane to maximize the geometric distance from the closest training point. The two criteria differ; the second one delivers a constrained convex problem whose dual exposes which training points actually shape the decision boundary, and turns the inner product $\mathbf{x}_i^\top \mathbf{x}_j$ into a slot a kernel can occupy.
+\end{motivation}
+
+\section{Constrained Convex Optimization}\label{sec:6.1}
+
+The convex analysis chapter of Unit~1 (\S 1.9) treated unconstrained minimization: gradient zero, Hessian PSD, done. The SVM problems in this unit are constrained: minimize a convex objective subject to one inequality per training point. Three additions to the Unit~1 toolkit handle the constrained case: the Lagrangian, weak and strong duality, and the KKT conditions.
+
+\subsection{Constrained problems in standard form}\label{subsec:6.1.1}
+
+\begin{definition}[Constrained optimization problem]\label{def:constr-prob}
+A \textbf{constrained optimization problem} in standard form is
+\[
+\begin{aligned}
+\min_{\mathbf{x} \in \mathbb{R}^n} \;& f_0(\mathbf{x}) \\
+\text{subject to } & f_i(\mathbf{x}) \leqslant 0, \quad i = 1, \ldots, m, \\
+                   & h_j(\mathbf{x}) = 0, \quad j = 1, \ldots, p.
+\end{aligned}
+\]
+The function $f_0$ is the \textbf{objective}; $f_1, \ldots, f_m$ are the \textbf{inequality constraint functions}; $h_1, \ldots, h_p$ are the \textbf{equality constraint functions}. The \textbf{feasible set} is
+\[
+\mathcal{D} \;=\; \big\{\mathbf{x} \in \mathbb{R}^n : f_i(\mathbf{x}) \leqslant 0 \text{ for all } i,\; h_j(\mathbf{x}) = 0 \text{ for all } j\big\}.
+\]
+The \textbf{optimal value} is $p^\star = \inf\{f_0(\mathbf{x}) : \mathbf{x} \in \mathcal{D}\}$, with the conventions $p^\star = +\infty$ when $\mathcal{D} = \varnothing$ (the problem is \textbf{infeasible}) and $p^\star = -\infty$ when $f_0$ is unbounded below on $\mathcal{D}$. A point $\mathbf{x}^\star \in \mathcal{D}$ achieving $f_0(\mathbf{x}^\star) = p^\star$ is an \textbf{optimal point}.
+\end{definition}
+
+The problem is a \textbf{convex optimization problem} when $f_0, f_1, \ldots, f_m$ are convex on $\mathbb{R}^n$ and each $h_j$ is affine, $h_j(\mathbf{x}) = \mathbf{a}_j^\top \mathbf{x} - b_j$. Affine equalities define a translated subspace; convex sublevel sets $\{f_i \leqslant 0\}$ are convex (Unit~1 \S 1.9.8, epigraph characterization); their intersection $\mathcal{D}$ is therefore convex. Both Unit~1's unconstrained problems ($m = p = 0$) and the SVM formulations developed below fit this template.
+
+\begin{definition}[Slater's condition]\label{def:slater}
+A convex problem in the form of Definition~\ref{def:constr-prob} satisfies \textbf{Slater's condition} if there exists $\tilde{\mathbf{x}} \in \mathcal{D}$ with
+\[
+f_i(\tilde{\mathbf{x}}) < 0, \qquad i = 1, \ldots, m,
+\]
+i.e., a feasible point at which every nonlinear inequality constraint holds strictly. When some $f_i$ is itself affine, the strict inequality is relaxed to $f_i(\tilde{\mathbf{x}}) \leqslant 0$ at $\tilde{\mathbf{x}}$ for those affine constraints; strict feasibility is required only for the genuinely nonlinear convex inequalities.
+\end{definition}
+
+Slater's condition is the standard \textbf{constraint qualification} for convex problems. It rules out the degenerate case of a convex inequality that is "tight everywhere" on the feasible set, a case in which the primal and dual optimal values (defined below) can differ. For every primal SVM problem written down later in this unit, Slater's condition holds.
+
+\subsection{Lagrangian and dual function}\label{subsec:6.1.2}
+
+The constrained problem of Definition~\ref{def:constr-prob} becomes more tractable after merging the constraints into the objective with one multiplier per constraint.
+
+\begin{definition}[Lagrangian]\label{def:lagrangian}
+The \textbf{Lagrangian} associated with the constrained problem of Definition~\ref{def:constr-prob} is the function $L : \mathbb{R}^n \times \mathbb{R}^m \times \mathbb{R}^p \to \mathbb{R}$,
+\[
+L(\mathbf{x}, \boldsymbol\lambda, \boldsymbol\nu) \;=\; f_0(\mathbf{x}) \;+\; \sum_{i=1}^{m} \lambda_i\, f_i(\mathbf{x}) \;+\; \sum_{j=1}^{p} \nu_j\, h_j(\mathbf{x}).
+\]
+The scalars $\lambda_1, \ldots, \lambda_m$ are the \textbf{Lagrange multipliers} for the inequality constraints; $\nu_1, \ldots, \nu_p$ are the multipliers for the equality constraints. The pair $(\boldsymbol\lambda, \boldsymbol\nu)$ is the \textbf{dual variable}.
+\end{definition}
+
+\begin{definition}[Dual function]\label{def:dual-fn}
+The \textbf{Lagrange dual function} is $g : \mathbb{R}^m \times \mathbb{R}^p \to [-\infty, +\infty)$,
+\[
+g(\boldsymbol\lambda, \boldsymbol\nu) \;=\; \inf_{\mathbf{x} \in \mathbb{R}^n}\, L(\mathbf{x}, \boldsymbol\lambda, \boldsymbol\nu).
+\]
+Its \textbf{effective domain} is $\dom g = \{(\boldsymbol\lambda, \boldsymbol\nu) : g(\boldsymbol\lambda, \boldsymbol\nu) > -\infty\}$.
+\end{definition}
+
+The infimum runs over all of $\mathbb{R}^n$, not over the feasible set $\mathcal{D}$: the dual function relaxes the original constraints and lets any violation be paid for through the multipliers.
+
+\begin{theorem}[Concavity of the dual function]\label{thm:dual-concave}
+The dual function $g$ is concave on $\mathbb{R}^m \times \mathbb{R}^p$, regardless of whether the primal problem is convex.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:dual-concave}]
+For each fixed $\mathbf{x}$, the map $(\boldsymbol\lambda, \boldsymbol\nu) \mapsto L(\mathbf{x}, \boldsymbol\lambda, \boldsymbol\nu) = f_0(\mathbf{x}) + \sum_i \lambda_i f_i(\mathbf{x}) + \sum_j \nu_j h_j(\mathbf{x})$ is affine in $(\boldsymbol\lambda, \boldsymbol\nu)$. The dual function $g$ is the pointwise infimum of this family of affine functions indexed by $\mathbf{x} \in \mathbb{R}^n$. Equivalently, $-g$ is the pointwise supremum of a family of affine functions, which is convex (Unit~1 \S 1.9.7, pointwise supremum); hence $g$ is concave. $\blacksquare$
+\end{derivation}
+
+Concavity of $g$ does not require the primal to be convex. The next subsection turns this concave function into a problem whose value lower-bounds $p^\star$.
+
+\subsection{Weak duality}\label{subsec:6.1.3}
+
+The dual function $g$ is concave (Theorem~\ref{thm:dual-concave}), so maximizing it is a concave problem. The inequality multipliers $\boldsymbol\lambda$ are constrained to be nonnegative; the equality multipliers $\boldsymbol\nu$ are unrestricted.
+
+\begin{definition}[Dual problem]\label{def:dual-prob}
+The \textbf{Lagrange dual problem} associated with the primal problem of Definition~\ref{def:constr-prob} is
+\[
+\sup_{\boldsymbol\lambda \in \mathbb{R}^m,\, \boldsymbol\nu \in \mathbb{R}^p}\, g(\boldsymbol\lambda, \boldsymbol\nu) \quad \text{subject to } \boldsymbol\lambda \geqslant \mathbf{0}.
+\]
+Its \textbf{optimal value} is $d^\star = \sup\{g(\boldsymbol\lambda, \boldsymbol\nu) : \boldsymbol\lambda \geqslant \mathbf{0}\}$, with $d^\star = -\infty$ when the feasible set $\{\boldsymbol\lambda \geqslant \mathbf{0}\} \cap \dom g$ is empty and $d^\star = +\infty$ when $g$ is unbounded above on this set. A pair $(\boldsymbol\lambda^\star, \boldsymbol\nu^\star)$ achieving the supremum is \textbf{dual optimal}.
+\end{definition}
+
+\begin{theorem}[Weak duality]\label{thm:weak-duality}
+For every primal problem in the form of Definition~\ref{def:constr-prob}, convex or not,
+\[
+d^\star \;\leqslant\; p^\star.
+\]
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:weak-duality}]
+Let $\mathbf{x} \in \mathcal{D}$ be primal feasible, so $f_i(\mathbf{x}) \leqslant 0$ for all $i$ and $h_j(\mathbf{x}) = 0$ for all $j$. For any $\boldsymbol\lambda \geqslant \mathbf{0}$ and $\boldsymbol\nu \in \mathbb{R}^p$,
+\[
+\sum_{i} \lambda_i f_i(\mathbf{x}) \;\leqslant\; 0, \qquad \sum_{j} \nu_j h_j(\mathbf{x}) \;=\; 0,
+\]
+the first because each $\lambda_i \geqslant 0$ multiplies a nonpositive number, the second because each $h_j(\mathbf{x}) = 0$. Therefore
+\[
+L(\mathbf{x}, \boldsymbol\lambda, \boldsymbol\nu) \;=\; f_0(\mathbf{x}) + \sum_i \lambda_i f_i(\mathbf{x}) + \sum_j \nu_j h_j(\mathbf{x}) \;\leqslant\; f_0(\mathbf{x}).
+\]
+The dual function value is the infimum of the Lagrangian over all $\mathbf{z} \in \mathbb{R}^n$, hence is at most its value at the specific point $\mathbf{x}$:
+\[
+g(\boldsymbol\lambda, \boldsymbol\nu) \;=\; \inf_{\mathbf{z} \in \mathbb{R}^n} L(\mathbf{z}, \boldsymbol\lambda, \boldsymbol\nu) \;\leqslant\; L(\mathbf{x}, \boldsymbol\lambda, \boldsymbol\nu) \;\leqslant\; f_0(\mathbf{x}).
+\]
+This holds for every $\mathbf{x} \in \mathcal{D}$, so taking the infimum over $\mathcal{D}$ on the right,
+\[
+g(\boldsymbol\lambda, \boldsymbol\nu) \;\leqslant\; \inf_{\mathbf{x} \in \mathcal{D}} f_0(\mathbf{x}) \;=\; p^\star.
+\]
+The bound holds for every $(\boldsymbol\lambda, \boldsymbol\nu)$ with $\boldsymbol\lambda \geqslant \mathbf{0}$; taking the supremum over those pairs gives
+$d^\star = \sup_{\boldsymbol\lambda \geqslant 0,\, \boldsymbol\nu} g(\boldsymbol\lambda, \boldsymbol\nu) \leqslant p^\star$. $\blacksquare$
+\end{derivation}
+
+\begin{definition}[Duality gap]\label{def:duality-gap}
+The \textbf{duality gap} is the nonnegative number $p^\star - d^\star$. The gap is \textbf{closed} (and \textbf{strong duality} is said to hold) when $p^\star = d^\star$; otherwise the gap is open, and $d^\star$ is only a lower bound on $p^\star$.
+\end{definition}
+
+Weak duality is unconditional: it holds whether or not the primal is convex, whether or not Slater's condition is satisfied, and whether or not the primal or dual optima are attained. For a difficult primal, the dual still produces a usable lower bound on $p^\star$. The next subsection identifies the conditions under which the bound is tight.
+
+\subsection{Strong duality under Slater's condition}\label{subsec:6.1.4}
+
+Slater's condition combined with primal convexity closes the duality gap. The proof needs one more piece of separation theory than Unit~1 supplied: a lemma on disjoint convex sets, derived from Unit~1's projection and supporting-hyperplane theorems.
+
+\begin{lemma}[Hyperplane separation of disjoint convex sets]\label{lem:sep-hyperplane}
+Let $A, B \subseteq \mathbb{R}^N$ be non-empty disjoint convex sets. There exists a non-zero vector $\mathbf{a} \in \mathbb{R}^N$ such that
+\[
+\sup_{\mathbf{y} \in B} \mathbf{a}^\top \mathbf{y} \;\leqslant\; \inf_{\mathbf{x} \in A} \mathbf{a}^\top \mathbf{x}.
+\]
+\end{lemma}
+
+\begin{derivation}[Proof of Lemma~\ref{lem:sep-hyperplane}]
+Let $C = \{\mathbf{x} - \mathbf{y} : \mathbf{x} \in A,\, \mathbf{y} \in B\}$. The set $C$ is convex: if $\mathbf{x}_k - \mathbf{y}_k \in C$ for $k = 1, 2$, then for $\theta \in [0, 1]$,
+\[
+\theta(\mathbf{x}_1 - \mathbf{y}_1) + (1-\theta)(\mathbf{x}_2 - \mathbf{y}_2) \;=\; \big[\theta \mathbf{x}_1 + (1-\theta)\mathbf{x}_2\big] \;-\; \big[\theta \mathbf{y}_1 + (1-\theta)\mathbf{y}_2\big] \;\in\; C
+\]
+by convexity of $A$ and $B$. Disjointness $A \cap B = \varnothing$ gives $\mathbf{0} \notin C$. Two cases on the position of $\mathbf{0}$ relative to $\overline{C}$, the closure of $C$.
+
+\textbf{Case 1: $\mathbf{0} \notin \overline{C}$.} The closed convex set $\overline{C}$ admits a unique closest point $\mathbf{z}^\star$ to $\mathbf{0}$ with $\|\mathbf{z}^\star\| > 0$ (Unit~1 \S 1.9.8, projection step). The variational inequality $(\mathbf{0} - \mathbf{z}^\star)^\top (\mathbf{z} - \mathbf{z}^\star) \leqslant 0$ for $\mathbf{z} \in \overline{C}$ rearranges to $(\mathbf{z}^\star)^\top \mathbf{z} \geqslant \|\mathbf{z}^\star\|^2 > 0$. Setting $\mathbf{a} = \mathbf{z}^\star$ gives $\mathbf{a}^\top (\mathbf{x} - \mathbf{y}) \geqslant \|\mathbf{a}\|^2 > 0$ for every $\mathbf{x} \in A$, $\mathbf{y} \in B$.
+
+\textbf{Case 2: $\mathbf{0} \in \overline{C}$.} Since $\mathbf{0} \notin C$, the origin is a boundary point of $\overline{C}$. By the supporting hyperplane theorem (Unit~1 \S 1.9.8), there exists $\mathbf{b} \neq \mathbf{0}$ with $\mathbf{b}^\top \mathbf{z} \leqslant \mathbf{b}^\top \mathbf{0} = 0$ for every $\mathbf{z} \in \overline{C}$. Setting $\mathbf{a} = -\mathbf{b}$, $\mathbf{a}^\top (\mathbf{x} - \mathbf{y}) \geqslant 0$ for every $\mathbf{x} \in A$, $\mathbf{y} \in B$.
+
+In both cases, $\mathbf{a}^\top \mathbf{x} \geqslant \mathbf{a}^\top \mathbf{y}$ for $\mathbf{x} \in A$, $\mathbf{y} \in B$, which gives the stated supremum-infimum inequality. $\blacksquare$
+\end{derivation}
+
+\begin{theorem}[Strong duality under Slater]\label{thm:strong-duality}
+Suppose the primal problem of Definition~\ref{def:constr-prob} has only inequality constraints (no equality constraints, $p = 0$), is convex (each $f_i$ convex on $\mathbb{R}^n$), has finite optimal value $p^\star \in \mathbb{R}$, and satisfies Slater's condition. Then $d^\star = p^\star$, and the dual optimum is attained: there exists $\boldsymbol\lambda^\star \geqslant \mathbf{0}$ with $g(\boldsymbol\lambda^\star) = d^\star = p^\star$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:strong-duality}]
+\textbf{Step 1: Value set $A$ is convex.} Define
+\[
+A \;=\; \big\{(\mathbf{u}, t) \in \mathbb{R}^m \times \mathbb{R} : \exists\, \mathbf{x} \in \mathbb{R}^n \text{ with } f_i(\mathbf{x}) \leqslant u_i \text{ for } i = 1, \ldots, m,\; f_0(\mathbf{x}) \leqslant t\big\}.
+\]
+Take $(\mathbf{u}, t), (\mathbf{u}', t') \in A$ with witnesses $\mathbf{x}, \mathbf{x}'$. For $\theta \in [0, 1]$, set $\mathbf{z} = \theta \mathbf{x} + (1-\theta)\mathbf{x}'$. Convexity of $f_i$ and $f_0$ gives
+\[
+f_i(\mathbf{z}) \leqslant \theta f_i(\mathbf{x}) + (1-\theta) f_i(\mathbf{x}') \leqslant \theta u_i + (1-\theta) u_i', \quad
+f_0(\mathbf{z}) \leqslant \theta t + (1-\theta) t',
+\]
+so $\theta(\mathbf{u}, t) + (1-\theta)(\mathbf{u}', t') \in A$ with witness $\mathbf{z}$.
+
+\textbf{Step 2: $p^\star = \inf\{t : (\mathbf{0}, t) \in A\}$.} If $(\mathbf{0}, t) \in A$, the witness $\mathbf{x}$ satisfies $f_i(\mathbf{x}) \leqslant 0$ (so $\mathbf{x}$ is primal feasible) and $f_0(\mathbf{x}) \leqslant t$, hence $p^\star \leqslant t$. Conversely, for any primal feasible $\mathbf{x}$, $(\mathbf{0}, f_0(\mathbf{x})) \in A$, so $\inf\{t : (\mathbf{0}, t) \in A\} \leqslant p^\star$.
+
+\textbf{Step 3: Separate $A$ from a half-line.} Let $B = \{(\mathbf{0}, s) : s < p^\star\} \subseteq \mathbb{R}^m \times \mathbb{R}$, convex. Step~2 gives $A \cap B = \varnothing$. Lemma~\ref{lem:sep-hyperplane} produces $(\boldsymbol\mu, \mu_0) \neq (\mathbf{0}, 0)$ with
+\[
+\boldsymbol\mu^\top \mathbf{u} + \mu_0 t \;\geqslant\; \mu_0 s \qquad \text{for every } (\mathbf{u}, t) \in A,\; s < p^\star.
+\]
+Fix $(\mathbf{u}, t) \in A$. As $s \to -\infty$ on the right, the LHS is constant; if $\mu_0 < 0$ then $\mu_0 s \to +\infty$ and the inequality fails. So $\mu_0 \geqslant 0$. With $\mu_0 \geqslant 0$, $\sup_{s < p^\star} \mu_0 s = \mu_0 p^\star$, giving
+\[
+\boldsymbol\mu^\top \mathbf{u} + \mu_0 t \;\geqslant\; \mu_0 p^\star \qquad \text{for every } (\mathbf{u}, t) \in A. \tag{$\star$}
+\]
+
+\textbf{Step 4: $\boldsymbol\mu \geqslant \mathbf{0}$.} For any $(\mathbf{u}, t) \in A$ and $\delta > 0$, the point $(\mathbf{u} + \delta \mathbf{e}_i, t)$ is also in $A$ (the same witness $\mathbf{x}$ has $f_i(\mathbf{x}) \leqslant u_i \leqslant u_i + \delta$). Apply $(\star)$ at the perturbed point:
+\[
+\boldsymbol\mu^\top \mathbf{u} + \delta \mu_i + \mu_0 t \;\geqslant\; \mu_0 p^\star.
+\]
+For this to hold for every $\delta > 0$ with the LHS otherwise fixed, $\mu_i \geqslant 0$ (else $\delta \to \infty$ drives the LHS to $-\infty$). Repeat for each $i$.
+
+\textbf{Step 5: $\mu_0 > 0$.} Suppose $\mu_0 = 0$. Slater's condition supplies $\tilde{\mathbf{x}}$ with $f_i(\tilde{\mathbf{x}}) < 0$ for $i = 1, \ldots, m$, and the point $(f_1(\tilde{\mathbf{x}}), \ldots, f_m(\tilde{\mathbf{x}}), f_0(\tilde{\mathbf{x}})) \in A$ (witness $\tilde{\mathbf{x}}$). Apply $(\star)$ with $\mu_0 = 0$:
+\[
+\sum_{i=1}^m \mu_i\, f_i(\tilde{\mathbf{x}}) \;\geqslant\; 0.
+\]
+Each summand $\mu_i f_i(\tilde{\mathbf{x}}) \leqslant 0$ (Step~4 gives $\mu_i \geqslant 0$, Slater gives $f_i(\tilde{\mathbf{x}}) < 0$), so the sum is $\leqslant 0$. Combined: the sum equals $0$, hence each summand is $0$, hence $\mu_i = 0$ (since $f_i(\tilde{\mathbf{x}}) \neq 0$). Thus $(\boldsymbol\mu, \mu_0) = (\mathbf{0}, 0)$, contradicting Lemma~\ref{lem:sep-hyperplane}. So $\mu_0 > 0$.
+
+\textbf{Step 6: Identify the multiplier.} Set $\boldsymbol\lambda^\star = \boldsymbol\mu / \mu_0 \in \mathbb{R}^m_{\geqslant 0}$. For every $\mathbf{x} \in \mathbb{R}^n$, the point $(f_1(\mathbf{x}), \ldots, f_m(\mathbf{x}), f_0(\mathbf{x})) \in A$ (witness $\mathbf{x}$). Substituting into $(\star)$ and dividing by $\mu_0 > 0$:
+\[
+\sum_{i=1}^m \lambda_i^\star f_i(\mathbf{x}) + f_0(\mathbf{x}) \;\geqslant\; p^\star, \qquad \text{i.e., } L(\mathbf{x}, \boldsymbol\lambda^\star) \geqslant p^\star \;\forall \mathbf{x} \in \mathbb{R}^n.
+\]
+Taking the infimum over $\mathbf{x}$: $g(\boldsymbol\lambda^\star) \geqslant p^\star$.
+
+\textbf{Step 7: Combine with weak duality.} Weak duality (Theorem~\ref{thm:weak-duality}) gives $d^\star \leqslant p^\star$. Step~6 gives $g(\boldsymbol\lambda^\star) \geqslant p^\star$, and $\boldsymbol\lambda^\star \geqslant \mathbf{0}$ makes $g(\boldsymbol\lambda^\star)$ a candidate for the dual supremum, so $g(\boldsymbol\lambda^\star) \leqslant d^\star$. Stacking the chain:
+\[
+p^\star \;\leqslant\; g(\boldsymbol\lambda^\star) \;\leqslant\; d^\star \;\leqslant\; p^\star.
+\]
+All inequalities are equalities; $g(\boldsymbol\lambda^\star) = d^\star = p^\star$, so $\boldsymbol\lambda^\star$ attains the dual optimum. $\blacksquare$
+\end{derivation}
+
+\begin{suppremark}[Affine equality constraints]
+The same argument extends to convex problems with affine equality constraints $\mathbf{A}\mathbf{x} = \mathbf{b}$, with Slater's condition strengthened to require strict feasibility for nonlinear inequality constraints only (affine constraints are required to be feasible, not strictly so). Hard-margin and soft-margin SVM use only inequality constraints, so Theorem~\ref{thm:strong-duality} applies directly without invoking the equality extension.
+\end{suppremark}
+
+Strong duality is the foundation of the SVM dual: applied to the SVM primal, Theorem~\ref{thm:strong-duality} guarantees that solving the dual recovers the primal optimum. The corresponding multipliers satisfy a system of equalities and complementary-slackness conditions developed next.
+
+\subsection{KKT conditions}\label{subsec:6.1.5}
+
+The KKT (Karush-Kuhn-Tucker) conditions are the first-order optimality conditions for constrained convex problems. Under the hypotheses of Theorem~\ref{thm:strong-duality} together with differentiability, they characterize primal-dual optimal pairs.
+
+\begin{definition}[KKT conditions]\label{def:kkt}
+For the convex inequality-constrained problem of Definition~\ref{def:constr-prob} (no equality constraints) with $f_0, f_1, \ldots, f_m$ differentiable, the \textbf{Karush-Kuhn-Tucker (KKT) conditions} at a pair $(\mathbf{x}^\star, \boldsymbol\lambda^\star) \in \mathbb{R}^n \times \mathbb{R}^m$ are
+\begin{enumerate}[label=\textup{(\roman*)},ref=\textup{(\roman*)},leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item\label{kkt:stat} \textbf{Stationarity}: $\displaystyle \nabla f_0(\mathbf{x}^\star) + \sum_{i=1}^{m} \lambda_i^\star\, \nabla f_i(\mathbf{x}^\star) \;=\; \mathbf{0}$;
+\item\label{kkt:pfeas} \textbf{Primal feasibility}: $f_i(\mathbf{x}^\star) \leqslant 0$ for $i = 1, \ldots, m$;
+\item\label{kkt:dfeas} \textbf{Dual feasibility}: $\lambda_i^\star \geqslant 0$ for $i = 1, \ldots, m$;
+\item\label{kkt:cs} \textbf{Complementary slackness}: $\lambda_i^\star\, f_i(\mathbf{x}^\star) = 0$ for $i = 1, \ldots, m$.
+\end{enumerate}
+\end{definition}
+
+Each condition has a substantive reading:
+\begin{itemize}[label={},leftmargin=2em,itemsep=4pt,topsep=2pt]
+\item \ref{kkt:stat} extends the unconstrained first-order condition $\nabla f_0(\mathbf{x}^\star) = \mathbf{0}$ (Unit~1 \S 1.9.5). At a constrained optimum, $\mathbf{x}^\star$ globally minimizes the Lagrangian $L(\cdot, \boldsymbol\lambda^\star)$ over $\mathbb{R}^n$, and convexity plus differentiability force $\nabla_{\mathbf{x}} L(\mathbf{x}^\star, \boldsymbol\lambda^\star) = \mathbf{0}$. The proof of \autoref{thm:kkt-necessary} below derives this from strong duality.
+\item \ref{kkt:pfeas} restates that $\mathbf{x}^\star$ is feasible.
+\item \ref{kkt:dfeas} comes from weak duality (\S\ref{subsec:6.1.3}): if some $\lambda_i < 0$, then $\lambda_i f_i(\mathbf{x})$ in the Lagrangian rewards $f_i(\mathbf{x}) > 0$ rather than penalizes it, sending $\inf_{\mathbf{x}} L(\mathbf{x}, \boldsymbol\lambda) \to -\infty$. Only $\boldsymbol\lambda \geqslant \mathbf{0}$ keeps $g(\boldsymbol\lambda)$ a finite lower bound on $p^\star$.
+\item \ref{kkt:cs} encodes the equality $g(\boldsymbol\lambda^\star) = f_0(\mathbf{x}^\star)$ from strong duality. Expanding $g(\boldsymbol\lambda^\star) = \inf_{\mathbf{x}} L(\mathbf{x}, \boldsymbol\lambda^\star) \leqslant L(\mathbf{x}^\star, \boldsymbol\lambda^\star) = f_0(\mathbf{x}^\star) + \sum_i \lambda_i^\star f_i(\mathbf{x}^\star)$ forces $\sum_i \lambda_i^\star f_i(\mathbf{x}^\star) \geqslant 0$; each summand is $\leqslant 0$ by \ref{kkt:dfeas}, \ref{kkt:pfeas}, so all summands vanish, giving $\lambda_i^\star f_i(\mathbf{x}^\star) = 0$ termwise.
+\end{itemize}
+
+\begin{theorem}[KKT, necessary]\label{thm:kkt-necessary}
+Assume the primal problem of Definition~\ref{def:constr-prob} is convex with $f_0, f_i$ differentiable on $\mathbb{R}^n$ for $i = 0, 1, \ldots, m$, has no equality constraints and finite optimal value $p^\star$, and satisfies Slater's condition. If $\mathbf{x}^\star$ is primal optimal and $\boldsymbol\lambda^\star$ is dual optimal, then the KKT conditions of Definition~\ref{def:kkt} hold at $(\mathbf{x}^\star, \boldsymbol\lambda^\star)$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:kkt-necessary}]
+Primal feasibility \ref{kkt:pfeas} and dual feasibility \ref{kkt:dfeas} hold by hypothesis. By strong duality (Theorem~\ref{thm:strong-duality}), $g(\boldsymbol\lambda^\star) = d^\star = p^\star = f_0(\mathbf{x}^\star)$. Expanding the dual function:
+\[
+f_0(\mathbf{x}^\star) \;=\; g(\boldsymbol\lambda^\star) \;=\; \inf_{\mathbf{x} \in \mathbb{R}^n} L(\mathbf{x}, \boldsymbol\lambda^\star) \;\leqslant\; L(\mathbf{x}^\star, \boldsymbol\lambda^\star) \;=\; f_0(\mathbf{x}^\star) + \sum_{i=1}^{m} \lambda_i^\star\, f_i(\mathbf{x}^\star).
+\]
+Subtracting $f_0(\mathbf{x}^\star)$ gives $\sum_i \lambda_i^\star f_i(\mathbf{x}^\star) \geqslant 0$. Each summand is $\leqslant 0$ by \ref{kkt:pfeas} and \ref{kkt:dfeas}; the sum is therefore $\leqslant 0$ as well. Both bounds together force every summand to be $0$, which is complementary slackness \ref{kkt:cs}.
+
+With $\sum_i \lambda_i^\star f_i(\mathbf{x}^\star) = 0$, the displayed inequality is an equality: $L(\mathbf{x}^\star, \boldsymbol\lambda^\star) = \inf_{\mathbf{x}} L(\mathbf{x}, \boldsymbol\lambda^\star)$. So $\mathbf{x}^\star$ globally minimizes $L(\cdot, \boldsymbol\lambda^\star)$ on $\mathbb{R}^n$. The function $L(\cdot, \boldsymbol\lambda^\star) = f_0 + \sum_i \lambda_i^\star f_i$ is convex (nonnegative combination of convex functions; Unit~1 \S 1.9.7) and differentiable, so the first-order optimality corollary (Unit~1 \S 1.9.5) gives $\nabla_{\mathbf{x}} L(\mathbf{x}^\star, \boldsymbol\lambda^\star) = \mathbf{0}$, which is stationarity \ref{kkt:stat}. $\blacksquare$
+\end{derivation}
+
+\begin{theorem}[KKT, sufficient]\label{thm:kkt-sufficient}
+Assume the primal problem of Definition~\ref{def:constr-prob} is convex with $f_0, f_i$ differentiable on $\mathbb{R}^n$, and has no equality constraints. If the KKT conditions hold at $(\mathbf{x}^\star, \boldsymbol\lambda^\star)$, then $\mathbf{x}^\star$ is primal optimal, $\boldsymbol\lambda^\star$ is dual optimal, and $p^\star = d^\star$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:kkt-sufficient}]
+By \ref{kkt:dfeas}, $L(\cdot, \boldsymbol\lambda^\star) = f_0 + \sum_i \lambda_i^\star f_i$ is a nonnegative combination of convex differentiable functions, hence convex and differentiable. Stationarity \ref{kkt:stat} is $\nabla_{\mathbf{x}} L(\mathbf{x}^\star, \boldsymbol\lambda^\star) = \mathbf{0}$, so by Unit~1's first-order optimality corollary (\S 1.9.5), $\mathbf{x}^\star$ globally minimizes $L(\cdot, \boldsymbol\lambda^\star)$:
+\[
+g(\boldsymbol\lambda^\star) \;=\; L(\mathbf{x}^\star, \boldsymbol\lambda^\star) \;=\; f_0(\mathbf{x}^\star) + \sum_i \lambda_i^\star f_i(\mathbf{x}^\star) \;=\; f_0(\mathbf{x}^\star),
+\]
+the last equality by complementary slackness \ref{kkt:cs}. For any primal feasible $\mathbf{x}$,
+\[
+f_0(\mathbf{x}) \;\geqslant\; f_0(\mathbf{x}) + \sum_i \lambda_i^\star f_i(\mathbf{x}) \;=\; L(\mathbf{x}, \boldsymbol\lambda^\star) \;\geqslant\; L(\mathbf{x}^\star, \boldsymbol\lambda^\star) \;=\; f_0(\mathbf{x}^\star),
+\]
+where the first inequality uses $\lambda_i^\star \geqslant 0$ and $f_i(\mathbf{x}) \leqslant 0$ (primal feasibility of $\mathbf{x}$), and the second inequality is the global-minimum property of $\mathbf{x}^\star$ for $L(\cdot, \boldsymbol\lambda^\star)$. Hence $f_0(\mathbf{x}^\star) \leqslant f_0(\mathbf{x})$ for every primal feasible $\mathbf{x}$, so $\mathbf{x}^\star$ is primal optimal and $f_0(\mathbf{x}^\star) = p^\star$. Weak duality gives $g(\boldsymbol\lambda^\star) \leqslant d^\star \leqslant p^\star$; combined with $g(\boldsymbol\lambda^\star) = f_0(\mathbf{x}^\star) = p^\star$, all three are equal, so $\boldsymbol\lambda^\star$ is dual optimal and the duality gap closes. $\blacksquare$
+\end{derivation}
+
+\begin{suppremark}[Non-differentiable case]
+When $f_0$ or some $f_i$ is convex but not differentiable, stationarity \ref{kkt:stat} is replaced by the subgradient inclusion $\mathbf{0} \in \partial_{\mathbf{x}} L(\mathbf{x}^\star, \boldsymbol\lambda^\star)$, where $\partial_{\mathbf{x}}$ is the subdifferential in $\mathbf{x}$ (Unit~1 \S 1.9.5). Conditions \ref{kkt:pfeas}--\ref{kkt:cs} are unchanged. Unit~2 \S 2.3.2 used the subgradient form for Lasso: the unconstrained Lasso problem has a subgradient stationarity condition that yields the soft-thresholding update.
+\end{suppremark}
+
+The hard-margin and soft-margin SVM problems both satisfy the hypotheses of Theorems~\ref{thm:kkt-necessary} and \ref{thm:kkt-sufficient}: convex objective, differentiable, only inequality constraints, and Slater's condition holds (under separability for hard margin, or for any $C > 0$ in soft margin). The next sections derive the SVM dual and read the support-vector geometry directly off the KKT conditions.
+
+\section{Maximum-Margin Classifier}\label{sec:6.2}
+
+The hard-margin support vector machine fits a separating hyperplane to linearly separable data by maximizing the geometric distance from the closest training point.
+
+\subsection{Functional and geometric margins}\label{subsec:6.2.1}
+
+Throughout this section, the training data are $\{(\mathbf{x}_i, y_i)\}_{i=1}^{n}$ with $\mathbf{x}_i \in \mathbb{R}^p$ and $y_i \in \{-1, +1\}$. A \textbf{linear classifier} $(\mathbf{w}, b) \in \mathbb{R}^p \times \mathbb{R}$ predicts $\operatorname{sign}(\mathbf{w}^\top \mathbf{x} + b)$. Its \textbf{decision boundary} is the hyperplane
+\[
+H(\mathbf{w}, b) \;=\; \{\mathbf{x} \in \mathbb{R}^p : \mathbf{w}^\top \mathbf{x} + b = 0\}.
+\]
+
+\begin{definition}[Linear separability]\label{def:linsep}
+The training data $\{(\mathbf{x}_i, y_i)\}_{i=1}^n$ are \textbf{linearly separable} if there exist $\mathbf{w} \in \mathbb{R}^p$ and $b \in \mathbb{R}$ with
+\[
+y_i (\mathbf{w}^\top \mathbf{x}_i + b) \;>\; 0, \qquad i = 1, \ldots, n.
+\]
+\end{definition}
+
+Linear separability admits infinitely many separating hyperplanes; the SVM selects one by a margin criterion.
+
+\begin{definition}[Functional and geometric margins]\label{def:margins}
+For a linear classifier $(\mathbf{w}, b)$ with $\mathbf{w} \neq \mathbf{0}$ and a labeled point $(\mathbf{x}_i, y_i)$, the \textbf{functional margin} is
+\[
+\gamma_i(\mathbf{w}, b) \;=\; y_i (\mathbf{w}^\top \mathbf{x}_i + b),
+\]
+and the \textbf{geometric margin} is
+\[
+\hat\gamma_i(\mathbf{w}, b) \;=\; \frac{y_i (\mathbf{w}^\top \mathbf{x}_i + b)}{\|\mathbf{w}\|}.
+\]
+The \textbf{geometric margin of the classifier on the dataset} is $\hat\gamma(\mathbf{w}, b) = \min_{i = 1, \ldots, n} \hat\gamma_i(\mathbf{w}, b)$.
+\end{definition}
+
+The geometric margin is the perpendicular distance from a point to the hyperplane $H(\mathbf{w}, b)$, derived as follows. The unit normal to $H(\mathbf{w}, b)$ is $\mathbf{w}/\|\mathbf{w}\|$ (the gradient of $\mathbf{z} \mapsto \mathbf{w}^\top \mathbf{z} + b$, normalized). For $\mathbf{x} \in \mathbb{R}^p$, write the perpendicular foot on $H(\mathbf{w}, b)$ as $\mathbf{x} - t\, \mathbf{w}/\|\mathbf{w}\|$ and impose membership:
+\[
+\mathbf{w}^\top\!\Big(\mathbf{x} - t\,\frac{\mathbf{w}}{\|\mathbf{w}\|}\Big) + b \;=\; 0 \quad \Longrightarrow \quad t \;=\; \frac{\mathbf{w}^\top \mathbf{x} + b}{\|\mathbf{w}\|}.
+\]
+The scalar $t$ is the signed perpendicular distance from $\mathbf{x}$ to $H(\mathbf{w}, b)$, positive on the side $\{\mathbf{w}^\top \mathbf{z} + b > 0\}$. Multiplying by $y_i \in \{-1, +1\}$ inserts a sign that is positive when the classifier's prediction $\operatorname{sign}(\mathbf{w}^\top \mathbf{x}_i + b)$ agrees with $y_i$, recovering $\hat\gamma_i = y_i(\mathbf{w}^\top \mathbf{x}_i + b)/\|\mathbf{w}\|$. The classifier separates the training data iff $\hat\gamma(\mathbf{w}, b) > 0$.
+
+\paragraph{Scale invariance.} Replacing $(\mathbf{w}, b)$ by $(c\mathbf{w}, cb)$ for $c > 0$ multiplies the functional margin by $c$ and the norm $\|\mathbf{w}\|$ by $c$, so the geometric margin $\hat\gamma_i$ is unchanged. The hyperplane $H(\mathbf{w}, b)$ is also unchanged. Geometric margin therefore measures a property of the decision boundary itself, independent of the parameter scaling used to represent it.
+
+\paragraph{Maximum-margin objective.} The hard-margin SVM searches for the classifier with the largest geometric margin:
+\[
+\max_{\mathbf{w} \in \mathbb{R}^p,\, b \in \mathbb{R}}\; \hat\gamma(\mathbf{w}, b).
+\]
+Use scale invariance to fix the normalization $\min_i y_i(\mathbf{w}^\top \mathbf{x}_i + b) = 1$. Any classifier with positive geometric margin admits a unique positive rescaling that produces this equality; the rescaling does not change $\hat\gamma$. Under this normalization $\hat\gamma = 1 / \|\mathbf{w}\|$, so maximizing $\hat\gamma$ becomes minimizing $\|\mathbf{w}\|$, equivalently minimizing $\tfrac{1}{2}\|\mathbf{w}\|^2$. Replacing the equality $\min_i y_i(\cdot) = 1$ by the inequalities $y_i(\cdot) \geqslant 1$ is without loss: at any optimum at least one constraint is tight, since otherwise a small uniform rescaling $(\mathbf{w}, b) \mapsto (c\mathbf{w}, cb)$ with $c \in (0, 1)$ would decrease $\|\mathbf{w}\|$ without violating feasibility.
+
+\begin{definition}[Hard-margin SVM primal]\label{def:hard-svm}
+Given linearly separable training data $\{(\mathbf{x}_i, y_i)\}_{i=1}^n$, the \textbf{hard-margin SVM primal problem} is
+\[
+\min_{\mathbf{w} \in \mathbb{R}^p,\, b \in \mathbb{R}}\; \tfrac{1}{2}\|\mathbf{w}\|^2 \quad \text{subject to } y_i (\mathbf{w}^\top \mathbf{x}_i + b) \geqslant 1, \quad i = 1, \ldots, n.
+\]
+\end{definition}
+
+The objective $\tfrac{1}{2}\|\mathbf{w}\|^2$ is a convex quadratic in $\mathbf{w}$ (and constant in $b$). Each constraint $1 - y_i (\mathbf{w}^\top \mathbf{x}_i + b) \leqslant 0$ is affine in $(\mathbf{w}, b)$. The hard-margin SVM is therefore a convex quadratic program with affine inequality constraints, fitting the standard form of Definition~\ref{def:constr-prob} with $f_0(\mathbf{w}, b) = \tfrac{1}{2}\|\mathbf{w}\|^2$ and $f_i(\mathbf{w}, b) = 1 - y_i(\mathbf{w}^\top \mathbf{x}_i + b)$.
+
+\subsection{Existence and uniqueness of the optimal hyperplane}\label{subsec:6.2.2}
+
+\begin{theorem}[Hard-margin solution]\label{thm:hard-svm-exists}
+On linearly separable training data containing at least one point of each class, the hard-margin SVM primal of Definition~\ref{def:hard-svm} attains a finite optimal value $p^\star > 0$, the optimizer $\mathbf{w}^\star$ is unique, and the set of optimal intercepts $b^\star$ is a closed bounded interval.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:hard-svm-exists}]
+The proof uses three standard analysis facts in $\mathbb{R}^d$: every bounded sequence has a convergent subsequence (Bolzano--Weierstrass); a closed set contains the limits of its convergent sequences; a continuous function preserves limits.
+
+\textbf{Feasibility.} Linear separability supplies $(\mathbf{w}_0, b_0)$ with $y_i(\mathbf{w}_0^\top \mathbf{x}_i + b_0) > 0$ for all $i$. Setting $c = 1 / \min_i y_i(\mathbf{w}_0^\top \mathbf{x}_i + b_0) > 0$ and rescaling to $(c\mathbf{w}_0, cb_0)$ produces a point feasible for Definition~\ref{def:hard-svm}.
+
+\textbf{Existence.} Take a feasible minimizing sequence $\{(\mathbf{w}_k, b_k)\}$, $\tfrac{1}{2}\|\mathbf{w}_k\|^2 \to p^\star$. The norms $\|\mathbf{w}_k\|$ are bounded above. Pick any positive-class point $(\mathbf{x}_+, +1)$ and any negative-class point $(\mathbf{x}_-, -1)$; feasibility gives
+\[
+b_k \;\geqslant\; 1 - \mathbf{w}_k^\top \mathbf{x}_+, \qquad b_k \;\leqslant\; -1 - \mathbf{w}_k^\top \mathbf{x}_-,
+\]
+which bounds $\{b_k\}$ above and below. By compactness a subsequence converges to some $(\mathbf{w}^\star, b^\star)$. The feasible set is closed (a finite intersection of closed half-spaces), so $(\mathbf{w}^\star, b^\star)$ is feasible; continuity of $\tfrac{1}{2}\|\cdot\|^2$ gives $\tfrac{1}{2}\|\mathbf{w}^\star\|^2 = p^\star$. The optimal value is positive: $\mathbf{w} = \mathbf{0}$ would require $y_i b \geqslant 1$ for every $i$, impossible with both labels present.
+
+\textbf{Uniqueness of $\mathbf{w}^\star$.} Suppose $(\mathbf{w}_1, b_1)$ and $(\mathbf{w}_2, b_2)$ both attain $p^\star$. The midpoint $\big(\tfrac{1}{2}(\mathbf{w}_1 + \mathbf{w}_2), \tfrac{1}{2}(b_1 + b_2)\big)$ is feasible since the constraints are convex. A direct expansion gives the strict-convexity identity for the squared norm:
+\[
+\big\|\tfrac{1}{2}(\mathbf{w}_1 + \mathbf{w}_2)\big\|^2 \;=\; \tfrac{1}{2}\|\mathbf{w}_1\|^2 + \tfrac{1}{2}\|\mathbf{w}_2\|^2 - \tfrac{1}{4}\|\mathbf{w}_1 - \mathbf{w}_2\|^2 \;=\; 2p^\star - \tfrac{1}{4}\|\mathbf{w}_1 - \mathbf{w}_2\|^2.
+\]
+The midpoint's objective is therefore $p^\star - \tfrac{1}{8}\|\mathbf{w}_1 - \mathbf{w}_2\|^2$. Optimality forces this to be $\geqslant p^\star$, so $\|\mathbf{w}_1 - \mathbf{w}_2\|^2 \leqslant 0$, hence $\mathbf{w}_1 = \mathbf{w}_2$.
+
+\textbf{Set of optimal $b^\star$.} The objective is constant in $b$, so every $b$ with $(\mathbf{w}^\star, b)$ feasible is itself optimal. That set is the intersection of the half-lines $b \geqslant 1 - (\mathbf{w}^\star)^\top \mathbf{x}_i$ over $i$ with $y_i = +1$ and $b \leqslant -1 - (\mathbf{w}^\star)^\top \mathbf{x}_i$ over $i$ with $y_i = -1$, a closed interval, bounded by the existence step's argument. $\blacksquare$
+\end{derivation}
+
+The optimal $\mathbf{w}^\star$ is the unique normal direction of the maximum-margin hyperplane, and the hyperplane itself is uniquely positioned whenever both classes contribute at least one tight (support-vector) constraint. The parallelogram-law uniqueness step echoes the projection lemma in Unit~1 \S 1.9.8: both rest on strict convexity of the squared Euclidean norm.
+
+\section{The Dual SVM and Support Vectors}\label{sec:6.3}
+
+The hard-margin primal of Definition~\ref{def:hard-svm} has a dual quadratic program in $n$ variables (one multiplier per training point), and the KKT conditions identify a small subset of training points as the support vectors that determine the decision boundary.
+
+\subsection{Lagrangian and dual derivation}\label{subsec:6.3.1}
+
+Apply Definition~\ref{def:lagrangian} to the hard-margin primal. The constraints $f_i(\mathbf{w}, b) = 1 - y_i(\mathbf{w}^\top \mathbf{x}_i + b) \leqslant 0$ carry multipliers $\lambda_i \geqslant 0$, and the Lagrangian is
+\[
+L(\mathbf{w}, b, \boldsymbol\lambda) \;=\; \tfrac{1}{2}\|\mathbf{w}\|^2 + \sum_{i=1}^n \lambda_i \big[1 - y_i(\mathbf{w}^\top \mathbf{x}_i + b)\big] \;=\; \tfrac{1}{2}\|\mathbf{w}\|^2 \;-\; \mathbf{w}^\top \!\sum_{i=1}^n \lambda_i y_i \mathbf{x}_i \;-\; b \sum_{i=1}^n \lambda_i y_i \;+\; \sum_{i=1}^n \lambda_i.
+\]
+
+The hard-margin primal is convex with affine inequality constraints; Slater's condition reduces to feasibility (Definition~\ref{def:slater}), ensured by linear separability. By Theorem~\ref{thm:strong-duality}, strong duality holds and a dual optimum is attained. By Theorem~\ref{thm:kkt-necessary}, condition \ref{kkt:stat} of Definition~\ref{def:kkt} (stationarity) holds at the primal-dual optimum:
+\[
+\nabla_{\mathbf{w}} L \;=\; \mathbf{w}^\star - \sum_{i=1}^n \lambda_i^\star y_i \mathbf{x}_i \;=\; \mathbf{0}, \qquad \frac{\partial L}{\partial b} \;=\; -\sum_{i=1}^n \lambda_i^\star y_i \;=\; 0.
+\]
+The first equation expresses $\mathbf{w}^\star$ as a linear combination of the training inputs; the second is an equality constraint on the dual variable.
+
+\begin{theorem}[Hard-margin SVM dual]\label{thm:hard-svm-dual}
+The Lagrange dual of the hard-margin SVM primal of Definition~\ref{def:hard-svm} is
+\[
+\max_{\boldsymbol\lambda \in \mathbb{R}^n}\; \sum_{i=1}^n \lambda_i \;-\; \tfrac{1}{2} \sum_{i=1}^n \sum_{j=1}^n \lambda_i \lambda_j y_i y_j\, \mathbf{x}_i^\top \mathbf{x}_j \quad \text{subject to}\quad \lambda_i \geqslant 0\;\; (i = 1, \ldots, n), \quad \sum_{i=1}^n \lambda_i y_i = 0.
+\]
+The dual optimal value equals the primal optimal value, $d^\star = p^\star$, and from any dual-optimal $\boldsymbol\lambda^\star$ the primal weight vector is recovered by $\mathbf{w}^\star = \sum_{i=1}^n \lambda_i^\star y_i \mathbf{x}_i$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:hard-svm-dual}]
+The Lagrangian is convex in $(\mathbf{w}, b)$ for every fixed $\boldsymbol\lambda \geqslant \mathbf{0}$ (a positive-semi-definite quadratic in $\mathbf{w}$ plus an affine term). The dual function is
+\[
+g(\boldsymbol\lambda) \;=\; \inf_{\mathbf{w}, b} L(\mathbf{w}, b, \boldsymbol\lambda).
+\]
+Write $\tilde{\mathbf{x}}(\boldsymbol\lambda) = \sum_i \lambda_i y_i \mathbf{x}_i$ and $c(\boldsymbol\lambda) = \sum_i \lambda_i y_i$. The Lagrangian rewrites as
+\[
+L \;=\; \tfrac{1}{2}\|\mathbf{w}\|^2 \;-\; \mathbf{w}^\top \tilde{\mathbf{x}}(\boldsymbol\lambda) \;-\; b\, c(\boldsymbol\lambda) \;+\; \sum_i \lambda_i.
+\]
+The term $-b\, c(\boldsymbol\lambda)$ is linear in $b$. If $c(\boldsymbol\lambda) \neq 0$, sending $b \to \pm \infty$ in the appropriate sign drives $L \to -\infty$, so $g(\boldsymbol\lambda) = -\infty$ and $\boldsymbol\lambda \notin \dom g$.
+
+Restrict to $\boldsymbol\lambda$ with $c(\boldsymbol\lambda) = 0$. The Lagrangian is then constant in $b$ and a strictly convex quadratic in $\mathbf{w}$; its unique minimizer over $\mathbf{w}$ is $\mathbf{w}(\boldsymbol\lambda) = \tilde{\mathbf{x}}(\boldsymbol\lambda)$ (set $\nabla_{\mathbf{w}} L = \mathbf{0}$). Substituting back,
+\begin{align*}
+g(\boldsymbol\lambda) \;&=\; \tfrac{1}{2}\|\tilde{\mathbf{x}}(\boldsymbol\lambda)\|^2 \;-\; \tilde{\mathbf{x}}(\boldsymbol\lambda)^\top \tilde{\mathbf{x}}(\boldsymbol\lambda) \;+\; \sum_i \lambda_i \\
+&=\; -\tfrac{1}{2}\|\tilde{\mathbf{x}}(\boldsymbol\lambda)\|^2 \;+\; \sum_i \lambda_i \\
+&=\; \sum_{i=1}^n \lambda_i \;-\; \tfrac{1}{2}\sum_{i=1}^n \sum_{j=1}^n \lambda_i \lambda_j y_i y_j\, \mathbf{x}_i^\top \mathbf{x}_j.
+\end{align*}
+The dual problem $\max_{\boldsymbol\lambda \geqslant 0} g(\boldsymbol\lambda)$, together with the implicit domain restriction $c(\boldsymbol\lambda) = 0$, is exactly the displayed quadratic program. Theorem~\ref{thm:strong-duality} gives $d^\star = p^\star$, and KKT condition \ref{kkt:stat} at the primal-dual optimum, $\mathbf{w}^\star = \sum_i \lambda_i^\star y_i \mathbf{x}_i$, recovers the primal weight. $\blacksquare$
+\end{derivation}
+
+Two features of the dual deserve notice. The objective depends on training inputs only through the inner products $\mathbf{x}_i^\top \mathbf{x}_j$, the slot kernel methods will fill. The constraint set is the nonnegative orthant in $\mathbb{R}^n$ intersected with one affine hyperplane, so the dual is an $n \times n$ convex QP regardless of input dimension $p$.
+
+\subsection{KKT conditions and support vectors}\label{subsec:6.3.2}
+
+The remaining KKT conditions identify which training points actually shape the decision boundary.
+
+\begin{theorem}[KKT for the hard-margin SVM]\label{thm:hard-svm-kkt}
+A triple $(\mathbf{w}^\star, b^\star, \boldsymbol\lambda^\star)$ is primal-dual optimal for the hard-margin SVM of Definition~\ref{def:hard-svm} if and only if it satisfies all four KKT conditions of Definition~\ref{def:kkt}, which in this problem read
+\begin{enumerate}[label=\textup{(\roman*)},ref=\textup{(\roman*)},leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item\label{svm:stat} \textbf{Stationarity}: $\displaystyle \mathbf{w}^\star = \sum_{i=1}^n \lambda_i^\star y_i \mathbf{x}_i$ and $\displaystyle \sum_{i=1}^n \lambda_i^\star y_i = 0$;
+\item\label{svm:pfeas} \textbf{Primal feasibility}: $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) \geqslant 1$ for $i = 1, \ldots, n$;
+\item\label{svm:dfeas} \textbf{Dual feasibility}: $\lambda_i^\star \geqslant 0$ for $i = 1, \ldots, n$;
+\item\label{svm:cs} \textbf{Complementary slackness}: $\lambda_i^\star \big[1 - y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star)\big] = 0$ for $i = 1, \ldots, n$.
+\end{enumerate}
+\end{theorem}
+
+The hard-margin problem is convex, differentiable, has only affine inequality constraints, and Slater's condition reduces to feasibility (linear separability). Theorems~\ref{thm:kkt-necessary} and \ref{thm:kkt-sufficient} then apply directly to give the if-and-only-if statement.
+
+\begin{definition}[Support vectors]\label{def:support-vector}
+A training point $(\mathbf{x}_i, y_i)$ is a \textbf{support vector} if its multiplier at the dual optimum is strictly positive, $\lambda_i^\star > 0$. The set of indices $\mathcal{S} = \{i : \lambda_i^\star > 0\}$ is the \textbf{support set}.
+\end{definition}
+
+Complementary slackness \ref{svm:cs} splits the training points into two groups:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item if $\lambda_i^\star > 0$ then $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) = 1$: the support vector $\mathbf{x}_i$ lies exactly on the margin boundary;
+\item if $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) > 1$ then $\lambda_i^\star = 0$: a strictly-correct point makes no contribution to $\mathbf{w}^\star$.
+\end{itemize}
+
+Stationarity \ref{svm:stat} reads $\mathbf{w}^\star = \sum_i \lambda_i^\star y_i \mathbf{x}_i$, which collapses to a sum over support vectors only:
+\[
+\mathbf{w}^\star \;=\; \sum_{i \in \mathcal{S}} \lambda_i^\star y_i \mathbf{x}_i.
+\]
+The decision boundary depends on the training data only through the support set; deleting any non-support point from the training set leaves $\mathbf{w}^\star$ and $b^\star$ unchanged.
+
+\paragraph{Recovering $b^\star$.} For any support-vector index $i \in \mathcal{S}$, complementary slackness gives $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) = 1$, hence
+\[
+b^\star \;=\; y_i - \mathbf{w}^{\star \top} \mathbf{x}_i \;=\; y_i - \sum_{j \in \mathcal{S}} \lambda_j^\star y_j\, \mathbf{x}_j^\top \mathbf{x}_i \qquad (i \in \mathcal{S}),
+\]
+using $1/y_i = y_i$ for $y_i \in \{-1, +1\}$. Numerical implementations average this expression over all $i \in \mathcal{S}$ to reduce floating-point noise from any single support vector.
+
+\subsection{Margin width and the dual decision function}\label{subsec:6.3.3}
+
+The support-vector characterization of \S\ref{subsec:6.3.2} has two geometric consequences for the maximum-margin classifier.
+
+\paragraph{Margin width.} Under the normalization $\min_i y_i(\mathbf{w}^{\star\top}\mathbf{x}_i + b^\star) = 1$, the decision boundary $\{\mathbf{x} : \mathbf{w}^{\star\top}\mathbf{x} + b^\star = 0\}$ sits between the two parallel margin hyperplanes
+\[
+H_+ \;=\; \{\mathbf{x} : \mathbf{w}^{\star\top}\mathbf{x} + b^\star = +1\}, \qquad H_- \;=\; \{\mathbf{x} : \mathbf{w}^{\star\top}\mathbf{x} + b^\star = -1\}.
+\]
+The Euclidean distance between $H_+$ and $H_-$ is $2 / \|\mathbf{w}^\star\|$, the \textbf{margin width}. Maximizing the margin width is therefore equivalent to minimizing $\|\mathbf{w}^\star\|$, recovering the primal objective of Definition~\ref{def:hard-svm}.
+
+\paragraph{Decision function in dual form.} Substituting $\mathbf{w}^\star = \sum_{i \in \mathcal{S}} \lambda_i^\star y_i \mathbf{x}_i$ into the linear classifier yields the prediction function
+\[
+f^\star(\mathbf{x}) \;=\; \mathbf{w}^{\star\top}\mathbf{x} + b^\star \;=\; \sum_{i \in \mathcal{S}} \lambda_i^\star y_i\, \mathbf{x}_i^\top \mathbf{x} \;+\; b^\star, \qquad \hat y(\mathbf{x}) \;=\; \operatorname{sign}\!\big(f^\star(\mathbf{x})\big).
+\]
+Both training (the dual QP of Theorem~\ref{thm:hard-svm-dual}) and prediction depend on the input data only through inner products $\mathbf{x}_i^\top \mathbf{x}_j$ and $\mathbf{x}_i^\top \mathbf{x}$. Kernel methods exploit this.
+
+\section{Soft-Margin SVM and Hinge Loss}\label{sec:6.4}
+
+The hard-margin SVM requires linearly separable data. Real data rarely is; the soft-margin extension allows individual training points to violate their margin constraint by a controlled amount.
+
+\subsection{Slack variables and the soft-margin primal}\label{subsec:6.4.1}
+
+For each training point $(\mathbf{x}_i, y_i)$, introduce a slack variable $\xi_i \geqslant 0$ measuring how far the point falls short of the margin boundary. The relaxed margin constraint is
+\[
+y_i(\mathbf{w}^\top \mathbf{x}_i + b) \;\geqslant\; 1 - \xi_i, \qquad \xi_i \geqslant 0.
+\]
+The value of $\xi_i$ records the violation size:
+
+\begin{ctab}
+\begin{tabular}{l c}
+\toprule
+\textbf{Point status} & \textbf{Slack $\xi_i$} \\
+\midrule
+Correctly classified, outside margin slab ($y_i(\mathbf{w}^\top \mathbf{x}_i + b) \geqslant 1$) & $0$ \\
+Inside margin slab                                                                          & $0 < \xi_i \leqslant 1$ \\
+Misclassified (wrong side of decision boundary)                                             & $\xi_i > 1$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\begin{definition}[Soft-margin SVM primal]\label{def:soft-svm}
+For training data $\{(\mathbf{x}_i, y_i)\}_{i=1}^n$ with $y_i \in \{-1, +1\}$ and a regularization parameter $C > 0$, the \textbf{soft-margin SVM primal} is
+\[
+\min_{\mathbf{w} \in \mathbb{R}^p,\, b \in \mathbb{R},\, \boldsymbol\xi \in \mathbb{R}^n}\; \tfrac{1}{2}\|\mathbf{w}\|^2 + C \sum_{i=1}^n \xi_i \quad \text{subject to}\quad
+\begin{cases} y_i(\mathbf{w}^\top \mathbf{x}_i + b) \geqslant 1 - \xi_i, & i = 1, \ldots, n, \\ \xi_i \geqslant 0, & i = 1, \ldots, n. \end{cases}
+\]
+\end{definition}
+
+$\tfrac{1}{2}\|\mathbf{w}\|^2$ favours a wide margin; $C \sum_i \xi_i$ penalizes violations. Large $C$ pushes toward few violations and recovers the hard-margin solution as $C \to \infty$ on separable data; small $C$ tolerates more violations for a wider margin.
+
+The problem is convex: a convex-quadratic-plus-linear objective with $2n$ affine inequality constraints and no equalities. Feasibility is automatic ($\mathbf{w} = \mathbf{0}$, $b = 0$, $\xi_i = 1$ gives objective $Cn$); Slater reduces to feasibility for affine constraints (Definition~\ref{def:slater}), so Theorem~\ref{thm:strong-duality} applies for every $C > 0$ and every dataset. The hard-margin's linear-separability requirement is replaced by universal feasibility of slacks: a non-separable dataset is handled at finite cost, with positive $\xi_i^\star$ allocated to inseparable points.
+
+\subsection{Soft-margin dual and the box constraint}\label{subsec:6.4.2}
+
+The Lagrangian carries one nonnegative multiplier per constraint: $\lambda_i \geqslant 0$ for the margin-with-slack constraint and $\mu_i \geqslant 0$ for the slack-nonnegativity constraint $-\xi_i \leqslant 0$:
+\[
+L(\mathbf{w}, b, \boldsymbol\xi, \boldsymbol\lambda, \boldsymbol\mu) \;=\; \tfrac{1}{2}\|\mathbf{w}\|^2 + C \sum_i \xi_i + \sum_i \lambda_i \big[1 - \xi_i - y_i(\mathbf{w}^\top \mathbf{x}_i + b)\big] - \sum_i \mu_i \xi_i.
+\]
+Rearranging,
+\[
+L \;=\; \tfrac{1}{2}\|\mathbf{w}\|^2 - \mathbf{w}^\top \!\sum_i \lambda_i y_i \mathbf{x}_i - b \sum_i \lambda_i y_i + \sum_i \xi_i (C - \lambda_i - \mu_i) + \sum_i \lambda_i.
+\]
+
+\begin{theorem}[Soft-margin SVM dual]\label{thm:soft-svm-dual}
+The Lagrange dual of the soft-margin SVM primal of Definition~\ref{def:soft-svm} is
+\[
+\max_{\boldsymbol\lambda \in \mathbb{R}^n}\; \sum_{i=1}^n \lambda_i - \tfrac{1}{2}\sum_{i=1}^n \sum_{j=1}^n \lambda_i \lambda_j y_i y_j\, \mathbf{x}_i^\top \mathbf{x}_j \quad \text{subject to}\quad 0 \leqslant \lambda_i \leqslant C\;\; (i = 1, \ldots, n), \quad \sum_{i=1}^n \lambda_i y_i = 0.
+\]
+The dual optimal value equals the primal optimal value, $d^\star = p^\star$, and the primal weight vector is recovered by $\mathbf{w}^\star = \sum_{i=1}^n \lambda_i^\star y_i \mathbf{x}_i$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:soft-svm-dual}]
+Both $b$ and $\boldsymbol\xi$ enter $L$ linearly; for the inner infimum over them to be finite, the corresponding coefficients must vanish:
+\[
+\frac{\partial L}{\partial b} \;=\; -\sum_i \lambda_i y_i \;=\; 0, \qquad \frac{\partial L}{\partial \xi_i} \;=\; C - \lambda_i - \mu_i \;=\; 0 \;\text{ for every } i.
+\]
+If either condition fails, the linear term drives $L$ to $-\infty$ along the appropriate direction in $b$ or $\xi_i$, so the dual point falls outside $\dom g$. The second condition gives $\mu_i = C - \lambda_i$; combined with $\mu_i \geqslant 0$, this produces the upper bound $\lambda_i \leqslant C$, and the slack-nonnegativity multiplier $\boldsymbol\mu$ disappears from the dual.
+
+Setting $\nabla_\mathbf{w} L = \mathbf{0}$ gives $\mathbf{w}(\boldsymbol\lambda) = \sum_i \lambda_i y_i \mathbf{x}_i$. Substituting back, with the slack term $\xi_i (C - \lambda_i - \mu_i)$ identically zero,
+\[
+g(\boldsymbol\lambda) \;=\; -\tfrac{1}{2}\|\mathbf{w}(\boldsymbol\lambda)\|^2 + \sum_i \lambda_i \;=\; \sum_i \lambda_i - \tfrac{1}{2}\sum_{i, j} \lambda_i \lambda_j y_i y_j\, \mathbf{x}_i^\top \mathbf{x}_j.
+\]
+The dual problem is $\max_{\boldsymbol\lambda} g(\boldsymbol\lambda)$ over the box $0 \leqslant \lambda_i \leqslant C$ plus the equality constraint $\sum_i \lambda_i y_i = 0$. Theorem~\ref{thm:strong-duality}, whose hypotheses were verified at the close of \S\ref{subsec:6.4.1}, gives $d^\star = p^\star$ and the recovery formula for $\mathbf{w}^\star$. $\blacksquare$
+\end{derivation}
+
+The soft-margin dual differs from the hard-margin dual (Theorem~\ref{thm:hard-svm-dual}) only by adding the upper bound $\lambda_i \leqslant C$. As $C \to \infty$, the bound becomes inactive and the dual reduces to the hard-margin one; finite $C$ caps each point's influence on $\mathbf{w}^\star$.
+
+\paragraph{Three classes of training points.} Complementary slackness for the two constraints reads
+\[
+\lambda_i^\star \big[1 - \xi_i^\star - y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star)\big] = 0, \qquad \mu_i^\star \xi_i^\star \;=\; (C - \lambda_i^\star)\, \xi_i^\star \;=\; 0.
+\]
+The pair partitions training points by the value of $\lambda_i^\star$:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item $\lambda_i^\star = 0$: $\mu_i^\star = C > 0$ forces $\xi_i^\star = 0$, and the margin constraint holds with $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) \geqslant 1$. The point sits outside the margin slab and contributes nothing to $\mathbf{w}^\star$.
+\item $0 < \lambda_i^\star < C$ (\textbf{margin support vector}): $\mu_i^\star = C - \lambda_i^\star > 0$ forces $\xi_i^\star = 0$, and the first complementary slackness equation gives $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) = 1$. The point sits exactly on the margin boundary.
+\item $\lambda_i^\star = C$ (\textbf{bound support vector}): $\mu_i^\star = 0$ permits $\xi_i^\star \geqslant 0$, and $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) = 1 - \xi_i^\star$. The point sits inside the margin slab when $0 < \xi_i^\star \leqslant 1$ and is misclassified when $\xi_i^\star > 1$.
+\end{itemize}
+
+\paragraph{Recovering $b^\star$.} A margin support vector ($0 < \lambda_i^\star < C$) has $\xi_i^\star = 0$ and $y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star) = 1$, hence $b^\star = y_i - \mathbf{w}^{\star \top} \mathbf{x}_i$. Bound support vectors do not pin $b^\star$ because their slack value is not determined directly from $\boldsymbol\lambda^\star$; numerical implementations average the formula over the margin support vectors only.
+
+\subsection{Hinge loss reformulation}\label{subsec:6.4.3}
+
+The soft-margin primal can be rewritten as a regularized empirical risk minimization in $(\mathbf{w}, b)$ alone, with the slack variables eliminated and a specific loss function exposed.
+
+\begin{lemma}[Optimal slack equals hinge loss]\label{lem:slack-hinge}
+At any optimum of the soft-margin primal of Definition~\ref{def:soft-svm}, the optimal slack for training point $(\mathbf{x}_i, y_i)$ is
+\[
+\xi_i^\star \;=\; \big[1 - y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star)\big]_+ \;=\; \max\!\big(0,\; 1 - y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star)\big).
+\]
+\end{lemma}
+
+\begin{derivation}[Proof of Lemma~\ref{lem:slack-hinge}]
+Fix $(\mathbf{w}^\star, b^\star)$ at the optimum. The slack $\xi_i$ enters the primal only through the term $C \xi_i$ in the objective and the per-point constraints $\xi_i \geqslant 0$ and $\xi_i \geqslant 1 - y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star)$. With $C > 0$, minimizing the objective in $\xi_i$ alone (the other variables fixed) is achieved at the smallest feasible value, which is $\max\big(0,\; 1 - y_i(\mathbf{w}^{\star \top} \mathbf{x}_i + b^\star)\big)$. $\blacksquare$
+\end{derivation}
+
+\begin{definition}[Hinge loss]\label{def:hinge-loss}
+The \textbf{hinge loss} for binary classification with labels $y \in \{-1, +1\}$ and a real-valued score $f(\mathbf{x})$ is
+\[
+\ell_{\mathrm{hinge}}(y, f(\mathbf{x})) \;=\; \big[1 - y\, f(\mathbf{x})\big]_+ \;=\; \max\!\big(0,\; 1 - y\, f(\mathbf{x})\big).
+\]
+The loss is zero on points classified correctly with score magnitude at least $1$; for $y f(\mathbf{x}) < 1$ the loss grows linearly in the gap.
+\end{definition}
+
+Substituting Lemma~\ref{lem:slack-hinge} into the soft-margin primal eliminates $\boldsymbol\xi$ and yields an equivalent unconstrained reformulation:
+\[
+\min_{\mathbf{w} \in \mathbb{R}^p,\, b \in \mathbb{R}}\; \tfrac{1}{2}\|\mathbf{w}\|^2 \;+\; C \sum_{i=1}^n \big[1 - y_i(\mathbf{w}^\top \mathbf{x}_i + b)\big]_+.
+\]
+This is regularized empirical risk minimization: the per-point hinge loss summed over the training set, plus an $\ell_2$ regularizer on $\mathbf{w}$. Dividing through by $Cn$ rewrites the objective in the more familiar regularized-risk form
+\[
+\frac{1}{n}\sum_{i=1}^n \big[1 - y_i(\mathbf{w}^\top \mathbf{x}_i + b)\big]_+ \;+\; \frac{1}{2 C n}\, \|\mathbf{w}\|^2,
+\]
+in which the regularization weight is $1/(2 C n)$, decreasing in $C$.
+
+\paragraph{Comparison with other classification losses.} The hinge loss is one of three convex surrogates for the intractable $0/1$ loss seen in this course:
+
+\begin{ctab}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Loss} & \textbf{Formula at score $f(\mathbf{x})$} & \textbf{Differentiable?} \\
+\midrule
+$0/1$ loss     & $\indc\{y f(\mathbf{x}) < 0\}$                       & no, non-convex \\
+Logistic loss  & $\log\!\big(1 + \exp(-y f(\mathbf{x}))\big)$         & yes, convex \\
+Hinge loss     & $\big[1 - y f(\mathbf{x})\big]_+$                    & no (kink at $y f = 1$), convex \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent Logistic loss (Unit~3 \S 3.1.3) is smooth, fitting gradient methods in the primal. Hinge loss has a kink at $yf(\mathbf{x}) = 1$: the primal is non-differentiable, but the dual (Theorem~\ref{thm:soft-svm-dual}) is a smooth QP. Standard SVM solvers exploit this asymmetry by solving the dual.
+
+\section{Kernels}\label{sec:6.5}
+
+The dual of the soft-margin SVM (Theorem~\ref{thm:soft-svm-dual}) depends on the input data only through the pairwise inner products $\mathbf{x}_i^\top \mathbf{x}_j$. Replacing those inner products with a more expressive symmetric function of $\mathbf{x}_i$ and $\mathbf{x}_j$ extends the SVM to nonlinear decision boundaries without changing the optimization problem's size.
+
+\subsection{Feature maps and the kernel trick}\label{subsec:6.5.1}
+
+\begin{definition}[Feature map]\label{def:feature-map}
+A \textbf{feature map} from input space $\mathbb{R}^p$ to feature space $\mathbb{R}^N$ is a function $\phi : \mathbb{R}^p \to \mathbb{R}^N$ with $N$ possibly $\gg p$. The induced classifier searches for a separating hyperplane in feature space:
+\[
+f(\mathbf{x}) \;=\; \mathbf{w}^\top \phi(\mathbf{x}) + b, \qquad \mathbf{w} \in \mathbb{R}^N,\; b \in \mathbb{R}.
+\]
+\end{definition}
+
+The soft-margin SVM in the feature space replaces each $\mathbf{x}_i$ by $\phi(\mathbf{x}_i)$ and each inner product $\mathbf{x}_i^\top \mathbf{x}_j$ by $\phi(\mathbf{x}_i)^\top \phi(\mathbf{x}_j)$. The dual of Theorem~\ref{thm:soft-svm-dual} becomes
+\[
+\max_{\boldsymbol\lambda}\; \sum_i \lambda_i - \tfrac{1}{2}\sum_{i, j} \lambda_i \lambda_j y_i y_j\, \phi(\mathbf{x}_i)^\top \phi(\mathbf{x}_j) \quad \text{subject to } 0 \leqslant \lambda_i \leqslant C,\; \sum_i \lambda_i y_i = 0,
+\]
+and the prediction function evaluates as $f^\star(\mathbf{x}) = \sum_{i \in \mathcal{S}} \lambda_i^\star y_i\, \phi(\mathbf{x}_i)^\top \phi(\mathbf{x}) + b^\star$.
+
+\begin{definition}[Kernel function]\label{def:kernel}
+For a feature map $\phi : \mathbb{R}^p \to \mathbb{R}^N$, the associated \textbf{kernel function} is
+\[
+K : \mathbb{R}^p \times \mathbb{R}^p \to \mathbb{R}, \qquad K(\mathbf{x}, \mathbf{x}') \;=\; \phi(\mathbf{x})^\top \phi(\mathbf{x}').
+\]
+\end{definition}
+
+The dual SVM and the prediction function depend on $\phi$ only through $K$. Whenever $K$ can be evaluated more cheaply than via the explicit feature vectors $\phi(\mathbf{x}), \phi(\mathbf{x}')$, the SVM extends to high-dimensional feature spaces at no additional optimization cost. This computational shortcut is the \textbf{kernel trick}.
+
+\begin{example}[Quadratic kernel on $\mathbb{R}^2$]\label{ex:poly-feature}
+Take $\mathbf{x}, \mathbf{x}' \in \mathbb{R}^2$ and define
+\[
+\phi(\mathbf{x}) \;=\; (x_1^2,\; x_2^2,\; \sqrt{2}\,x_1 x_2,\; \sqrt{2}\,x_1,\; \sqrt{2}\,x_2,\; 1)^\top \;\in\; \mathbb{R}^6.
+\]
+Expanding $(\mathbf{x}^\top \mathbf{x}' + 1)^2$ in the variables $x_1, x_2, x_1', x_2'$ and matching term-by-term against $\phi(\mathbf{x})^\top \phi(\mathbf{x}')$ confirms
+\[
+\phi(\mathbf{x})^\top \phi(\mathbf{x}') \;=\; (\mathbf{x}^\top \mathbf{x}' + 1)^2.
+\]
+The kernel $K(\mathbf{x}, \mathbf{x}') = (\mathbf{x}^\top \mathbf{x}' + 1)^2$ evaluates a 6-dimensional inner product at the cost of one 2-dimensional inner product and a squaring. The cost saving generalizes: a degree-$d$ polynomial kernel on $\mathbb{R}^p$ corresponds to a feature map into a space of dimension $\binom{p+d}{d}$, evaluated in $O(p)$ time per pair instead of $O\!\big(\binom{p+d}{d}\big)$.
+\end{example}
+
+\begin{suppremark}[Infinite-dimensional feature spaces]
+The Gaussian RBF kernel $K(\mathbf{x}, \mathbf{x}') = \exp(-\gamma \|\mathbf{x} - \mathbf{x}'\|^2)$ corresponds to a feature map into an \emph{infinite}-dimensional reproducing kernel Hilbert space (RKHS). The dual hides the infinite-dimensional construction: every quantity needed for training and prediction goes through $K$, and the PSD condition (next subsection) guarantees that $\phi$ exists.
+\end{suppremark}
+
+The kernel trick decouples training cost from the feature-space dimension. The next subsection identifies which symmetric functions $K$ arise from some feature map.
+
+\subsection{The PSD condition for kernels}\label{subsec:6.5.2}
+
+Not every symmetric function $K : \mathbb{R}^p \times \mathbb{R}^p \to \mathbb{R}$ arises as an inner product in some feature space. The function must be \textbf{positive semi-definite}.
+
+\begin{definition}[Positive-semi-definite kernel]\label{def:psd-kernel}
+A symmetric function $K : \mathbb{R}^p \times \mathbb{R}^p \to \mathbb{R}$ is a \textbf{positive-semi-definite (PSD) kernel} if for every finite set $\{\mathbf{x}_1, \ldots, \mathbf{x}_n\} \subset \mathbb{R}^p$ the Gram matrix
+\[
+\mathbf{K} \;=\; \big[K(\mathbf{x}_i, \mathbf{x}_j)\big]_{i, j = 1}^{n} \;\in\; \mathbb{R}^{n \times n}
+\]
+is symmetric positive semi-definite (Unit~1, the PSD definition).
+\end{definition}
+
+The PSD condition is necessary for $K$ to express an inner product. If $K(\mathbf{x}, \mathbf{x}') = \phi(\mathbf{x})^\top \phi(\mathbf{x}')$, then for any vector $\mathbf{c} \in \mathbb{R}^n$,
+\[
+\mathbf{c}^\top \mathbf{K} \mathbf{c} \;=\; \sum_{i, j} c_i c_j\, \phi(\mathbf{x}_i)^\top \phi(\mathbf{x}_j) \;=\; \Big\|\sum_i c_i \phi(\mathbf{x}_i)\Big\|^2 \;\geqslant\; 0.
+\]
+The converse holds on every finite training set, via spectral decomposition.
+
+\begin{theorem}[Finite-sample feature map]\label{thm:gram-feature}
+Let $K$ be a PSD kernel and $\{\mathbf{x}_1, \ldots, \mathbf{x}_n\} \subset \mathbb{R}^p$ any finite training set. The Gram matrix decomposes as $\mathbf{K} = \mathbf{V}\boldsymbol\Lambda \mathbf{V}^\top$ with $\mathbf{V} \in \mathbb{R}^{n \times n}$ orthogonal and $\boldsymbol\Lambda = \diag(\lambda_1, \ldots, \lambda_n)$, $\lambda_i \geqslant 0$. Setting $\boldsymbol\Phi = \mathbf{V} \boldsymbol\Lambda^{1/2} \in \mathbb{R}^{n \times n}$, the rows of $\boldsymbol\Phi$ act as feature vectors for the training set:
+\[
+K(\mathbf{x}_i, \mathbf{x}_j) \;=\; \boldsymbol\Phi_i^\top \boldsymbol\Phi_j, \qquad i, j = 1, \ldots, n.
+\]
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:gram-feature}]
+The Gram matrix $\mathbf{K}$ is symmetric PSD by hypothesis, so spectral decomposition gives $\mathbf{K} = \mathbf{V}\boldsymbol\Lambda \mathbf{V}^\top$ with $\mathbf{V}$ orthogonal and $\boldsymbol\Lambda$ diagonal nonnegative. Then
+\[
+\mathbf{K} \;=\; \mathbf{V} \boldsymbol\Lambda^{1/2} \boldsymbol\Lambda^{1/2} \mathbf{V}^\top \;=\; \boldsymbol\Phi \boldsymbol\Phi^\top,
+\]
+and $K_{ij} = (\boldsymbol\Phi \boldsymbol\Phi^\top)_{ij} = \boldsymbol\Phi_i^\top \boldsymbol\Phi_j$. $\blacksquare$
+\end{derivation}
+
+The theorem says PSD is sufficient on every finite training set: the SVM dual with PSD kernel $K$ has the form
+\[
+\max_{\boldsymbol\lambda}\; \sum_i \lambda_i - \tfrac{1}{2}\, \boldsymbol\lambda^\top \mathbf{Y} \mathbf{K} \mathbf{Y} \boldsymbol\lambda \quad \text{subject to } 0 \leqslant \lambda_i \leqslant C, \;\sum_i \lambda_i y_i = 0,
+\]
+where $\mathbf{Y} = \diag(y_1, \ldots, y_n)$. The matrix $\mathbf{Y}\mathbf{K}\mathbf{Y}$ is PSD whenever $\mathbf{K}$ is, so the dual objective is concave and the dual is a convex QP solvable by off-the-shelf solvers. The infinite-dimensional feature map underlying (for example) the RBF kernel is invisible to the solver, which works exclusively with the $n \times n$ Gram matrix.
+
+\paragraph{Common kernels.}
+
+\begin{ctab}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Kernel} & \textbf{Formula} & \textbf{Feature space} \\
+\midrule
+Linear      & $K(\mathbf{x}, \mathbf{x}') = \mathbf{x}^\top \mathbf{x}'$                                                            & $\mathbb{R}^p$, the input space itself \\
+Polynomial  & $K(\mathbf{x}, \mathbf{x}') = (\mathbf{x}^\top \mathbf{x}' + c)^d$, $c \geqslant 0$, $d \in \mathbb{N}$                & finite, $\binom{p+d}{d}$-dim \\
+RBF         & $K(\mathbf{x}, \mathbf{x}') = \exp\!\big(-\gamma \|\mathbf{x} - \mathbf{x}'\|^2\big)$, $\gamma > 0$                  & infinite-dimensional \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The polynomial kernel admits an explicit feature map (Example~\ref{ex:poly-feature} gives the $p = 2, d = 2$ case). The RBF kernel does not admit a finite-dimensional explicit feature map. To establish that the RBF Gram matrix is PSD for every finite training set, we record closure properties of PSD matrices and assemble the RBF kernel from them.
+
+\begin{lemma}[Closure properties of PSD matrices]\label{lem:psd-closure}
+Let $\mathbf{A}, \mathbf{B} \in \mathbb{R}^{n \times n}$ be symmetric PSD.
+\begin{enumerate}
+\item[(i)] (Sum.) $\mathbf{A} + \mathbf{B}$ is PSD.
+\item[(ii)] (Schur product theorem.) The entrywise product $\mathbf{A} \circ \mathbf{B}$, defined by $(\mathbf{A}\circ\mathbf{B})_{ij} = A_{ij} B_{ij}$, is PSD.
+\item[(iii)] (Outer rescaling.) For any $\mathbf{g} \in \mathbb{R}^n$, the matrix with entries $g_i A_{ij} g_j$ is PSD.
+\item[(iv)] (Entrywise limits.) If $\mathbf{A}_k$ is PSD for every $k$ and $\mathbf{A}_k \to \mathbf{A}$ entrywise, then $\mathbf{A}$ is PSD.
+\end{enumerate}
+\end{lemma}
+
+\begin{derivation}[Proof of Lemma~\ref{lem:psd-closure}]
+(i) $\mathbf{v}^\top(\mathbf{A}+\mathbf{B})\mathbf{v} = \mathbf{v}^\top\mathbf{A}\mathbf{v} + \mathbf{v}^\top\mathbf{B}\mathbf{v} \geqslant 0$.
+
+(ii) Spectral decomposition gives $\mathbf{A} = \sum_r \mathbf{u}_r \mathbf{u}_r^\top$ and $\mathbf{B} = \sum_s \mathbf{w}_s \mathbf{w}_s^\top$ with the nonnegative eigenvalues absorbed into the vectors. Then
+\[
+A_{ij} B_{ij} \;=\; \sum_{r,s} u_{r,i} u_{r,j} w_{s,i} w_{s,j} \;=\; \sum_{r,s} (u_{r,i} w_{s,i})(u_{r,j} w_{s,j}),
+\]
+so $\mathbf{A} \circ \mathbf{B} = \sum_{r,s} \mathbf{z}_{rs} \mathbf{z}_{rs}^\top$ with $\mathbf{z}_{rs} = \mathbf{u}_r \circ \mathbf{w}_s$, a nonnegative sum of rank-one PSD matrices.
+
+(iii) Let $\mathbf{A}'$ have entries $A'_{ij} = g_i A_{ij} g_j$. Then $\mathbf{v}^\top \mathbf{A}' \mathbf{v} = \sum_{ij} (v_i g_i)\, A_{ij}\, (v_j g_j) = (\mathbf{g}\circ\mathbf{v})^\top \mathbf{A} (\mathbf{g}\circ\mathbf{v}) \geqslant 0$.
+
+(iv) For fixed $\mathbf{v}$, $\mathbf{v}^\top \mathbf{A}_k \mathbf{v} \geqslant 0$ for every $k$, and the sequence converges to $\mathbf{v}^\top \mathbf{A} \mathbf{v}$; the limit is therefore nonnegative. $\blacksquare$
+\end{derivation}
+
+\begin{theorem}[The RBF kernel is PSD]\label{thm:rbf-psd}
+For every $\gamma > 0$ and every finite $\{\mathbf{x}_1, \ldots, \mathbf{x}_n\} \subset \mathbb{R}^p$, the Gram matrix $K_{ij} = \exp(-\gamma \|\mathbf{x}_i - \mathbf{x}_j\|^2)$ is positive semi-definite.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:rbf-psd}]
+Expand $\|\mathbf{x}_i - \mathbf{x}_j\|^2 = \|\mathbf{x}_i\|^2 - 2\,\mathbf{x}_i^\top \mathbf{x}_j + \|\mathbf{x}_j\|^2$, so
+\[
+K_{ij} \;=\; e^{-\gamma\|\mathbf{x}_i\|^2}\; e^{2\gamma\,\mathbf{x}_i^\top \mathbf{x}_j}\; e^{-\gamma\|\mathbf{x}_j\|^2}.
+\]
+Set $g_i = e^{-\gamma\|\mathbf{x}_i\|^2}$ and $M_{ij} = e^{2\gamma\,\mathbf{x}_i^\top \mathbf{x}_j}$, giving $K_{ij} = g_i M_{ij} g_j$. By Lemma~\ref{lem:psd-closure}(iii) it suffices to show $\mathbf{M}$ is PSD.
+
+The linear-kernel matrix $L_{ij} = \mathbf{x}_i^\top \mathbf{x}_j$ is the Gram matrix of the identity feature map and is PSD. For each integer $m \geqslant 1$, the entrywise power $L^{\circ m}_{ij} = L_{ij}^m$ is PSD by $(m-1)$ applications of Lemma~\ref{lem:psd-closure}(ii); the $m = 0$ case is the all-ones matrix $\mathbf{1}\mathbf{1}^\top$, also PSD. The exponential admits the entrywise convergent expansion
+\[
+M_{ij} \;=\; \sum_{m=0}^{\infty} \frac{(2\gamma)^m}{m!}\, L_{ij}^m.
+\]
+Every partial sum is a nonnegative combination of PSD matrices, hence PSD by Lemma~\ref{lem:psd-closure}(i); the entrywise limit $\mathbf{M}$ is PSD by Lemma~\ref{lem:psd-closure}(iv). Therefore $\mathbf{K}$ is PSD. $\blacksquare$
+\end{derivation}
+
+\noindent The hyperparameter $\gamma$ controls locality: small $\gamma$ approaches a constant kernel (every pair looks similar); large $\gamma$ concentrates near the diagonal (every pair looks dissimilar unless near-coincident).
+
+\subsection{Representer theorem}\label{subsec:6.5.3}
+
+The representer theorem states that the optimal weight vector of any kernel-based regularized risk minimization lies in the span of the training feature vectors. The optimization therefore reduces to choosing $n$ coefficients, independent of the feature-space dimension. The proof rests on a linear-algebra fact about orthogonal decomposition.
+
+\begin{lemma}[Orthogonal decomposition]\label{lem:orth-decomp}
+For any subspace $\mathcal{V} \subseteq \mathbb{R}^N$ and any $\mathbf{w} \in \mathbb{R}^N$, there is a unique decomposition
+\[
+\mathbf{w} \;=\; \mathbf{w}_\parallel + \mathbf{w}_\perp, \qquad \mathbf{w}_\parallel \in \mathcal{V},\;\; \mathbf{w}_\perp \in \mathcal{V}^\perp \;=\; \{\mathbf{u} \in \mathbb{R}^N : \mathbf{u}^\top \mathbf{v} = 0\;\forall \mathbf{v} \in \mathcal{V}\}.
+\]
+It satisfies $\mathbf{w}_\parallel^\top \mathbf{w}_\perp = 0$ and the Pythagorean identity $\|\mathbf{w}\|^2 = \|\mathbf{w}_\parallel\|^2 + \|\mathbf{w}_\perp\|^2$.
+\end{lemma}
+
+\begin{derivation}[Proof of Lemma~\ref{lem:orth-decomp}]
+Let $\{\mathbf{v}_1, \ldots, \mathbf{v}_k\}$ be an orthonormal basis of $\mathcal{V}$, obtained from any spanning set by Gram--Schmidt. Set
+\[
+\mathbf{w}_\parallel \;=\; \sum_{j=1}^k (\mathbf{w}^\top \mathbf{v}_j)\, \mathbf{v}_j, \qquad \mathbf{w}_\perp \;=\; \mathbf{w} - \mathbf{w}_\parallel.
+\]
+Then $\mathbf{w}_\parallel \in \mathcal{V}$ by construction, and $\mathbf{w}_\perp^\top \mathbf{v}_j = \mathbf{w}^\top \mathbf{v}_j - \mathbf{w}^\top \mathbf{v}_j = 0$ for every $j$, so $\mathbf{w}_\perp \in \mathcal{V}^\perp$. For uniqueness, suppose $\mathbf{w} = \mathbf{u}_\parallel + \mathbf{u}_\perp$ is another such decomposition; then $\mathbf{w}_\parallel - \mathbf{u}_\parallel = \mathbf{u}_\perp - \mathbf{w}_\perp \in \mathcal{V} \cap \mathcal{V}^\perp$, and any $\mathbf{v} \in \mathcal{V} \cap \mathcal{V}^\perp$ satisfies $\mathbf{v}^\top \mathbf{v} = 0$ hence $\mathbf{v} = \mathbf{0}$. The Pythagorean identity follows from $\|\mathbf{w}_\parallel + \mathbf{w}_\perp\|^2 = \|\mathbf{w}_\parallel\|^2 + 2\mathbf{w}_\parallel^\top \mathbf{w}_\perp + \|\mathbf{w}_\perp\|^2$ using $\mathbf{w}_\parallel^\top \mathbf{w}_\perp = 0$. $\blacksquare$
+\end{derivation}
+
+\begin{theorem}[Representer theorem]\label{thm:representer}
+Let $\phi : \mathbb{R}^p \to \mathbb{R}^N$ be a feature map (with $N$ possibly large). Consider the regularized risk minimization
+\[
+\min_{\mathbf{w} \in \mathbb{R}^N,\, b \in \mathbb{R}}\; \tfrac{1}{2}\|\mathbf{w}\|^2 \;+\; \sum_{i=1}^n L\!\big(y_i,\; \mathbf{w}^\top \phi(\mathbf{x}_i) + b\big),
+\]
+where $L$ is any loss function (no convexity, smoothness, or sign assumptions). Every optimum $\mathbf{w}^\star$ admits the representation
+\[
+\mathbf{w}^\star \;=\; \sum_{i=1}^n \alpha_i\, \phi(\mathbf{x}_i)
+\]
+for some coefficients $\alpha_1, \ldots, \alpha_n \in \mathbb{R}$.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:representer}]
+Let $\mathcal{V} = \mathrm{span}\{\phi(\mathbf{x}_1), \ldots, \phi(\mathbf{x}_n)\} \subseteq \mathbb{R}^N$, a subspace of dimension at most $n$. By Lemma~\ref{lem:orth-decomp}, every $\mathbf{w} \in \mathbb{R}^N$ has a unique decomposition $\mathbf{w} = \mathbf{w}_\parallel + \mathbf{w}_\perp$ with $\mathbf{w}_\parallel \in \mathcal{V}$, $\mathbf{w}_\perp \in \mathcal{V}^\perp$. The prediction at every training point uses only the parallel component:
+\[
+\mathbf{w}^\top \phi(\mathbf{x}_i) \;=\; \mathbf{w}_\parallel^\top \phi(\mathbf{x}_i) + \mathbf{w}_\perp^\top \phi(\mathbf{x}_i) \;=\; \mathbf{w}_\parallel^\top \phi(\mathbf{x}_i),
+\]
+where the second equality uses $\phi(\mathbf{x}_i) \in \mathcal{V}$ and $\mathbf{w}_\perp \perp \mathcal{V}$. The fitting sum $\sum_i L(y_i, \mathbf{w}^\top \phi(\mathbf{x}_i) + b)$ therefore depends only on $\mathbf{w}_\parallel$, not on $\mathbf{w}_\perp$.
+
+The regularizer obeys $\|\mathbf{w}\|^2 = \|\mathbf{w}_\parallel\|^2 + \|\mathbf{w}_\perp\|^2 \geqslant \|\mathbf{w}_\parallel\|^2$, with equality if and only if $\mathbf{w}_\perp = \mathbf{0}$. If $\mathbf{w}^\star$ were optimal with $\mathbf{w}_\perp^\star \neq \mathbf{0}$, replacing it by $\mathbf{w}_\parallel^\star$ would leave the fitting term unchanged and strictly decrease the regularizer, strictly improving the objective: contradiction. Hence $\mathbf{w}_\perp^\star = \mathbf{0}$ at every optimum, and $\mathbf{w}^\star \in \mathcal{V}$. By definition of $\mathcal{V}$, $\mathbf{w}^\star = \sum_i \alpha_i \phi(\mathbf{x}_i)$ for some $\boldsymbol\alpha \in \mathbb{R}^n$. $\blacksquare$
+\end{derivation}
+
+Two consequences. First, the optimum lives in an at-most-$n$-dimensional subspace pinned by the training data, regardless of the feature space's nominal dimension; this is what makes the kernel trick computationally feasible. Second, the same conclusion applies to ridge regression, kernel ridge regression, kernel logistic regression, and any other regularized risk minimization sharing the squared-norm regularizer; the loss function's identity does not enter the proof.
+
+\begin{suppremark}[Reproducing kernel Hilbert spaces]
+The proof uses only the inner-product and orthogonal-decomposition structure, which carry over to any separable Hilbert space. Applied to the reproducing kernel Hilbert space (RKHS) attached to a PSD kernel $K$, the theorem becomes the version stated in \citet{scholkopf-smola-2002}: every optimum of the RKHS-regularized problem has $\mathbf{w}^\star = \sum_i \alpha_i K(\mathbf{x}_i, \cdot)$. The infinite-dimensional construction is hidden behind the kernel, exactly as in \S\ref{subsec:6.5.2}.
+\end{suppremark}
+
+\subsection{Kernel SVM in the dual}\label{subsec:6.5.4}
+
+Combining \S\S\ref{subsec:6.5.1}--\ref{subsec:6.5.3}: the soft-margin SVM with feature map $\phi$ corresponding to a PSD kernel $K$ has dual problem
+\[
+\max_{\boldsymbol\lambda \in \mathbb{R}^n}\; \sum_{i=1}^n \lambda_i \;-\; \tfrac{1}{2}\sum_{i=1}^n \sum_{j=1}^n \lambda_i \lambda_j y_i y_j\, K(\mathbf{x}_i, \mathbf{x}_j) \quad \text{subject to } 0 \leqslant \lambda_i \leqslant C,\; \sum_{i=1}^n \lambda_i y_i = 0,
+\]
+and prediction function
+\[
+f^\star(\mathbf{x}) \;=\; \sum_{i \in \mathcal{S}} \lambda_i^\star y_i\, K(\mathbf{x}_i, \mathbf{x}) \;+\; b^\star, \qquad \hat y(\mathbf{x}) \;=\; \operatorname{sign}\!\big(f^\star(\mathbf{x})\big).
+\]
+The intercept $b^\star$ is recovered from any margin support vector $i$ (one with $0 < \lambda_i^\star < C$):
+\[
+b^\star \;=\; y_i \;-\; \sum_{j \in \mathcal{S}} \lambda_j^\star y_j\, K(\mathbf{x}_j, \mathbf{x}_i).
+\]
+
+The kernel SVM is the linear SVM with $\mathbf{x}_i^\top \mathbf{x}_j$ replaced by $K(\mathbf{x}_i, \mathbf{x}_j)$ everywhere inner products appear (Gram matrix, prediction, $b^\star$ recovery). The feature map $\phi$ is never accessed; the algorithm operates only on $K$ values and training labels.
+
+\paragraph{Why this works.} The representer theorem (Theorem~\ref{thm:representer}) underwrites the substitution. The optimal feature-space weight vector
+\[
+\mathbf{w}^\star \;=\; \sum_{i \in \mathcal{S}} \lambda_i^\star y_i\, \phi(\mathbf{x}_i)
+\]
+lies in the span of training feature vectors, so $\mathbf{w}^{\star\top} \phi(\mathbf{x}) = \sum_{i \in \mathcal{S}} \lambda_i^\star y_i\, \phi(\mathbf{x}_i)^\top \phi(\mathbf{x}) = \sum_{i \in \mathcal{S}} \lambda_i^\star y_i\, K(\mathbf{x}_i, \mathbf{x})$ depends only on $K$ and the training data. The PSD condition (Definition~\ref{def:psd-kernel}) ensures the dual is a convex QP, and strong duality (Theorem~\ref{thm:strong-duality}, applied in the feature space) ensures the dual optimum equals the primal optimum.
+
+\paragraph{Computational cost.} The dual is an $n \times n$ QP, independent of $N$. Training is dominated by the Gram matrix in $O(n^2 \tau(K))$ time and $O(n^2)$ memory, where $\tau(K)$ is the per-pair kernel cost; prediction takes $O(|\mathcal{S}|\, \tau(K))$ per point. The SVM suits small to moderate $n$ with large $N$. The $O(n^2)$ memory becomes the binding constraint around $n \sim 10^4$--$10^5$, past which kernel methods scale only via approximations (random Fourier features, Nystr\"om) or yield to deep learning.
+
+\section{Neural Networks}\label{sec:6.6}
+
+A neural network is a parametrized nonlinear function $f(\mathbf{x}; \boldsymbol\theta)$ obtained by alternating affine maps with elementwise nonlinearities. Training fits $\boldsymbol\theta$ by stochastic gradient descent on a non-convex empirical risk; each iteration requires $\nabla_{\boldsymbol\theta} L$ over a parameter vector with $10^7$ or more entries. \textbf{Backpropagation} is reverse-mode automatic differentiation specialized to the layered composition: it returns $\nabla_{\boldsymbol\theta} L$ at the cost of one extra forward pass.
+
+\subsection{The multilayer perceptron and forward propagation}\label{subsec:6.6.1}
+
+\begin{definition}[$L$-layer multilayer perceptron]\label{def:mlp}
+Fix layer widths $d_0 = p,\, d_1, \ldots, d_L$. The \textbf{$L$-layer multilayer perceptron} (MLP) is the function $f : \mathbb{R}^p \to \mathbb{R}^{d_L}$ defined by
+\[
+\mathbf{a}^{(0)} \;=\; \mathbf{x}, \qquad \mathbf{z}^{(l)} \;=\; \mathbf{W}^{(l)} \mathbf{a}^{(l-1)} + \mathbf{b}^{(l)}, \qquad \mathbf{a}^{(l)} \;=\; \sigma\!\big(\mathbf{z}^{(l)}\big), \qquad l = 1, \ldots, L.
+\]
+The parameters are $\boldsymbol\theta = \{\mathbf{W}^{(l)} \in \mathbb{R}^{d_l \times d_{l-1}},\; \mathbf{b}^{(l)} \in \mathbb{R}^{d_l}\}_{l=1}^L$, the activation $\sigma : \mathbb{R} \to \mathbb{R}$ is applied componentwise, and the output is $f(\mathbf{x}; \boldsymbol\theta) = \mathbf{a}^{(L)}$.
+\end{definition}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[
+  scale=0.78, every node/.style={transform shape},
+  >=stealth,
+  neuron/.style={circle, draw, minimum size=8mm, inner sep=0pt, thick}
+]
+\node[neuron, fill=blue!8]   (a01) at (0, 1.8)  {$x_1$};
+\node[neuron, fill=blue!8]   (a02) at (0, 0)    {$x_2$};
+\node[neuron, fill=blue!8]   (a03) at (0,-1.8)  {$x_3$};
+\node[neuron, fill=green!10] (a11) at (3, 2.7)  {};
+\node[neuron, fill=green!10] (a12) at (3, 0.9)  {};
+\node[neuron, fill=green!10] (a13) at (3,-0.9)  {};
+\node[neuron, fill=green!10] (a14) at (3,-2.7)  {};
+\node[neuron, fill=green!10] (a21) at (6, 2.7)  {};
+\node[neuron, fill=green!10] (a22) at (6, 0.9)  {};
+\node[neuron, fill=green!10] (a23) at (6,-0.9)  {};
+\node[neuron, fill=green!10] (a24) at (6,-2.7)  {};
+\node[neuron, fill=red!10]   (a31) at (9, 0.9)  {};
+\node[neuron, fill=red!10]   (a32) at (9,-0.9)  {};
+\foreach \i in {1,2,3} \foreach \j in {1,2,3,4}
+  \draw[->, gray!50, thin] (a0\i) -- (a1\j);
+\foreach \i in {1,2,3,4} \foreach \j in {1,2,3,4}
+  \draw[->, gray!50, thin] (a1\i) -- (a2\j);
+\foreach \i in {1,2,3,4} \foreach \j in {1,2}
+  \draw[->, gray!50, thin] (a2\i) -- (a3\j);
+\node[font=\small] at (0,-3.6) {$\mathbf{a}^{(0)} = \mathbf{x}$};
+\node[font=\small] at (3,-3.6) {$\mathbf{a}^{(1)}$};
+\node[font=\small] at (6,-3.6) {$\mathbf{a}^{(2)}$};
+\node[font=\small] at (9,-3.6) {$\mathbf{a}^{(3)} = f(\mathbf{x};\boldsymbol\theta)$};
+\node[font=\footnotesize, color=hdrBG] at (1.5, 3.4) {$\mathbf{W}^{(1)},\, \mathbf{b}^{(1)},\, \sigma$};
+\node[font=\footnotesize, color=hdrBG] at (4.5, 3.4) {$\mathbf{W}^{(2)},\, \mathbf{b}^{(2)},\, \sigma$};
+\node[font=\footnotesize, color=hdrBG] at (7.5, 3.4) {$\mathbf{W}^{(3)},\, \mathbf{b}^{(3)},\, \sigma$};
+\end{tikzpicture}
+\caption{An $L = 3$ MLP with widths $d_0 = 3$, $d_1 = d_2 = 4$, $d_3 = 2$. Each blue node holds an input component, green nodes hold hidden activations, red nodes hold the output. Each arrow corresponds to one entry of the weight matrix $\mathbf{W}^{(l)}$; the bias $\mathbf{b}^{(l)}$ adds to every neuron in layer $l$, and $\sigma$ is applied componentwise after the affine step.}\label{fig:mlp-topology}
+\end{figure}
+
+The vector $\mathbf{z}^{(l)} \in \mathbb{R}^{d_l}$ is the \textbf{pre-activation} and $\mathbf{a}^{(l)} \in \mathbb{R}^{d_l}$ the \textbf{activation} of layer $l$. Componentwise, $z^{(l)}_j = \sum_{k=1}^{d_{l-1}} W^{(l)}_{jk} a^{(l-1)}_k + b^{(l)}_j$, so $W^{(l)}_{jk}$ is the weight from neuron $k$ in layer $l-1$ to neuron $j$ in layer $l$, and $a^{(l)}_j = \sigma(z^{(l)}_j)$.
+
+\begin{ctab}
+\begin{tabular}{l c c}
+\toprule
+\textbf{Activation} & $\sigma(z)$ & $\sigma'(z)$ \\
+\midrule
+ReLU       & $\max(0, z)$                                  & $\indc\{z > 0\}$ \\
+sigmoid    & $1/(1 + e^{-z})$                              & $\sigma(z)\big(1 - \sigma(z)\big)$ \\
+$\tanh$    & $(e^z - e^{-z})/(e^z + e^{-z})$               & $1 - \tanh^2(z)$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The choice of $\sigma$ at the output layer is task-dependent: identity for regression with squared loss, sigmoid for binary classification with cross-entropy, softmax (no longer componentwise) for multi-class classification with cross-entropy.
+
+\paragraph{Hadamard product.} For $\mathbf{u}, \mathbf{v} \in \mathbb{R}^d$, the \textbf{Hadamard product} is the componentwise vector $(\mathbf{u} \odot \mathbf{v})_j = u_j v_j$. Two identities will be used repeatedly: $\sigma(\mathbf{z})$ is itself a Hadamard product against the all-ones vector after applying $\sigma$ pointwise, and for any vector $\mathbf{u}$,
+\[
+\diag\!\big(\sigma'(\mathbf{z})\big)\, \mathbf{u} \;=\; \sigma'(\mathbf{z}) \odot \mathbf{u},
+\]
+i.e., multiplication by a diagonal matrix coincides with the Hadamard product against the diagonal entries.
+
+\begin{theorem}[Universal approximation; Cybenko 1989, Hornik 1991]\label{thm:universal-approx}
+For any compact $K \subset \mathbb{R}^p$, any continuous $f : K \to \mathbb{R}$, and any $\epsilon > 0$, there exist a width $d_1 \in \mathbb{N}$ and parameters $\boldsymbol\theta$ for a 2-layer MLP ($L = 2$) with any non-polynomial bounded continuous activation $\sigma$ such that $\sup_{\mathbf{x} \in K} |\hat f(\mathbf{x}; \boldsymbol\theta) - f(\mathbf{x})| < \epsilon$.
+\end{theorem}
+
+The theorem says any continuous function on a compact set is approximable by an MLP, but it does not bound the required width or supply the parameters. Practical neural networks therefore depend on (a) optimization of $\boldsymbol\theta$ over training data, and (b) efficient gradient computation, the subjects of the remaining subsections.
+
+\subsection{The cost function and the gradient bottleneck}\label{subsec:6.6.2}
+
+For training data $\{(\mathbf{x}_i, y_i)\}_{i=1}^n$ and a per-example loss $\ell(y, \hat{\mathbf{y}})$ (squared loss for regression, cross-entropy for classification), the \textbf{empirical risk} is
+\[
+L(\boldsymbol\theta) \;=\; \frac{1}{n} \sum_{i=1}^n \ell\!\big(y_i,\, f(\mathbf{x}_i; \boldsymbol\theta)\big) \;=\; \frac{1}{n} \sum_{i=1}^n \ell_i(\boldsymbol\theta).
+\]
+Two structural assumptions on $\ell$ keep backpropagation on a per-example footing:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item \textbf{Decomposability}: $L = \frac{1}{n}\sum_i \ell_i$, so $\nabla_{\boldsymbol\theta} L = \frac{1}{n}\sum_i \nabla_{\boldsymbol\theta} \ell_i$. Backprop computes $\nabla_{\boldsymbol\theta} \ell_i$ for one example (or a minibatch) at a time.
+\item \textbf{Output-layer dependence}: $\ell_i$ depends on $\boldsymbol\theta$ only through the output activation $\mathbf{a}^{(L)} = f(\mathbf{x}_i; \boldsymbol\theta)$. The vector $\nabla_{\!\mathbf{a}^{(L)}} \ell_i$ is therefore a closed-form expression, supplying the initialization for the backward pass.
+\end{itemize}
+
+\noindent Both assumptions hold for squared loss and cross-entropy.
+
+\paragraph{Non-convexity.} Composition through nonlinear $\sigma$ destroys convexity: $L(\boldsymbol\theta)$ has multiple local minima, saddle points, and large flat regions. Global minimization is intractable; training uses first-order iterative methods that find acceptable local minima.
+
+\begin{definition}[Stochastic gradient descent]\label{def:sgd}
+At iteration $t = 1, 2, \ldots$, sample a minibatch $\mathcal{B}_t \subset \{1, \ldots, n\}$ of size $B$, choose a learning rate $\eta_t > 0$, and update
+\[
+\boldsymbol\theta_{t+1} \;=\; \boldsymbol\theta_t \;-\; \eta_t\, \frac{1}{B} \sum_{i \in \mathcal{B}_t} \nabla_{\boldsymbol\theta}\, \ell_i(\boldsymbol\theta_t).
+\]
+\end{definition}
+
+Under uniform sampling, the minibatch gradient is unbiased for $\nabla_{\boldsymbol\theta} L(\boldsymbol\theta_t)$. Adam, AdaGrad, RMSProp reweight the update direction with running statistics of past gradients; each still calls $\nabla_{\boldsymbol\theta} \ell_i$ once per minibatch element.
+
+\paragraph{The gradient bottleneck.} Each iteration computes $\nabla_{\boldsymbol\theta} \ell$, a vector of length $|\boldsymbol\theta| = \sum_{l=1}^L (d_l d_{l-1} + d_l)$. For a modest network with $d_0 = 100$, $d_1 = d_2 = 256$, $d_3 = 10$ ($L = 3$), $|\boldsymbol\theta| \approx 9 \cdot 10^4$; production deep networks have $|\boldsymbol\theta|$ in the millions to billions. Naive finite differencing computes one component of $\nabla_{\boldsymbol\theta} \ell$ per forward pass:
+\[
+\frac{\partial \ell}{\partial \theta_k} \;\approx\; \frac{\ell(\boldsymbol\theta + h \mathbf{e}_k) - \ell(\boldsymbol\theta)}{h},
+\]
+costing $O(|\boldsymbol\theta| \cdot \mathrm{cost}(f))$ for the entire gradient. At any practical scale this is prohibitive. The algorithm of the next subsection achieves $O(\mathrm{cost}(f))$ for the full gradient, independent of $|\boldsymbol\theta|$.
+
+\subsection{Computational graphs and reverse-mode automatic differentiation}\label{subsec:6.6.3}
+
+Reverse-mode automatic differentiation (AD) computes $\nabla_{\mathbf{x}} y$ for any program $y = f(\mathbf{x})$ at cost proportional to evaluating $f$. It needs two ingredients: a directed acyclic graph (DAG) of elementary operations (the \emph{computational graph}), and a backward sweep that accumulates partial derivatives along it.
+
+\begin{definition}[Computational graph]\label{def:comp-graph}
+A program that computes $y = f(\mathbf{x})$ via elementary operations (arithmetic, $\exp$, $\log$, $\sin$, matrix-vector product, etc.) induces a directed acyclic graph (DAG) with
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item source nodes $w_1, \ldots, w_p = x_1, \ldots, x_p$ (the inputs);
+\item internal nodes $w_k = \phi_k\!\big(\{w_a\}_{a \in \mathrm{pa}(k)}\big)$ for $k > p$, where $\mathrm{pa}(k) \subset \{1, \ldots, k-1\}$ are the parents of $w_k$ and $\phi_k$ is an elementary operation;
+\item one sink node identified with the scalar output $y$.
+\end{itemize}
+\end{definition}
+
+\begin{example}[Computational graph of $z = x_1 x_2 + \sin x_1$]\label{ex:comp-graph}
+The program "compute $z = x_1 x_2 + \sin x_1$" decomposes into five intermediate nodes:
+\[
+w_1 = x_1, \qquad w_2 = x_2, \qquad w_3 = w_1 w_2, \qquad w_4 = \sin w_1, \qquad w_5 = w_3 + w_4 = z.
+\]
+The parents are $\mathrm{pa}(3) = \{1, 2\}$, $\mathrm{pa}(4) = \{1\}$, $\mathrm{pa}(5) = \{3, 4\}$. The local Jacobian entries are $\partial w_3/\partial w_1 = w_2$, $\partial w_3/\partial w_2 = w_1$, $\partial w_4/\partial w_1 = \cos w_1$, $\partial w_5/\partial w_3 = 1$, $\partial w_5/\partial w_4 = 1$.
+\end{example}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[
+  scale=0.85, every node/.style={transform shape},
+  >=stealth,
+  cnode/.style={circle, draw, minimum size=10mm, inner sep=0pt, thick}
+]
+\node[cnode, fill=blue!8]   (w1) at (0,  1.2) {$w_1$};
+\node[cnode, fill=blue!8]   (w2) at (0, -1.2) {$w_2$};
+\node[cnode, fill=green!10] (w3) at (3, -1.2) {$w_3$};
+\node[cnode, fill=green!10] (w4) at (3,  1.2) {$w_4$};
+\node[cnode, fill=red!10]   (w5) at (6,  0)   {$w_5$};
+\draw[->] (w1) -- node[sloped, above, font=\footnotesize] {$w_2$}      (w3);
+\draw[->] (w2) -- node[above, font=\footnotesize]                {$w_1$}      (w3);
+\draw[->] (w1) -- node[above, font=\footnotesize]                {$\cos w_1$} (w4);
+\draw[->] (w3) -- node[sloped, above, font=\footnotesize] {$1$}        (w5);
+\draw[->] (w4) -- node[sloped, above, font=\footnotesize] {$1$}        (w5);
+\node[font=\footnotesize] at (3,  2.1) {$w_4 = \sin w_1$};
+\node[font=\footnotesize] at (3, -2.1) {$w_3 = w_1 w_2$};
+\node[font=\footnotesize] at (6, -1.0) {$w_5 = w_3 + w_4 = z$};
+\node[font=\footnotesize, color=hdrBG] at (0,  2.4) {sources};
+\node[font=\footnotesize, color=hdrBG] at (3,  3.0) {internal};
+\node[font=\footnotesize, color=hdrBG] at (6,  1.5) {sink};
+\end{tikzpicture}
+\caption{Computational graph of $z = x_1 x_2 + \sin x_1$. Sources $w_1 = x_1$, $w_2 = x_2$ on the left; internal nodes $w_3 = w_1 w_2$, $w_4 = \sin w_1$ in the middle; sink $w_5 = z$ on the right. Each edge $w_a \to w_b$ is labelled by its local Jacobian $\partial w_b/\partial w_a$, evaluated at the cached forward values.}\label{fig:comp-graph}
+\end{figure}
+
+\paragraph{Multivariate chain rule on a DAG.} Let $w_k$ be a node and $w_a$ a strict ancestor in the DAG. The partial $\partial w_k / \partial w_a$ accumulates contributions along every path $w_a \to w_k$:
+\[
+\frac{\partial w_k}{\partial w_a} \;=\; \sum_{\text{path } w_a \to w_k}\;\; \prod_{(w_p, w_q) \in \text{path}} \frac{\partial w_q}{\partial w_p}. \tag{$\ast$}
+\]
+
+\begin{derivation}[Proof of the path-sum identity ($\ast$)]
+Induct on $k$. \emph{Base.} If $w_a \in \mathrm{pa}(k)$, the only path from $w_a$ to $w_k$ is the direct edge $(w_a, w_k)$, and $\partial w_k/\partial w_a = \partial \phi_k/\partial w_a$, agreeing with the path-sum (a single one-edge term).
+
+\emph{Inductive step.} Apply the multivariate chain rule at $w_k = \phi_k(\{w_p\}_{p \in \mathrm{pa}(k)})$:
+\[
+\frac{\partial w_k}{\partial w_a} \;=\; \sum_{p \in \mathrm{pa}(k)} \frac{\partial \phi_k}{\partial w_p}\cdot \frac{\partial w_p}{\partial w_a}.
+\]
+Each parent $w_p$ has topological depth strictly less than $w_k$, so by the inductive hypothesis $\partial w_p/\partial w_a$ equals its own path sum over $w_a \to w_p$. Multiplying by $\partial \phi_k/\partial w_p = \partial w_k/\partial w_p$ extends each path $w_a \to w_p$ by the edge $(w_p, w_k)$, producing every path $w_a \to w_k$ exactly once when summed over $p \in \mathrm{pa}(k)$. $\blacksquare$
+\end{derivation}
+
+The path-sum is algorithmically catastrophic: a graph of depth $D$ with constant fan-in has $O(2^D)$ paths between two nodes, and direct enumeration scales exponentially. Both modes of AD avoid this by reusing intermediate computations.
+
+\paragraph{Forward mode.} Sweep the DAG in topological order (parents before children), maintaining alongside each value $w_k$ a \textbf{tangent} $\dot w_k = \partial w_k / \partial x_j$ for one fixed source index $j$. Initialize $\dot w_a = \indc\{a = j\}$ for $a = 1, \ldots, p$ and propagate at each internal node by one application of the chain rule:
+\[
+\dot w_k \;=\; \sum_{p \in \mathrm{pa}(k)} \frac{\partial \phi_k}{\partial w_p}\, \dot w_p.
+\]
+After the sweep, $\dot y = \partial y / \partial x_j$. Computing the full gradient $\nabla_{\mathbf{x}} y$ takes $p$ separate sweeps, total cost $O(p \cdot \mathrm{cost}(f))$.
+
+\paragraph{Reverse mode.} Two sweeps. \emph{Forward sweep:} compute and cache $w_k$ at every node. \emph{Backward sweep:} sweep in reverse topological order (children before parents), maintaining an \textbf{adjoint} $\bar w_k = \partial y / \partial w_k$. Initialize $\bar y = 1$ at the output sink; propagate at each internal node $k$ by accumulating contributions from every child:
+\[
+\bar w_k \;=\; \sum_{c \,:\, k \in \mathrm{pa}(c)} \frac{\partial \phi_c}{\partial w_k}\, \bar w_c. \tag{$\dagger$}
+\]
+After the sweep, $\bar w_j = \partial y/\partial x_j$ for every source $j$ at once. The two passes together cost $O(\mathrm{cost}(f))$, independent of $p$.
+
+\begin{derivation}[Why the reverse propagation rule ($\dagger$) holds]
+Fix an internal or source node $w_k$. By the multivariate chain rule, $y$ depends on $w_k$ only through the children $w_c$ of $w_k$ (the nodes with $k \in \mathrm{pa}(c)$); summing the chain rule over those children,
+\[
+\bar w_k \;=\; \frac{\partial y}{\partial w_k} \;=\; \sum_{c \,:\, k \in \mathrm{pa}(c)} \frac{\partial y}{\partial w_c}\cdot \frac{\partial w_c}{\partial w_k} \;=\; \sum_{c \,:\, k \in \mathrm{pa}(c)} \bar w_c\cdot \frac{\partial \phi_c}{\partial w_k}.
+\]
+Reverse topological order ensures every $\bar w_c$ has already been computed when $\bar w_k$ is updated. $\blacksquare$
+\end{derivation}
+
+\begin{example}[Reverse mode on $z = x_1 x_2 + \sin x_1$ at $\mathbf{x} = (1.5, 0.5)$]\label{ex:reverse-z}
+\textbf{Forward sweep.} Cache the values
+\[
+w_1 = 1.5, \quad w_2 = 0.5, \quad w_3 = w_1 w_2 = 0.75, \quad w_4 = \sin w_1 \approx 0.9975, \quad w_5 = w_3 + w_4 \approx 1.7475.
+\]
+
+\textbf{Backward sweep.} Initialize $\bar w_5 = \partial z/\partial w_5 = 1$, then process nodes in reverse:
+\[
+\begin{aligned}
+\bar w_4 &\;=\; \frac{\partial w_5}{\partial w_4}\, \bar w_5 \;=\; 1 \cdot 1 \;=\; 1, \\
+\bar w_3 &\;=\; \frac{\partial w_5}{\partial w_3}\, \bar w_5 \;=\; 1 \cdot 1 \;=\; 1, \\
+\bar w_2 &\;=\; \frac{\partial w_3}{\partial w_2}\, \bar w_3 \;=\; w_1 \cdot 1 \;=\; 1.5, \\
+\bar w_1 &\;=\; \frac{\partial w_3}{\partial w_1}\, \bar w_3 \;+\; \frac{\partial w_4}{\partial w_1}\, \bar w_4 \;=\; w_2 \cdot 1 \;+\; \cos w_1 \cdot 1 \;=\; 0.5 \,+\, \cos 1.5 \;\approx\; 0.5707.
+\end{aligned}
+\]
+For $\bar w_1$ both children of $w_1$ contribute (namely $w_3$ and $w_4$); for $\bar w_2$ only the child $w_3$ contributes. Hence $\partial z/\partial x_1 = \bar w_1 \approx 0.5707$ and $\partial z/\partial x_2 = \bar w_2 = 1.5$, both recovered in one backward sweep.
+
+\emph{Forward mode for comparison.} Forward mode would require two separate sweeps, one for each input. With $p = 2$ the cost difference is small, but for the parameter vector of a neural network $p = |\boldsymbol\theta|$ can be $10^7$, where forward mode is infeasible.
+\end{example}
+
+\paragraph{Mode trade-off.} For $f : \mathbb{R}^p \to \mathbb{R}^m$, the Jacobian $\partial f/\partial \mathbf{x}$ is $m \times p$. Forward mode delivers one column per sweep; reverse mode delivers one row per sweep.
+
+\begin{ctab}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Mode} & \textbf{Cost for full Jacobian} & \textbf{Best for} \\
+\midrule
+Forward & $O(p \cdot \mathrm{cost}(f))$ & $p \ll m$ (few inputs, many outputs) \\
+Reverse & $O(m \cdot \mathrm{cost}(f))$ & $m \ll p$ (many inputs, few outputs) \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent For a neural-network loss, $m = 1$ (the scalar $\ell$) and $p = |\boldsymbol\theta|$ is in the millions; reverse mode is cheaper than forward by the factor $|\boldsymbol\theta|$. This is the cheap-gradient principle: $\nabla_{\boldsymbol\theta} \ell$ is computable at the cost of $\ell$ itself, regardless of $|\boldsymbol\theta|$.
+
+\subsection{The four backpropagation equations}\label{subsec:6.6.4}
+
+Reverse-mode AD applied to the MLP recursion of Definition~\ref{def:mlp} yields four named equations that together compute every component of $\nabla_{\boldsymbol\theta} \ell$. Each equation is the chain rule applied to one specific dependence, with careful index tracking; the only structural ingredient is the Hadamard identity $\diag(\sigma'(\mathbf{z}))\, \mathbf{u} = \sigma'(\mathbf{z}) \odot \mathbf{u}$.
+
+\begin{definition}[Layer error]\label{def:layer-error}
+For each layer $l = 1, \ldots, L$, the \textbf{error} at layer $l$ is the gradient of $\ell$ with respect to the pre-activation:
+\[
+\delta^{(l)}_j \;=\; \frac{\partial \ell}{\partial z^{(l)}_j}, \qquad j = 1, \ldots, d_l, \qquad \boldsymbol\delta^{(l)} \in \mathbb{R}^{d_l}.
+\]
+\end{definition}
+
+The error $\delta^{(l)}_j$ measures the sensitivity of the loss to a small perturbation of $z^{(l)}_j$ alone, with all other $z^{(l)}_{j'}$ held fixed. Once the errors are known at every layer, the gradients with respect to weights and biases follow by direct chain rule, since $\mathbf{z}^{(l)}$ depends linearly on $\mathbf{W}^{(l)}, \mathbf{b}^{(l)}, \mathbf{a}^{(l-1)}$.
+
+\begin{theorem}[Backpropagation: BP1, output-layer error]\label{thm:bp1}
+$\displaystyle \boldsymbol\delta^{(L)} \;=\; \nabla_{\!\mathbf{a}^{(L)}}\, \ell \;\odot\; \sigma'\!\big(\mathbf{z}^{(L)}\big),$ where $\nabla_{\!\mathbf{a}^{(L)}} \ell$ is the gradient of $\ell$ with respect to the output activation.
+\end{theorem}
+
+\begin{derivation}[Proof of BP1]
+By the chain rule applied componentwise,
+\[
+\delta^{(L)}_j \;=\; \frac{\partial \ell}{\partial z^{(L)}_j} \;=\; \sum_{k=1}^{d_L} \frac{\partial \ell}{\partial a^{(L)}_k}\cdot \frac{\partial a^{(L)}_k}{\partial z^{(L)}_j}.
+\]
+The activation is componentwise, so $a^{(L)}_k = \sigma(z^{(L)}_k)$ depends on $z^{(L)}_j$ only when $k = j$:
+\[
+\frac{\partial a^{(L)}_k}{\partial z^{(L)}_j} \;=\; \sigma'\!\big(z^{(L)}_j\big)\, \indc\{k = j\}.
+\]
+Substituting collapses the sum to its $k = j$ term,
+\[
+\delta^{(L)}_j \;=\; \frac{\partial \ell}{\partial a^{(L)}_j}\cdot \sigma'\!\big(z^{(L)}_j\big),
+\]
+which is the $j$-th component of $\nabla_{\!\mathbf{a}^{(L)}} \ell \odot \sigma'(\mathbf{z}^{(L)})$. $\blacksquare$
+\end{derivation}
+
+\noindent For squared loss with linear output, $\nabla_{\!\mathbf{a}^{(L)}}\ell = \mathbf{a}^{(L)} - \mathbf{y}$ and $\sigma' \equiv 1$, so $\boldsymbol\delta^{(L)} = \mathbf{a}^{(L)} - \mathbf{y}$. For cross-entropy with softmax output, the same expression collapses to $\boldsymbol\delta^{(L)} = \mathrm{softmax}(\mathbf{z}^{(L)}) - \mathbf{y}$ for one-hot $\mathbf{y}$ (combining the softmax Jacobian with the cross-entropy gradient).
+
+\begin{theorem}[Backpropagation: BP2, error recursion]\label{thm:bp2}
+For $l = 1, \ldots, L-1$,
+\[
+\boldsymbol\delta^{(l)} \;=\; \big({\mathbf{W}^{(l+1)}}^\top \boldsymbol\delta^{(l+1)}\big) \;\odot\; \sigma'\!\big(\mathbf{z}^{(l)}\big).
+\]
+\end{theorem}
+
+\begin{derivation}[Proof of BP2]
+By the chain rule, $\ell$ depends on $z^{(l)}_j$ through every component of the next pre-activation $\mathbf{z}^{(l+1)}$:
+\[
+\delta^{(l)}_j \;=\; \frac{\partial \ell}{\partial z^{(l)}_j} \;=\; \sum_{k=1}^{d_{l+1}} \frac{\partial \ell}{\partial z^{(l+1)}_k}\cdot \frac{\partial z^{(l+1)}_k}{\partial z^{(l)}_j} \;=\; \sum_{k=1}^{d_{l+1}} \delta^{(l+1)}_k\cdot \frac{\partial z^{(l+1)}_k}{\partial z^{(l)}_j}.
+\]
+The pre-activation at layer $l+1$ expands as
+\[
+z^{(l+1)}_k \;=\; \sum_{i=1}^{d_l} W^{(l+1)}_{ki}\, a^{(l)}_i + b^{(l+1)}_k \;=\; \sum_{i=1}^{d_l} W^{(l+1)}_{ki}\, \sigma\!\big(z^{(l)}_i\big) + b^{(l+1)}_k.
+\]
+Differentiating with respect to $z^{(l)}_j$, only the $i = j$ term in the sum contributes (the other $i$'s produce $\sigma'(z^{(l)}_i) \cdot 0 = 0$):
+\[
+\frac{\partial z^{(l+1)}_k}{\partial z^{(l)}_j} \;=\; W^{(l+1)}_{kj}\, \sigma'\!\big(z^{(l)}_j\big).
+\]
+Substituting into the chain-rule sum,
+\[
+\delta^{(l)}_j \;=\; \sum_{k=1}^{d_{l+1}} \delta^{(l+1)}_k\, W^{(l+1)}_{kj}\, \sigma'\!\big(z^{(l)}_j\big) \;=\; \Big(\sum_{k=1}^{d_{l+1}} W^{(l+1)}_{kj}\, \delta^{(l+1)}_k\Big)\, \sigma'\!\big(z^{(l)}_j\big).
+\]
+The factor $\sigma'(z^{(l)}_j)$ does not depend on $k$ and is pulled out of the sum. The inner sum is the $j$-th component of the matrix-vector product ${\mathbf{W}^{(l+1)}}^\top \boldsymbol\delta^{(l+1)}$ (the transpose puts $W^{(l+1)}_{kj}$ in row $j$ column $k$). Stacking over $j = 1, \ldots, d_l$ gives the vector form. $\blacksquare$
+\end{derivation}
+
+\begin{theorem}[Backpropagation: BP3, bias gradient]\label{thm:bp3}
+For $l = 1, \ldots, L$,
+$\displaystyle \frac{\partial \ell}{\partial \mathbf{b}^{(l)}} \;=\; \boldsymbol\delta^{(l)}.$
+\end{theorem}
+
+\begin{derivation}[Proof of BP3]
+By the chain rule, $\ell$ depends on $b^{(l)}_j$ only through $\mathbf{z}^{(l)}$:
+\[
+\frac{\partial \ell}{\partial b^{(l)}_j} \;=\; \sum_{k=1}^{d_l} \frac{\partial \ell}{\partial z^{(l)}_k}\cdot \frac{\partial z^{(l)}_k}{\partial b^{(l)}_j}.
+\]
+From $z^{(l)}_k = \sum_i W^{(l)}_{ki}\, a^{(l-1)}_i + b^{(l)}_k$, the only $b^{(l)}$-dependence in $z^{(l)}_k$ is the additive term $b^{(l)}_k$, so $\partial z^{(l)}_k/\partial b^{(l)}_j = \indc\{k = j\}$. Only the $k = j$ term survives, giving $\partial \ell/\partial b^{(l)}_j = \delta^{(l)}_j$. $\blacksquare$
+\end{derivation}
+
+\begin{theorem}[Backpropagation: BP4, weight gradient]\label{thm:bp4}
+For $l = 1, \ldots, L$,
+\[
+\frac{\partial \ell}{\partial \mathbf{W}^{(l)}} \;=\; \boldsymbol\delta^{(l)}\, {\mathbf{a}^{(l-1)}}^\top, \qquad \text{i.e.,} \qquad \frac{\partial \ell}{\partial W^{(l)}_{jk}} \;=\; \delta^{(l)}_j\, a^{(l-1)}_k.
+\]
+\end{theorem}
+
+\begin{derivation}[Proof of BP4]
+By the chain rule, $\ell$ depends on $W^{(l)}_{jk}$ only through $\mathbf{z}^{(l)}$:
+\[
+\frac{\partial \ell}{\partial W^{(l)}_{jk}} \;=\; \sum_{i=1}^{d_l} \frac{\partial \ell}{\partial z^{(l)}_i}\cdot \frac{\partial z^{(l)}_i}{\partial W^{(l)}_{jk}}.
+\]
+From $z^{(l)}_i = \sum_m W^{(l)}_{im}\, a^{(l-1)}_m + b^{(l)}_i$, the entry $W^{(l)}_{jk}$ appears only in $z^{(l)}_j$ with coefficient $a^{(l-1)}_k$:
+\[
+\frac{\partial z^{(l)}_i}{\partial W^{(l)}_{jk}} \;=\; \indc\{i = j\}\, a^{(l-1)}_k.
+\]
+Only $i = j$ survives, giving $\partial \ell/\partial W^{(l)}_{jk} = \delta^{(l)}_j\, a^{(l-1)}_k$. The $(j, k)$ entries form the rank-one matrix $\boldsymbol\delta^{(l)}\, {\mathbf{a}^{(l-1)}}^\top$. $\blacksquare$
+\end{derivation}
+
+\paragraph{Reading the equations.} BP1 anchors the recursion at the output: the layer-$L$ error is the loss gradient against the activation, multiplied componentwise by $\sigma'$ at the layer-$L$ pre-activation. BP2 propagates the error backward: the next-layer error is multiplied by ${\mathbf{W}^{(l+1)}}^\top$ (the transpose of the forward weights), then componentwise by $\sigma'(\mathbf{z}^{(l)})$. BP3 says the bias gradient at layer $l$ equals the error at layer $l$ (one-to-one). BP4 says the weight gradient is the outer product of the layer's error with the previous layer's activation. Each equation is the chain rule with one specific local Jacobian made explicit.
+
+\paragraph{Numerical illustration.} Apply BP1--BP4 to a 2-2-1 sigmoid MLP with squared loss and explicit parameters. The R chunk below evaluates one forward pass, then computes each $\boldsymbol\delta^{(l)}$ and gradient via the four equations, with the BP-equation tag inline.
+
+<<bp-numerical>>=
+sigmoid  <- function(z) 1 / (1 + exp(-z))
+dsigmoid <- function(z) sigmoid(z) * (1 - sigmoid(z))
+
+# 2 inputs -> 2 hidden -> 1 output, sigmoid throughout, squared loss
+W1 <- matrix(c(0.5, -0.3,
+               0.2,  0.8), 2, 2, byrow = TRUE);  b1 <- c(0.1, -0.2)
+W2 <- matrix(c(0.4, -0.6),     1, 2);            b2 <- 0
+x  <- c(1, 2);  y <- 1
+
+# Forward pass (Definition of MLP)
+z1 <- W1 %*% x  + b1;  a1 <- sigmoid(z1)
+z2 <- W2 %*% a1 + b2;  a2 <- sigmoid(z2)
+
+# Backward via BP1-BP4
+delta2 <- (a2 - y) * dsigmoid(z2)             # BP1
+dW2    <- delta2 %*% t(a1)                     # BP4 at l = 2
+db2    <- as.vector(delta2)                    # BP3 at l = 2
+delta1 <- (t(W2) %*% delta2) * dsigmoid(z1)   # BP2
+dW1    <- delta1 %*% t(x)                      # BP4 at l = 1
+db1    <- as.vector(delta1)                    # BP3 at l = 1
+
+list(loss   = round(0.5 * drop((a2 - y)^2), 4),
+     delta1 = round(drop(delta1), 4),  delta2 = round(drop(delta2), 4),
+     dW1    = round(dW1, 4),           db1    = round(db1, 4),
+     dW2    = round(dW2, 4),           db2    = round(db2, 4))
+@
+
+\noindent The same six lines (BP1, BP2 once each; BP3 and BP4 at each layer) compute every component of $\nabla_{\boldsymbol\theta}\ell$ at a cost dominated by two matrix products per layer.
+
+\subsection{The backpropagation algorithm}\label{subsec:6.6.5}
+
+Combining BP1--BP4 with one forward pass and one backward pass yields the full algorithm.
+
+\begin{ctab}
+\begin{tabular}{r p{0.84\textwidth}}
+\toprule
+\multicolumn{2}{l}{\textbf{Algorithm: Backpropagation for one example $(\mathbf{x}, \mathbf{y})$}}\\
+\midrule
+1. & Set $\mathbf{a}^{(0)} = \mathbf{x}$.\\
+2. & For $l = 1, \ldots, L$:\quad $\mathbf{z}^{(l)} = \mathbf{W}^{(l)} \mathbf{a}^{(l-1)} + \mathbf{b}^{(l)}$,\quad $\mathbf{a}^{(l)} = \sigma(\mathbf{z}^{(l)})$.\\
+3. & Compute $\boldsymbol\delta^{(L)} = \nabla_{\!\mathbf{a}^{(L)}} \ell \odot \sigma'(\mathbf{z}^{(L)})$ \quad (BP1).\\
+4. & For $l = L, L-1, \ldots, 1$:\\
+   & \quad $\partial \ell / \partial \mathbf{W}^{(l)} = \boldsymbol\delta^{(l)}\, {\mathbf{a}^{(l-1)}}^\top$ \quad (BP4).\\
+   & \quad $\partial \ell / \partial \mathbf{b}^{(l)} = \boldsymbol\delta^{(l)}$ \quad (BP3).\\
+   & \quad If $l > 1$:\quad $\boldsymbol\delta^{(l-1)} = \big({\mathbf{W}^{(l)}}^\top \boldsymbol\delta^{(l)}\big) \odot \sigma'(\mathbf{z}^{(l-1)})$ \quad (BP2).\\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\paragraph{Cost.} Forward and backward at layer $l$ each cost $O(d_l\, d_{l-1})$ (the dominant operations $\mathbf{W}^{(l)} \mathbf{a}^{(l-1)}$ and ${\mathbf{W}^{(l)}}^\top \boldsymbol\delta^{(l)}$ have matching shapes), so the full gradient $\nabla_{\boldsymbol\theta} \ell$ over $|\boldsymbol\theta| = \sum_l (d_l d_{l-1} + d_l)$ parameters costs twice the forward pass, regardless of $|\boldsymbol\theta|$.
+
+\paragraph{Minibatch.} Vectorize by stacking $B$ inputs columnwise as $\mathbf{X} \in \mathbb{R}^{p \times B}$ and propagating $\mathbf{A}^{(l)}, \mathbf{Z}^{(l)}, \boldsymbol\Delta^{(l)} \in \mathbb{R}^{d_l \times B}$. Forward and backward become dense matrix-matrix products of cost $O(d_l d_{l-1} B)$ per layer; the summed weight gradient is $\sum_{i=1}^B \boldsymbol\delta^{(l)}_i {\mathbf{a}^{(l-1)}_i}^\top = \boldsymbol\Delta^{(l)} {\mathbf{A}^{(l-1)}}^\top$.
+
+\subsection{R implementation from scratch}\label{subsec:6.6.6}
+
+The full algorithm, specialized to a 2-layer MLP ($L = 2$, ReLU hidden + sigmoid output, squared loss), fits in roughly thirty lines of base R. The architecture matches modern practice: ReLU on hidden layers (the standard since deep learning's revival), sigmoid on the output for binary classification (mapping to $(0, 1)$). The implementation below trains the network on the binary XOR pattern, a classification problem no linear classifier solves.
+
+\paragraph{Activations and derivatives.} Two activations: ReLU on the hidden layer, sigmoid on the output. The form \texttt{(z > 0) * z} preserves matrix structure that \texttt{pmax(0, z)} would flatten; the convention $\mathrm{ReLU}'(0) := 0$ is standard for subgradient implementations.
+
+<<bp-activation>>=
+relu     <- function(z) (z > 0) * z
+drelu    <- function(z) (z > 0) * 1
+sigmoid  <- function(z) 1 / (1 + exp(-z))
+dsigmoid <- function(z) sigmoid(z) * (1 - sigmoid(z))
+@
+
+\paragraph{Parameter initialization.} Hidden-layer weights use He scaling $\mathcal{N}(0, 2/d_{l-1})$: the variance multiplier $2$ compensates for ReLU zeroing out the negative half, keeping $\mathrm{Var}(\mathbf{a}^{(l)})$ roughly constant across layers. The sigmoid output layer uses Glorot scaling $\mathcal{N}(0, 1/d_{l-1})$. Biases start at zero.
+
+<<bp-init>>=
+init_mlp <- function(d_in, d_hidden, d_out) {
+  list(
+    W1 = matrix(rnorm(d_hidden * d_in,   sd = sqrt(2 / d_in)),    d_hidden, d_in),
+    b1 = numeric(d_hidden),
+    W2 = matrix(rnorm(d_out  * d_hidden, sd = 1 / sqrt(d_hidden)), d_out,   d_hidden),
+    b2 = numeric(d_out)
+  )
+}
+@
+
+\paragraph{Forward pass.} Stack $B$ training examples columnwise as $\mathbf{X} \in \mathbb{R}^{d_{\mathrm{in}} \times B}$. The call \texttt{sweep(M, 1, v, "+")} adds the length-$d_l$ vector $v$ to every column of $M$; this is more explicit than R's recycling rule and remains correct when $B = 1$.
+
+<<bp-forward>>=
+forward <- function(par, X) {
+  Z1 <- sweep(par$W1 %*% X,  1, par$b1, "+")
+  A1 <- relu(Z1)
+  Z2 <- sweep(par$W2 %*% A1, 1, par$b2, "+")
+  A2 <- sigmoid(Z2)
+  list(Z1 = Z1, A1 = A1, Z2 = Z2, A2 = A2)
+}
+@
+
+\paragraph{Backward pass.} Each line implements one of BP1--BP4 in matrix form. BP1 contracts the output error against the sigmoid derivative; BP2 backprops through the ReLU derivative. \texttt{rowSums(as.matrix(.))} sums the per-example bias gradients across the minibatch; the \texttt{as.matrix} wrap forces a matrix shape when the output layer is one-dimensional ($d_{\mathrm{out}} = 1$ would otherwise yield a length-$B$ vector that \texttt{rowSums} mishandles).
+
+<<bp-backward>>=
+backward <- function(par, cache, X, Y) {
+  D2  <- (cache$A2 - Y) * dsigmoid(cache$Z2)        # BP1: sigmoid output error
+  dW2 <- D2 %*% t(cache$A1)                          # BP4 at l = 2
+  db2 <- rowSums(as.matrix(D2))                     # BP3 at l = 2
+  D1  <- (t(par$W2) %*% D2) * drelu(cache$Z1)        # BP2: ReLU hidden error
+  dW1 <- D1 %*% t(X)                                 # BP4 at l = 1
+  db1 <- rowSums(as.matrix(D1))                     # BP3 at l = 1
+  list(dW1 = dW1, db1 = db1, dW2 = dW2, db2 = db2, B = ncol(X))
+}
+@
+
+\paragraph{Full-batch gradient step.}
+
+<<bp-sgd>>=
+sgd_step <- function(par, X, Y, eta) {
+  cache <- forward(par, X)
+  grad  <- backward(par, cache, X, Y)
+  par$W1 <- par$W1 - eta * grad$dW1 / grad$B
+  par$b1 <- par$b1 - eta * grad$db1 / grad$B
+  par$W2 <- par$W2 - eta * grad$dW2 / grad$B
+  par$b2 <- par$b2 - eta * grad$db2 / grad$B
+  par
+}
+@
+
+\paragraph{The XOR pattern.} XOR is the canonical example of a binary classification problem unsolvable by any linear classifier yet solvable by a 2-layer MLP.
+
+\begin{definition}[XOR pattern]\label{def:xor}
+The \textbf{XOR pattern} is the binary classification problem on the four points $\mathbf{x}_1 = (0,0)$, $\mathbf{x}_2 = (0,1)$, $\mathbf{x}_3 = (1,0)$, $\mathbf{x}_4 = (1,1)$ in $\{0, 1\}^2$ with labels $y_1 = -1$, $y_2 = +1$, $y_3 = +1$, $y_4 = -1$ (the output is $+1$ exactly when one input is $0$ and the other is $1$).
+\end{definition}
+
+\begin{theorem}[XOR is not linearly separable]\label{thm:xor-not-linsep}
+There is no $(\mathbf{w}, b) \in \mathbb{R}^2 \times \mathbb{R}$ for which the linear-classifier rule $\hat y(\mathbf{x}_i) = \mathrm{sign}(\mathbf{w}^\top \mathbf{x}_i + b)$ matches $y_i$ at all four points of Definition~\ref{def:xor}.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:xor-not-linsep}]
+Suppose such $(\mathbf{w}, b)$ exists. Correct classification at every point requires $y_i (\mathbf{w}^\top \mathbf{x}_i + b) > 0$:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item $\mathbf{x}_1 = (0,0)$, $y_1 = -1$: $-b > 0$, so $b < 0$;
+\item $\mathbf{x}_4 = (1,1)$, $y_4 = -1$: $-(w_1 + w_2 + b) > 0$, i.e., $w_1 + w_2 < -b$;
+\item $\mathbf{x}_2 = (0,1)$, $y_2 = +1$: $w_2 + b > 0$, i.e., $w_2 > -b$;
+\item $\mathbf{x}_3 = (1,0)$, $y_3 = +1$: $w_1 + b > 0$, i.e., $w_1 > -b$.
+\end{itemize}
+Adding the last two strict inequalities, $w_1 + w_2 > -2b$. Combining with the second, $-2b < w_1 + w_2 < -b$, so $-2b < -b$, hence $b > 0$. This contradicts $b < 0$. $\blacksquare$
+\end{derivation}
+
+A linear classifier (logistic regression, linear SVM, perceptron) thus fails on XOR; a 2-layer MLP suffices. The next example exhibits a 2-layer ReLU network that computes XOR exactly with hand-chosen integer weights, before the SGD-trained version below.
+
+\begin{example}[A 2-layer ReLU MLP that computes XOR exactly]\label{ex:xor-mlp}
+The 2-2-1 MLP with ReLU activation on the hidden layer and identity on the output, with weights and biases
+\[
+\mathbf{W}^{(1)} = \begin{pmatrix} 1 & 1 \\ 1 & 1 \end{pmatrix}, \qquad \mathbf{b}^{(1)} = \begin{pmatrix} 0 \\ -1 \end{pmatrix}, \qquad \mathbf{W}^{(2)} = \begin{pmatrix} 2 & -4 \end{pmatrix}, \qquad b^{(2)} = -1,
+\]
+returns $f(\mathbf{x}_i; \boldsymbol\theta) = y_i$ exactly at every point of Definition~\ref{def:xor}.
+\end{example}
+
+\begin{ctab}
+\begin{tabular}{c c c c c c}
+\toprule
+$\mathbf{x}$ & $\mathbf{z}^{(1)} = \mathbf{W}^{(1)} \mathbf{x} + \mathbf{b}^{(1)}$ & $\mathbf{a}^{(1)} = \mathrm{ReLU}(\mathbf{z}^{(1)})$ & $z^{(2)} = \mathbf{W}^{(2)} \mathbf{a}^{(1)} + b^{(2)}$ & $f(\mathbf{x})$ & $y$ \\
+\midrule
+$(0, 0)$ & $(0, -1)$ & $(0, 0)$ & $2\cdot 0 + (-4)\cdot 0 - 1 = -1$ & $-1$ & $-1$ \\
+$(0, 1)$ & $(1, 0)$  & $(1, 0)$ & $2\cdot 1 + (-4)\cdot 0 - 1 = +1$ & $+1$ & $+1$ \\
+$(1, 0)$ & $(1, 0)$  & $(1, 0)$ & $2\cdot 1 + (-4)\cdot 0 - 1 = +1$ & $+1$ & $+1$ \\
+$(1, 1)$ & $(2, 1)$  & $(2, 1)$ & $2\cdot 2 + (-4)\cdot 1 - 1 = -1$ & $-1$ & $-1$ \\
+\bottomrule
+\end{tabular}
+\end{ctab}
+
+\noindent The two hidden units extract Boolean features: $a^{(1)}_1 = \mathrm{ReLU}(x_1 + x_2)$ counts the number of inputs that are on, while $a^{(1)}_2 = \mathrm{ReLU}(x_1 + x_2 - 1)$ fires only when both inputs are on. The output combines them as $2\, a^{(1)}_1 - 4\, a^{(1)}_2 - 1$, giving $-1, +1, +1, -1$ on the four XOR points. Theorem~\ref{thm:xor-not-linsep} forbids any single linear unit from doing this; one hidden layer of two ReLU neurons suffices because their composition realizes the nonlinear feature ``exactly one of the inputs is on.''
+
+\paragraph{Demo: learning XOR.} The hand-constructed weights of Example~\ref{ex:xor-mlp} solve XOR exactly with ReLU hidden + identity output. The demo below keeps the ReLU hidden layer and switches to sigmoid output, whose range $(0, 1)$ matches the rescaled labels $\tilde y = (1 + y)/2 \in \{0, 1\}$ for binary classification; stochastic gradient descent discovers its own weights from random initialization, with four training examples, one hidden layer of four neurons, and 5000 full-batch updates at learning rate $\eta = 0.5$.
+
+<<bp-demo>>=
+X_xor <- matrix(c(0, 0,   0, 1,   1, 0,   1, 1), nrow = 2)
+Y_xor <- matrix(c(0,      1,      1,      0   ), nrow = 1)
+
+set.seed(42)
+par <- init_mlp(d_in = 2, d_hidden = 4, d_out = 1)
+for (epoch in 1:5000) par <- sgd_step(par, X_xor, Y_xor, eta = 0.5)
+round(forward(par, X_xor)$A2, 3)
+@
+
+The output approximates $(0,\, 1,\, 1,\, 0)$. The same six functions, with deeper architectures and minibatch loops added, scale to networks with millions of parameters; the role of backpropagation is unchanged.
+
+\section{Implementation Tour}\label{sec:6.7}
+
+The theory of \S\S\ref{sec:6.2}--\ref{sec:6.6} maps onto three R packages: \texttt{kernlab} (solver-direct SVM), tidymodels (workflow + tuning), and \texttt{brulee} (MLP via a torch backend). The tour runs all three on a nonlinearly-separable 2D dataset and compares decision boundaries against tree and boosting baselines from Unit~5.
+
+\paragraph{Benchmark data.} A two-class concentric-circles dataset: 100 points uniformly distributed on each of two circles in $\mathbb{R}^2$ (radii $0.4$ and $1.0$, with isotropic Gaussian noise). The classes are not linearly separable; an SVM with RBF kernel separates them by an annular boundary.
+
+<<sec67-data, fig.width=4, fig.height=4, out.width='0.45\\linewidth'>>=
+set.seed(2024)
+n <- 100
+theta <- runif(2 * n, 0, 2 * pi)
+r     <- c(rep(0.4, n), rep(1.0, n)) + rnorm(2 * n, sd = 0.07)
+df_xy <- data.frame(
+  x1 = r * cos(theta),
+  x2 = r * sin(theta),
+  y  = factor(rep(c("inner", "outer"), each = n))
+)
+
+plot(x2 ~ x1, data = df_xy,
+     col = ifelse(y == "inner", "tomato", "steelblue"),
+     pch = 19, cex = 0.8, asp = 1,
+     xlab = expression(x[1]), ylab = expression(x[2]))
+legend("topright", legend = levels(df_xy$y),
+       col = c("tomato", "steelblue"), pch = 19, cex = 0.9, bty = "n")
+@
+
+\subsection{SVM via kernlab}\label{subsec:6.7.1}
+
+\texttt{kernlab::ksvm} fits the dual problem of \S\ref{subsec:6.5.4} (Theorem~\ref{thm:soft-svm-dual}). The two essential arguments are \texttt{kernel} (one of \texttt{vanilladot}, \texttt{rbfdot}, \texttt{polydot}, \dots) and \texttt{C} (soft-margin); for RBF, \texttt{kpar = list(sigma = $\gamma$)} fixes the locality.
+
+<<sec67-kernlab>>=
+library(kernlab)
+fit_lin <- ksvm(y ~ x1 + x2, data = df_xy, type = "C-svc",
+                kernel = "vanilladot", kpar = list(),
+                C = 1, scaled = TRUE)
+fit_rbf <- ksvm(y ~ x1 + x2, data = df_xy, type = "C-svc",
+                kernel = "rbfdot", kpar = list(sigma = 1),
+                C = 1, scaled = TRUE)
+
+train_err <- function(fit) mean(predict(fit, df_xy) != df_xy$y)
+data.frame(kernel  = c("linear",          "RBF"),
+           trn_err = c(train_err(fit_lin), train_err(fit_rbf)),
+           num_SV  = c(nSV(fit_lin),       nSV(fit_rbf)))
+@
+
+The linear kernel cannot separate concentric rings; its training error stays substantial and over 90\% of points become support vectors (a soft-margin SVM on linearly inseparable data has $\lambda_i^\star = C$ for many $i$, the bound-SV regime of \S\ref{subsec:6.4.2}). The RBF kernel separates the rings cleanly with a much smaller support set.
+
+\subsection{SVM via tidymodels with tuning}\label{subsec:6.7.2}
+
+tidymodels separates model specification (\texttt{parsnip}), preprocessing recipe, and resampling-based hyperparameter search. For an RBF SVM with \texttt{cost} and \texttt{rbf\_sigma} tuned via 5-fold CV:
+
+<<sec67-tidy, message=FALSE, warning=FALSE>>=
+library(tidymodels)
+
+split <- initial_split(df_xy, prop = 0.8, strata = y)
+train <- training(split); test <- testing(split)
+
+rec  <- recipe(y ~ x1 + x2, data = train) |>
+  step_normalize(all_numeric_predictors())
+
+spec <- svm_rbf(cost = tune(), rbf_sigma = tune()) |>
+  set_engine("kernlab") |>
+  set_mode("classification")
+
+wf    <- workflow() |> add_recipe(rec) |> add_model(spec)
+folds <- vfold_cv(train, v = 5, strata = y)
+grid  <- grid_regular(cost(), rbf_sigma(), levels = 4)
+
+tuned <- tune_grid(wf, resamples = folds, grid = grid,
+                   metrics = metric_set(accuracy, roc_auc))
+best  <- select_best(tuned, metric = "roc_auc")
+
+final <- finalize_workflow(wf, best) |> last_fit(split)
+collect_metrics(final)
+@
+
+The recipe \texttt{step\_normalize} applies $z$-score scaling using each fold's training statistics during CV, avoiding the leakage flagged in Unit~4 \S 4.6.3. \texttt{select\_best} picks the $(\texttt{cost}, \texttt{rbf\_sigma})$ combination with highest CV AUC; \texttt{last\_fit} retrains on the full training split and evaluates once on the held-out test split.
+
+\subsection{MLP via parsnip}\label{subsec:6.7.3}
+
+A multilayer perceptron via parsnip's \texttt{brulee} engine: parsnip routes the specification through a torch backend and trains by minibatch SGD with momentum, standard in modern deep-learning libraries.
+
+<<sec67-mlp, message=FALSE, warning=FALSE>>=
+library(brulee)
+torch::torch_manual_seed(123)
+
+spec_mlp <- mlp(hidden_units = 16, epochs = 300, learn_rate = 0.05) |>
+  set_engine("brulee",
+             optimizer  = "SGD",
+             batch_size = 16,
+             momentum   = 0.9) |>
+  set_mode("classification")
+
+mlp_fit <- workflow() |>
+  add_recipe(rec) |>
+  add_model(spec_mlp) |>
+  last_fit(split)
+
+collect_metrics(mlp_fit)
+@
+
+Sixteen hidden ReLU units, batch size 16, momentum 0.9, learning rate 0.05, 300 epochs. The recipe-defined standardization is applied per fold, avoiding leakage. brulee's torch backend exposes standard training hooks: early stopping (\texttt{stop\_iter}), learning-rate schedules (\texttt{rate\_schedule}), weight decay (\texttt{penalty}), and dropout. Deeper architectures use the \texttt{brulee\_two\_layer} engine for two hidden layers, or call \texttt{brulee::brulee\_mlp(hidden\_units = c(64, 32, 16), \ldots)} directly for arbitrary depth.
+
+\begin{suppremark}[BFGS, L-BFGS, and SGD]
+Quasi-Newton methods like BFGS (Broyden--Fletcher--Goldfarb--Shanno) carry an approximation $\mathbf{B}_k$ to the Hessian $\nabla^2 \ell(\boldsymbol\theta_k)$, updated by a rank-two formula from the parameter step $\mathbf{s}_k = \boldsymbol\theta_{k+1} - \boldsymbol\theta_k$ and the gradient change $\mathbf{y}_k = \nabla\ell(\boldsymbol\theta_{k+1}) - \nabla\ell(\boldsymbol\theta_k)$, then step
+\[
+\boldsymbol\theta_{k+1} \;=\; \boldsymbol\theta_k \;-\; \alpha_k\, \mathbf{B}_k^{-1}\, \nabla \ell(\boldsymbol\theta_k),
+\]
+with $\alpha_k$ chosen by line search. Storing $\mathbf{B}_k$ takes $O(|\boldsymbol\theta|^2)$ memory, prohibitive once $|\boldsymbol\theta|$ exceeds $\sim 10^4$. The limited-memory variant L-BFGS reconstructs $\mathbf{B}_k^{-1}\nabla\ell$ from the most recent $m$ pairs $(\mathbf{s}_j, \mathbf{y}_j)$ at $O(m\,|\boldsymbol\theta|)$ memory, and is brulee's default \texttt{optimizer = "LBFGS"}. Modern deep-learning training instead uses minibatch SGD (Definition~\ref{def:sgd}) and adaptive variants like Adam, both at $O(|\boldsymbol\theta|)$ memory and parallelizable across GPU minibatches. The two regimes split by problem size: BFGS-family methods minimize iteration count on small smooth problems; SGD-family methods scale by trading per-iteration progress for cheap iterations on large architectures.
+\end{suppremark}
+
+\subsection{Decision-boundary comparison}\label{subsec:6.7.4}
+
+Five models, overlaid on an $80 \times 80$ grid: linear and RBF SVM (\S\S\ref{sec:6.2}--\ref{sec:6.5}), decision tree and gradient boosting (Unit~5), MLP (\S\ref{sec:6.6}). The visualization exposes each model's inductive bias.
+
+<<sec67-boundaries, fig.width=12, fig.height=2.7, out.width='\\linewidth', message=FALSE, warning=FALSE>>=
+library(rpart); library(xgboost); library(brulee); library(ggplot2)
+library(parsnip); library(dplyr); library(tidyr)
+
+gx <- seq(-1.4, 1.4, length.out = 80)
+gy <- seq(-1.4, 1.4, length.out = 80)
+grid <- expand.grid(x1 = gx, x2 = gy)
+
+fit_l   <- ksvm(y ~ x1 + x2, df_xy, kernel = "vanilladot",
+                kpar = list(), C = 1)
+fit_r   <- ksvm(y ~ x1 + x2, df_xy, kernel = "rbfdot",
+                kpar = list(sigma = 1), C = 1)
+fit_t   <- rpart(y ~ x1 + x2, data = df_xy,
+                 control = rpart.control(cp = 0.005))
+mat     <- as.matrix(df_xy[, c("x1", "x2")])
+dtrain  <- xgb.DMatrix(data = mat, label = as.numeric(df_xy$y) - 1)
+fit_xgb <- xgb.train(
+  params  = list(objective = "binary:logistic", max_depth = 3, eta = 0.3),
+  data    = dtrain, nrounds = 100, verbose = 0)
+torch::torch_manual_seed(123)
+spec_mlp <- mlp(hidden_units = 16, epochs = 300, learn_rate = 0.05) |>
+  set_engine("brulee",
+             optimizer  = "SGD",
+             batch_size = 16,
+             momentum   = 0.9) |>
+  set_mode("classification")
+fit_nn <- spec_mlp |> fit(y ~ x1 + x2, data = df_xy)
+
+is_outer <- function(p) as.integer(p == "outer")
+preds <- list(
+  `linear SVM`    = is_outer(predict(fit_l, grid)),
+  `RBF SVM`       = is_outer(predict(fit_r, grid)),
+  `decision tree` = is_outer(predict(fit_t, grid, type = "class")),
+  `xgboost`       = as.integer(predict(fit_xgb, as.matrix(grid)) > 0.5),
+  `MLP (brulee)`  = is_outer(predict(fit_nn, grid)$.pred_class)
+)
+
+grid_long <- bind_cols(grid, as_tibble(preds)) |>
+  pivot_longer(cols = -c(x1, x2), names_to = "model", values_to = "pred") |>
+  mutate(model = factor(model, levels = names(preds)))
+
+ggplot(grid_long, aes(x1, x2)) +
+  geom_tile(aes(fill = factor(pred))) +
+  geom_contour(aes(z = pred), breaks = 0.5,
+               color = "grey20", linewidth = 0.5) +
+  geom_point(data = df_xy, aes(color = y), size = 0.6) +
+  scale_fill_manual(values  = c(`0` = "#FECACA", `1` = "#E0F2FE"),
+                    guide   = "none") +
+  scale_color_manual(values = c(inner = "tomato", outer = "steelblue"),
+                     guide  = "none") +
+  facet_wrap(~ model, nrow = 1) +
+  coord_fixed() +
+  theme_minimal(base_size = 9) +
+  theme(panel.grid  = element_blank(),
+        axis.title  = element_blank(),
+        axis.text   = element_blank(),
+        axis.ticks  = element_blank())
+@
+
+\noindent The five panels reveal the inductive biases:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item linear SVM commits to a hyperplane and cannot represent the annulus;
+\item RBF SVM produces a near-circular boundary, with locality controlled by $\gamma$;
+\item the decision tree partitions the plane into axis-aligned rectangles, missing the rotational symmetry;
+\item xgboost stacks many shallow trees, approximating the annulus by overlapping rectangles;
+\item the MLP composes affine + ReLU layers and produces a piecewise-linear nonlinear boundary; with sufficient hidden units, it approximates the annulus comparably to RBF SVM.
+\end{itemize}
+
+\noindent On data whose true boundary is rotationally symmetric, kernel and MLP methods adapt; tree-based models adapt only via increased depth and ensemble size.
+
+\section{Pitfalls and Misapplications}\label{sec:6.8}
+
+The pitfalls below arise from common misuses of SVM and neural-network methods. Each can be embedded as a trap in a final-project dataset.
+
+\subsection{Forgetting to standardize}\label{subsec:6.8.1}
+
+The SVM dual depends on the data only through inner products or kernel values derived from them. Both are scale-sensitive: a feature with magnitude $1000$ swamps one with magnitude $1$ in the inner product, and the resulting decision boundary effectively ignores the small-magnitude feature.
+
+\paragraph{Why tempting.} Tree-based methods (Unit~5) are scale-invariant under monotone feature transformations; students may carry that habit over to SVM and skip standardization.
+
+<<pf-scaling>>=
+set.seed(7)
+n <- 80
+df <- data.frame(
+  x1 = c(rnorm(n, -1, 0.7), rnorm(n,  1, 0.7)),
+  x2 = c(rnorm(n, -1, 0.7), rnorm(n,  1, 0.7)) * 1000,
+  y  = factor(c(rep("A", n), rep("B", n)))
+)
+
+fit_err <- function(scaled) {
+  fit <- ksvm(y ~ x1 + x2, data = df, type = "C-svc",
+              kernel = "rbfdot", scaled = scaled, C = 1)
+  mean(predict(fit, df) != df$y)
+}
+c(unscaled = fit_err(scaled = FALSE),
+  scaled   = fit_err(scaled = TRUE))
+@
+
+\paragraph{Diagnostic and fix.} Inspect $\mathrm{sd}(\mathbf{x}_j)$ across features; standardize via z-score before fitting an SVM. \texttt{kernlab::ksvm} sets \texttt{scaled = TRUE} by default; the failure mode requires explicit \texttt{scaled = FALSE} or an inconsistent train/test scaling.
+
+\subsection{Gamma--cost interaction in RBF kernels}\label{subsec:6.8.2}
+
+The RBF kernel has two hyperparameters that interact: $\gamma$ (locality) and the soft-margin $C$. Large $\gamma$ + large $C$ overfits (each support vector forms its own basin). Small $\gamma$ + small $C$ underfits (the kernel is near-constant; $C$ tolerates many violations).
+
+\paragraph{Why tempting.} Tuning either alone misses the joint optimum; one-dimensional grid searches at fixed $\gamma$ produce misleading results.
+
+<<pf-gamma-cost>>=
+set.seed(2025)
+n <- 100
+theta <- runif(2 * n, 0, 2 * pi)
+r     <- c(rep(0.4, n), rep(1.0, n)) + rnorm(2 * n, sd = 0.07)
+df <- data.frame(x1 = r * cos(theta), x2 = r * sin(theta),
+                 y  = factor(rep(c("A", "B"), each = n)))
+
+fit_at <- function(C, sigma) {
+  fit <- ksvm(y ~ x1 + x2, data = df, kernel = "rbfdot",
+              kpar = list(sigma = sigma), C = C)
+  c(C = C, sigma = sigma,
+    train_err = mean(predict(fit, df) != df$y), nSV = nSV(fit))
+}
+rbind(fit_at(1,    0.1),    # mild gamma, mild C   : appropriate
+      fit_at(1,    100),    # large gamma, mild C  : memorizes points
+      fit_at(0.01, 1),      # mild gamma, tiny C   : underfits
+      fit_at(100,  1))      # mild gamma, huge C   : near-hard-margin
+@
+
+\paragraph{Fix.} Joint grid search over $(\gamma, C)$ via \texttt{tune::tune\_grid}; report the full surface, not the marginal best.
+
+\subsection{Class imbalance}\label{subsec:6.8.3}
+
+With class imbalance ($90{:}10$, say), the default soft-margin SVM uses one $C$ for both classes, so the hyperplane shifts toward the minority to minimize total loss. Overall accuracy is high; minority recall is low.
+
+\paragraph{Why tempting.} Reporting accuracy alone hides the failure; a model predicting "majority" everywhere already scores 90\%.
+
+<<pf-imbal>>=
+set.seed(7)
+n_maj <- 180; n_min <- 20
+df <- data.frame(
+  x1 = c(rnorm(n_maj, 0, 1),  rnorm(n_min, 1.2, 0.3)),
+  x2 = c(rnorm(n_maj, 0, 1),  rnorm(n_min, 1.2, 0.3)),
+  y  = factor(c(rep("majority", n_maj), rep("minority", n_min)))
+)
+
+fit_d <- ksvm(y ~ x1 + x2, data = df, type = "C-svc",
+              kernel = "rbfdot", C = 1)
+fit_w <- ksvm(y ~ x1 + x2, data = df, type = "C-svc",
+              kernel = "rbfdot", C = 1,
+              class.weights = c(majority = 1, minority = n_maj / n_min))
+
+eval_minrec <- function(fit) {
+  p <- predict(fit, df)
+  c(accuracy        = mean(p == df$y),
+    minority_recall = mean(p[df$y == "minority"] == "minority"))
+}
+rbind(default  = eval_minrec(fit_d),
+      balanced = eval_minrec(fit_w))
+@
+
+\paragraph{Fix.} Pass \texttt{class.weights} (kernlab) or \texttt{case\_weights} (tidymodels) inversely proportional to class frequency. SMOTE inside CV folds is the alternative if upsampling is desired (Unit~3 \S 3.7.4).
+
+\subsection{Neural networks on small data}\label{subsec:6.8.4}
+
+A neural network with $|\boldsymbol\theta|$ exceeding $n$ can memorize the training set, leading to overfitting. On small tabular data ($n$ in the hundreds to low thousands), tree ensembles and kernel SVMs typically match or outperform MLPs in test accuracy.
+
+\paragraph{Why tempting.} Recent NN successes on images and language give MLPs a default-modern-method reputation; students may apply them where they don't fit.
+
+<<pf-nn-small>>=
+set.seed(1)
+n <- 80
+df <- data.frame(x1 = rnorm(n), x2 = rnorm(n))
+df$y <- factor(ifelse(df$x1 + df$x2 + rnorm(n, 0, 0.4) > 0, "A", "B"))
+i <- sample(n, n * 0.7)
+
+fit_rp <- rpart(y ~ ., data = df[i, ], method = "class")
+
+torch::torch_manual_seed(1)
+spec_mlp <- mlp(hidden_units = 32, epochs = 200, learn_rate = 0.05) |>
+  set_engine("brulee",
+             optimizer  = "SGD",
+             batch_size = 8,
+             momentum   = 0.9) |>
+  set_mode("classification")
+fit_nn <- spec_mlp |> fit(y ~ ., data = df[i, ])
+
+err_class  <- function(fit, dat) mean(predict(fit, dat, type = "class") != dat$y)
+err_parsnip <- function(fit, dat) mean(predict(fit, dat)$.pred_class != dat$y)
+data.frame(
+  method   = c("decision tree", "MLP (32 hidden)"),
+  test_err = c(err_class(fit_rp, df[-i, ]),
+               err_parsnip(fit_nn, df[-i, ]))
+)
+@
+
+\paragraph{Fix.} Compare a baseline (logistic regression, kernel SVM, gradient boosting) to the NN; if the NN does not significantly beat the baseline at the available $n$, prefer the simpler, more interpretable method.
+
+\subsection{No universally best kernel}\label{subsec:6.8.5}
+
+Kernel choice encodes assumed similarity structure: linear assumes flat boundaries; polynomial assumes interactions up to a fixed degree; RBF assumes smooth and locally-constant. No kernel dominates across all problems.
+
+\paragraph{Why tempting.} The RBF default in many libraries gives reasonable performance on smooth low-dimensional data, encouraging always-RBF thinking.
+
+<<pf-kernels>>=
+set.seed(11); n <- 100
+
+A <- data.frame(x1 = rnorm(2 * n), x2 = rnorm(2 * n))
+A$y <- factor(ifelse(A$x1 + A$x2 + rnorm(2 * n, 0, 0.3) > 0, "A1", "A2"))
+
+B <- data.frame(x1 = runif(2 * n, -2, 2), x2 = runif(2 * n, -2, 2))
+B$y <- factor(ifelse(B$x1 * B$x2 + rnorm(2 * n, 0, 0.2) > 0, "B1", "B2"))
+
+theta <- runif(2 * n, 0, 2 * pi)
+C_df <- data.frame(x1 = c(0.4, 1)[rep(1:2, each = n)] * cos(theta),
+                   x2 = c(0.4, 1)[rep(1:2, each = n)] * sin(theta),
+                   y  = factor(rep(c("C1", "C2"), each = n)))
+
+err_at <- function(d, kern, ...) {
+  fit <- ksvm(y ~ x1 + x2, data = d, type = "C-svc", kernel = kern, ..., C = 1)
+  round(mean(predict(fit, d) != d$y), 3)
+}
+
+rbind(
+  `linear data`     = c(linear = err_at(A, "vanilladot", kpar = list()),
+                        poly2  = err_at(A, "polydot",    kpar = list(degree = 2)),
+                        rbf    = err_at(A, "rbfdot",     kpar = list(sigma = 1))),
+  `polynomial data` = c(linear = err_at(B, "vanilladot", kpar = list()),
+                        poly2  = err_at(B, "polydot",    kpar = list(degree = 2)),
+                        rbf    = err_at(B, "rbfdot",     kpar = list(sigma = 1))),
+  `rings data`      = c(linear = err_at(C_df, "vanilladot", kpar = list()),
+                        poly2  = err_at(C_df, "polydot",    kpar = list(degree = 2)),
+                        rbf    = err_at(C_df, "rbfdot",     kpar = list(sigma = 1)))
+)
+@
+
+Linear wins narrowly on $A$ but fails on $B$ and $C$; both polynomial and RBF handle the nonlinear data, with relative quality differing by dataset. No kernel dominates across all three.
+
+\paragraph{Fix.} Cross-validate over kernel choices; do not assume RBF is always best.
+
+\subsection{SVM probabilities and Platt scaling}\label{subsec:6.8.6}
+
+The SVM decision function $f^\star(\mathbf{x}) = \sum_{i \in \mathcal{S}} \lambda_i^\star y_i K(\mathbf{x}_i, \mathbf{x}) + b^\star$ is a real-valued score, not a probability. Calibrated probabilities require \textbf{Platt scaling}: a logistic regression $p(y = 1 \mid f^\star) = \sigma(a f^\star + b)$ fit on a held-out validation set. Calibrating on the training data overfits and produces over-confident probabilities.
+
+\paragraph{Why tempting.} A naive "probability" via $\sigma(\text{decision})$ on the training data looks well-defined but skips the calibration step.
+
+<<pf-platt>>=
+set.seed(1)
+n <- 200
+df <- data.frame(
+  x1 = c(rnorm(n, 0, 1), rnorm(n, 1.5, 1)),
+  x2 = c(rnorm(n, 0, 1), rnorm(n, 1.5, 1)),
+  y  = factor(c(rep("A", n), rep("B", n)))
+)
+i_train <- sample(2 * n, n)
+train <- df[ i_train, ]; test <- df[-i_train, ]
+
+fit_naive <- ksvm(y ~ x1 + x2, data = train, type = "C-svc",
+                  kernel = "rbfdot", C = 1, prob.model = FALSE)
+fit_platt <- ksvm(y ~ x1 + x2, data = train, type = "C-svc",
+                  kernel = "rbfdot", C = 1, prob.model = TRUE)
+
+dec   <- predict(fit_naive, test, type = "decision")
+p_nv  <- plogis(as.numeric(dec))
+p_cal <- predict(fit_platt, test, type = "probabilities")[, "B"]
+
+y_t <- as.integer(test$y == "B")
+data.frame(
+  scheme = c("plogis(decision)", "Platt CV (prob.model=TRUE)"),
+  brier  = round(c(mean((p_nv  - y_t)^2), mean((p_cal - y_t)^2)), 4)
+)
+@
+
+\paragraph{Fix.} Use \texttt{prob.model = TRUE} (kernlab) or an explicit calibration step (\texttt{cal\_estimate\_logistic} / \texttt{cal\_estimate\_isotonic} in tidymodels). Report Brier score or reliability diagrams to verify calibration.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

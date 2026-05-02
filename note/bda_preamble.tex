@@ -1,0 +1,200 @@
+% =============================================================================
+%  bda_preamble.tex
+%  Shared LaTeX preamble for Business Data Analytics course units.
+%  -----------------------------------------------------------------------------
+%  Loaded by every Unit's lecture.Rnw via
+%    \input{../../style_references/bda_preamble.tex}
+%  immediately after \documentclass[17pt]{extarticle}.
+%
+%  Unit-specific configuration that must remain in lecture.Rnw, after this
+%  \input but before \begin{document}:
+%    \fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ N <chapter title>}}
+%    \setcounter{theorem}{0}\setcounter{example}{0}
+%    \renewcommand\thedefinition{N.\arabic{theorem}}
+%    \renewcommand\thetheorem  {N.\arabic{theorem}}
+%    \renewcommand\theexample  {N.\arabic{example}}
+%    \renewcommand\theexercise {N.\arabic{exercise}}
+%    \renewcommand\thefigure   {N.\arabic{figure}}
+%    \title{\color{hdrBG}\bfseries\Huge <chapter title>}\author{}\date{}
+% =============================================================================
+
+\usepackage[
+  paperwidth=257mm,
+  paperheight=144.5mm,
+  top=9mm,bottom=9mm,left=6mm,right=6mm,
+  headheight=7mm,headsep=2mm,footskip=19pt
+]{geometry}
+
+\usepackage{amsmath,amsthm,amssymb,amsfonts}
+\usepackage{xstring}  % \IfDecimal used by ctab for numeric-vs-font dispatch
+\usepackage{booktabs,array,longtable,tabularx}
+\usepackage[shortlabels]{enumitem}
+\setlist[itemize,1]{leftmargin=1.5em, labelsep=0.35em}
+\usepackage{mathtools}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,decorations.markings}
+\usepackage[most]{tcolorbox}
+\tcbuselibrary{theorems,skins,breakable}
+\usepackage[round,authoryear]{natbib}  % loaded before hyperref so \citep is hyperlinked
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!70!black,citecolor=blue!60!black}
+
+% Source code highlighting (requires pygmentize; compile with -shell-escape)
+\usepackage[cache=false]{minted}
+\setminted{fontsize=\small, frame=single, framesep=2mm, rulecolor=gray!40,
+  bgcolor=gray!5, breaklines=false, tabsize=2,
+  autogobble=true,
+  linenos=true,
+  numbersep=5pt,
+  xleftmargin=2.5em}
+
+% Line-number style: gray, slightly smaller, so it does not compete with the code.
+\renewcommand{\theFancyVerbLine}{%
+  \textcolor{gray!60}{\scriptsize\arabic{FancyVerbLine}}}
+
+% xeCJK is loaded for safety even though all course content is in English;
+% it lets occasional CJK characters (e.g. a student name in a sample dataset)
+% render without breaking the build.
+\usepackage{xeCJK}
+\setCJKmainfont{Noto Serif CJK TC}
+\setCJKsansfont{Noto Sans CJK TC}
+\setCJKmonofont{Noto Sans Mono CJK TC}
+
+% Course-wide color palette.
+\definecolor{hdrBG}{HTML}{1E3A8A}
+\definecolor{accent}{HTML}{0EA5E9}
+\definecolor{defBG}{HTML}{EFF6FF}\definecolor{defFR}{HTML}{2563EB}
+\definecolor{thmBG}{HTML}{FEF3C7}\definecolor{thmFR}{HTML}{B45309}
+\definecolor{exaBG}{HTML}{FEF2F2}\definecolor{exaFR}{HTML}{B91C1C}
+\definecolor{proofBG}{HTML}{F8FAFC}\definecolor{proofFR}{HTML}{64748B}
+\definecolor{exBG}{HTML}{FFF7ED}\definecolor{exFR}{HTML}{C2410C}
+\definecolor{solBG}{HTML}{F0FDF4}\definecolor{solFR}{HTML}{15803D}
+\definecolor{rmkBG}{HTML}{F1F5F9}\definecolor{rmkFR}{HTML}{94A3B8}
+
+% Header / footer skeleton. \fancyhead[L] is set per-unit in lecture.Rnw.
+\pagestyle{fancy}\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\color{hdrBG!30}\hrule width\textwidth height0.4pt}
+\fancyhead[R]{\small\color{hdrBG}\leftmark}
+\fancyfoot[R]{\small\color{gray}\thepage}
+\renewcommand{\sectionmark}[1]{\markboth{\S\thesection~#1}{}}
+
+% Theorem-like environments. All use \theoremstyle{definition} so the body
+% renders upright (no italic / slanted text in theorem statements, proofs, or
+% solutions).
+\theoremstyle{definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}{Example}
+\newtheorem{exercise}{Exercise}
+\newtheorem*{remark}{Remark}
+
+\newenvironment{solution}{\par\noindent\textbf{\color{solFR}Solution.}\,}{\hfill\color{solFR}$\blacksquare$\par}
+
+% tcolorbox styling for theorem-like environments.
+\tcolorboxenvironment{definition}{enhanced,breakable,colback=defBG,colframe=defFR,boxrule=0.6pt,arc=2pt,left=3mm,right=3mm,top=1.5mm,bottom=1.5mm,before skip=5pt,after skip=5pt}
+\tcolorboxenvironment{theorem}{enhanced,breakable,colback=thmBG,colframe=thmFR,boxrule=0.6pt,arc=2pt,left=3mm,right=3mm,top=1.5mm,bottom=1.5mm,before skip=5pt,after skip=5pt}
+\tcolorboxenvironment{lemma}{enhanced,breakable,colback=thmBG,colframe=thmFR,boxrule=0.6pt,arc=2pt,left=3mm,right=3mm,top=1.5mm,bottom=1.5mm,before skip=5pt,after skip=5pt}
+\tcolorboxenvironment{example}{enhanced,breakable,colback=exaBG,colframe=exaFR,leftrule=3pt,rightrule=0pt,toprule=0pt,bottomrule=0pt,arc=0pt,left=3mm,right=2mm,top=1mm,bottom=1mm,before skip=4pt,after skip=4pt}
+\tcolorboxenvironment{proof}{enhanced,breakable,colback=proofBG,colframe=proofFR,leftrule=2pt,rightrule=0pt,toprule=0pt,bottomrule=0pt,arc=0pt,left=3mm,right=2mm,top=1mm,bottom=1mm,before skip=4pt,after skip=4pt}
+\tcolorboxenvironment{exercise}{enhanced,breakable,colback=exBG,colframe=exFR,leftrule=3pt,rightrule=0pt,toprule=0pt,bottomrule=0pt,arc=0pt,left=3mm,right=2mm,top=1mm,bottom=1mm,before skip=4pt,after skip=4pt}
+\tcolorboxenvironment{solution}{enhanced,breakable,colback=solBG,colframe=solFR,leftrule=3pt,rightrule=0pt,toprule=0pt,bottomrule=0pt,arc=0pt,left=3mm,right=2mm,top=1mm,bottom=1mm,before skip=3pt,after skip=6pt}
+\tcolorboxenvironment{remark}{enhanced,colback=rmkBG,colframe=rmkFR,leftrule=2pt,rightrule=0pt,toprule=0pt,bottomrule=0pt,arc=0pt,left=3mm,right=2mm,top=1mm,bottom=1mm,before skip=4pt,after skip=4pt}
+
+% Centered tabular block. One optional argument:
+%   #1 = scale factor for \scalebox (positive decimal, default 1.0), OR
+%        a font-size command (\small, \footnotesize, ...) to shrink the body's
+%        font.
+% Vertical space before/after is fixed at 2mm.
+% Usage:
+%   \begin{ctab} ... \end{ctab}              % no scaling, no font change
+%   \begin{ctab}[0.85] ... \end{ctab}        % \scalebox at 0.85
+%   \begin{ctab}[\small] ... \end{ctab}      % \small font inside the table
+% Replaces the manual `\vspace{2mm}{\centering ... \par}\vspace{2mm}` pattern
+% (CONVENTIONS.md §9). The lead-in prose paragraph must end before \begin{ctab}
+% (a blank line, or a paragraph-ending statement) so the lead-in is not centered.
+% Note: with a numeric scale, \scalebox wraps the body in a single hbox at any
+% scale, so a ctab-wrapped tabular cannot break across pages. For long tables
+% that must break, fall back to the manual `{\centering ... \par}` pattern
+% (CONVENTIONS.md §9) instead of ctab.
+\newsavebox{\ctabsavebox}
+\newenvironment{ctab}[1][1.0]
+  {\def\ctabarg{#1}\edef\ctabargstr{\detokenize{#1}}%
+   \par\vspace{2mm}\begin{lrbox}{\ctabsavebox}%
+   \IfDecimal{\ctabargstr}{}{#1}\ignorespaces}
+  {\end{lrbox}\noindent{\centering
+    \IfDecimal{\ctabargstr}%
+      {\scalebox{\ctabarg}{\usebox{\ctabsavebox}}}%
+      {\usebox{\ctabsavebox}}\par}%
+   \vspace{2mm}}
+
+% Emphasis: bold rather than italic (italic is hard to read on screen).
+\renewcommand{\emph}[1]{\textbf{#1}}
+
+% Proof heading: bold (override amsthm's default \itshape).
+\makeatletter
+\renewenvironment{proof}[1][\proofname]{\par
+  \pushQED{\qed}%
+  \normalfont \topsep6\p@\@plus6\p@\relax
+  \trivlist
+  \item[\hskip\labelsep
+        \bfseries
+    #1\@addpunct{.}]\ignorespaces
+}{%
+  \popQED\endtrivlist\@endpefalse
+}
+\makeatother
+
+% Three signature pedagogical boxes:
+%   motivation (blue)  : opening hooks, contextual framing
+%   derivation (green) : supplementary derivations beyond the main flow
+%   suppremark (orange): instructor commentary, study tips, broader perspective
+\newtcolorbox{motivation}[1][Motivation]{breakable, enhanced, colback=blue!5,
+  colframe=blue!50!black, coltitle=white,
+  title=\textbf{#1}, fonttitle=\bfseries,
+  attach boxed title to top left={yshift=-2mm,xshift=3mm},
+  boxed title style={colback=blue!50!black}}
+\newtcolorbox{derivation}[1][Derivation]{breakable, enhanced, colback=green!5,
+  colframe=green!40!black, coltitle=white,
+  title=\textbf{#1}, fonttitle=\bfseries,
+  attach boxed title to top left={yshift=-2mm,xshift=3mm},
+  boxed title style={colback=green!40!black}}
+\newtcolorbox{suppremark}[1][Remark]{breakable, enhanced, colback=orange!5,
+  colframe=orange!60!black, coltitle=white,
+  title=\textbf{#1}, fonttitle=\bfseries,
+  attach boxed title to top left={yshift=-2mm,xshift=3mm},
+  boxed title style={colback=orange!60!black}}
+
+% Custom math operators used throughout the course.
+\usepackage{dsfont}
+\DeclareMathOperator\prb{\mathsf{P}}
+\DeclareMathOperator\expc{\mathsf{E}}
+\DeclareMathOperator\var{var}
+\DeclareMathOperator\cov{cov}
+\DeclareMathOperator\cor{cor}
+\DeclareMathOperator\indc{\mathds{1}}
+\DeclareMathOperator\dom{dom}
+\DeclareMathOperator\epi{epi}
+\DeclareMathOperator\diag{diag}
+\DeclareMathOperator\rk{rank}
+\DeclareMathOperator\nul{null}
+\DeclareMathOperator\col{col}
+\DeclareMathOperator\img{img}
+\let\ker\relax
+\DeclareMathOperator\ker{ker}
+\DeclareMathOperator\tr{tr}
+\DeclareMathOperator\df{df}
+
+\newcommand{\dd}{\mathrm{d}}
+
+\usepackage{parskip}
+\setlength{\parskip}{3pt}\setlength{\jot}{4pt}
+
+\usepackage{titlesec}
+\titleformat{\section}{\color{hdrBG}\normalfont\Large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\color{accent}\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{4pt}{2pt}
+\titlespacing*{\subsection}{0pt}{4pt}{1pt}

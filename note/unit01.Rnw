@@ -1,0 +1,1083 @@
+% Compile pipeline (two steps):
+%   Rscript -e "knitr::knit('lecture.Rnw')"   # produces lecture.tex
+%   xelatex -shell-escape lecture.tex          # run twice to settle the toc
+% One-shot alternative:
+%   Rscript -e "knitr::knit2pdf('lecture.Rnw', compiler='xelatex')"
+\documentclass[17pt]{extarticle}
+
+\input{bda_preamble.tex}
+
+% Unit 1 specific
+\fancyhead[L]{\small\color{hdrBG}\textbf{Unit\ 1 Data Diagnostics and Problem Framing}}
+
+\setcounter{theorem}{0}\setcounter{example}{0}
+\renewcommand\thedefinition{1.\arabic{theorem}}
+\renewcommand\thetheorem{1.\arabic{theorem}}
+\renewcommand\theexample{1.\arabic{example}}
+\renewcommand\theexercise{1.\arabic{exercise}}
+\renewcommand\thefigure{1.\arabic{figure}}
+
+\title{\color{hdrBG}\bfseries\Huge Data Diagnostics and Problem Framing}
+\author{}\date{}
+
+\begin{document}
+
+<<setup, include=FALSE>>=
+source("bda_knitr_setup.R")
+knitr::opts_chunk$set(fig.path = "figs/unit01-")
+@
+
+\begin{titlepage}
+\thispagestyle{empty}\vspace*{\fill}
+\begin{center}
+{\color{hdrBG}\bfseries\fontsize{28}{32}\selectfont Unit 1.\ Data Diagnostics and Problem Framing}\\[1em]
+\rule{70mm}{0.8pt}\\[0.8em]
+{\large Business Data Analytics: Introductory Machine Learning}
+\end{center}\vspace*{\fill}
+\end{titlepage}
+
+\setcounter{page}{1}
+
+\begin{motivation}[Why this unit has no algorithms]
+After half a semester of data wrangling, the next step is modeling. This unit defers it.
+
+The most consequential errors in applied analysis are made before any algorithm is fit:
+\begin{itemize}[leftmargin=2em,itemsep=4pt,topsep=3pt]
+\item an identifier column treated as a numeric feature;
+\item a feature recorded after the event being predicted;
+\item \(99\%\) accuracy on a \(99\%\)-imbalanced dataset;
+\item a random split applied to time-series data.
+\end{itemize}
+Each yields strong in-sample scores and unreliable behavior in deployment.
+
+This unit develops a seven-question diagnostic checklist; every subsequent unit returns to it.
+\end{motivation}
+
+\begin{suppremark}[A note on vocabulary]
+The terms above (\emph{feature}, \emph{accuracy}, \emph{train/test split}) are introduced formally in definition boxes as they are needed.
+\end{suppremark}
+
+\section{The Diagnostic Checklist}\label{sec:1.1}
+
+Seven questions for every dataset, posed before any model is fit. Each is unpacked in a dedicated section; subsequent units revisit the list whenever a new algorithm is introduced.
+
+\begin{enumerate}[label=\textbf{Q\arabic*.}, leftmargin=3em, itemsep=5pt, topsep=3pt]
+\item \textbf{Column types.} What is each column: numeric, categorical, ordinal, datetime, or identifier?
+\item \textbf{Distributions, gaps, outliers.} How is each variable distributed? What is missing, and is the missingness itself signal?
+\item \textbf{Provenance and timing.} How was this data generated, and \emph{when} was each field written?
+\item \textbf{Target definition.} What exactly is \(y\)? When can it be observed?
+\item \textbf{Prediction or explanation.} Are we forecasting \(y\), or asking what drives it?
+\item \textbf{Leakage.} Does any feature carry information from \emph{after} \(y\) is observed?
+\item \textbf{Metric.} Does the score we report reflect the actual cost of being wrong?
+\end{enumerate}
+
+\begin{suppremark}[On the convex-analysis primer]
+\S\ref{sec:1.9} closes with a primer on convex functions and minimization. It is not an eighth question but the mathematical vocabulary on which subsequent units depend (``minimize what loss subject to what constraints''). Intended for one reading and subsequent reference.
+\end{suppremark}
+
+\section{From Data Wrangling to Modeling}\label{sec:1.2}
+
+The first half of the semester answered descriptive questions: counts, means, joins, summaries. Modeling addresses a different question: given previously unseen inputs, what is the output? This section establishes the required vocabulary.
+
+\subsection{The data layout}\label{subsec:1.2.1}
+
+A modeling dataset retains the rectangular form, but its columns now play asymmetric roles: each is a \textbf{feature} (input), the \textbf{target} (output), or neither (an identifier).
+
+\begin{definition}\label{def:1.1}
+For a dataset with rows indexed by \(i = 1, \dots, n\):
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=1pt]
+\item the \(i\)-th row is one \textbf{observation};
+\item a column used as model input is a \textbf{feature} (or \emph{predictor}); features for observation \(i\) form a vector \(\mathbf{x}_i \in \mathbb{R}^p\);
+\item the column the model is asked to predict is the \textbf{target} (\emph{response}, \emph{outcome}); call its value \(y_i\);
+\item identifier columns (customer ID, row number) are neither.
+\end{itemize}
+\end{definition}
+
+The tibble below has \(n = 4\) observations, \(p = 3\) features, one target, and one identifier:
+
+<<ex-data-layout>>=
+library(tidyverse)
+customers <- tibble(
+  customer_id = c(1001, 1002, 1003, 1004),  # identifier (not a feature)
+  age         = c(34, 52, 28, 41),           # feature
+  region      = c("N", "S", "N", "E"),       # feature
+  spent_usd   = c(120, 340, 75, 210),        # feature
+  churned     = c(0, 1, 0, 1)                # target
+)
+customers
+@
+
+\subsection{Training set and test set}\label{subsec:1.2.2}
+
+A model that perfectly fits its training data is uninformative about new observations. To detect such memorization, a portion of the dataset is held out and never inspected during training.
+
+\begin{definition}\label{def:1.2}
+The \textbf{training set} is the subset of rows used to estimate the model. The \textbf{test set} is a disjoint subset, locked away during training, used only once at the end to estimate how the model behaves on previously unseen rows.
+\end{definition}
+
+\begin{suppremark}[Test-set protocol]
+The test set is consulted \emph{exactly once}, at the end, for the final score. Any inspection during training invalidates the experiment. Unit~4 generalizes this discipline to cross-validation.
+\end{suppremark}
+
+\subsection{The modeling pipeline: model, fit, predict}\label{subsec:1.2.3}
+
+A \emph{model} is a family of candidate functions; \emph{fitting} selects one from the family using the training data; \emph{prediction} evaluates that function on new feature values.
+
+\begin{definition}\label{def:1.3}
+A \textbf{model} is a parameterized family of functions \(\{f_\theta : \mathbb{R}^p \to \mathcal{Y} \mid \theta \in \Theta\}\), where \(\theta\) is a parameter vector and \(\mathcal{Y}\) is the space the target lives in. To \textbf{fit} the model is to choose an estimate \(\hat\theta\) from the training data; the chosen function \(f_{\hat\theta}\) is the \textbf{fitted model}. To \textbf{predict} for a new feature vector \(\mathbf{x}_\star\) is to compute \(\hat y_\star = f_{\hat\theta}(\mathbf{x}_\star)\).
+\end{definition}
+
+\begin{center}
+\(\big\{(\mathbf{x}_i, y_i)\big\}_{i=1}^{n_\text{train}} \;\xrightarrow{\;\texttt{fit}\;}\; \hat\theta \;\xrightarrow{\;f_{\hat\theta}(\cdot)\;}\; \hat y_\star \text{ for any new } \mathbf{x}_\star.\)
+\end{center}
+
+Every algorithm in this course (linear regression, logistic regression, decision trees, support vector machines, K-means) is a specific choice of the family \(\{f_\theta\}\) together with a specific procedure for selecting \(\hat\theta\).
+
+\subsection{What ``good'' means}\label{subsec:1.2.4}
+
+A model is judged not by its fit on training data but by its predictive accuracy on previously unseen observations. This property is called \textbf{generalization}.
+
+\begin{definition}\label{def:1.4}
+A model \textbf{generalizes well} if its predictions on previously unseen feature vectors are close (in some specified sense) to the true target values.
+\end{definition}
+
+\begin{suppremark}[Why ``in some specified sense'']
+``Close'' depends on the metric, and the metric depends on the cost of being wrong. That is Q7 of the checklist; \S\ref{sec:1.8} returns to it.
+\end{suppremark}
+
+\section{Systematic EDA Workflow}\label{sec:1.3}
+
+Questions \textbf{Q1} (column types) and \textbf{Q2} (distributions, missingness, outliers) are answered first; every subsequent question depends on them. \emph{Exploratory data analysis} (EDA) is the reproducible procedure that does so: a small ordered set of operations applied to every dataset, not a dashboard glance.
+
+\subsection{The five column types}\label{subsec:1.3.1}
+
+\begin{definition}\label{def:1.5}
+Every column in a modeling dataset belongs to one of five types:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=1pt]
+\item \textbf{Numeric} (continuous or count): values where arithmetic is meaningful (\(\mathtt{age}\), \(\mathtt{spent\_usd}\)).
+\item \textbf{Categorical} (nominal): unordered labels (\(\mathtt{region} \in \{\text{N, S, E, W}\}\)).
+\item \textbf{Ordinal}: ordered labels with no meaningful numeric distance (\(\mathtt{satisfaction} \in \{\text{low}, \text{mid}, \text{high}\}\)).
+\item \textbf{Datetime}: timestamps with explicit time semantics.
+\item \textbf{Identifier}: row keys; treat as metadata, never as a feature.
+\end{itemize}
+\end{definition}
+
+The most common feature-engineering error in this course is treating an identifier as a numeric feature. R issues no warning; the resulting model implicitly assigns customer \(10001\) twice the magnitude of customer \(5000\) on whatever scale the column happens to occupy. \texttt{glimpse()}, which prints each column's type and a few sample values, is the first defence.
+
+<<ex-glimpse, message=FALSE>>=
+glimpse(customers)
+@
+
+\subsection{Inspecting distributions}\label{subsec:1.3.2}
+
+For \textbf{numeric} columns: histogram, boxplot, or density estimate. Diagnose skewness, multimodality, and spikes at zero or at boundary values, which often flag data-collection artefacts.
+
+For \textbf{categorical} columns: a bar count of level frequencies. Diagnose severe class imbalance and rare levels that lack sufficient support for learning.
+
+\begin{suppremark}[Why distributions matter even before any model]
+A column that is \(99\%\) zeros; a ``rating'' on a \(1\)--\(5\) scale that occasionally registers \(99\); a Gaussian-looking variable with a cluster at \(-9999\). These are not algorithm-specific issues but properties of the data that no subsequent choice of method can repair if undetected at this stage.
+\end{suppremark}
+
+The \texttt{diamonds} dataset (bundled with \texttt{ggplot2}) provides sufficient sample size to make distributional shape visible:
+
+<<ex-dist-numeric, fig.width=6, fig.height=2.4, fig.cap="Histogram of diamond \\texttt{price}: heavy right tail and a spike near zero are immediately visible.">>=
+library(ggplot2)
+ggplot(diamonds, aes(price)) + geom_histogram(bins = 40)
+@
+
+<<ex-dist-categorical, fig.width=6, fig.height=2.4, fig.cap="Bar count of \\texttt{cut} quality levels: \\texttt{Ideal} dominates; the rare \\texttt{Fair} level may not have enough rows to learn from.">>=
+ggplot(diamonds, aes(cut)) + geom_bar()
+@
+
+\subsection{Missingness as signal}\label{subsec:1.3.3}
+
+A missing value is itself an observation: the fact of unobservation carries information about the data-generating process.
+
+\begin{definition}\label{def:1.6}
+Three patterns of missingness, in increasing severity:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=1pt]
+\item \textbf{MCAR} (missing completely at random): missingness is independent of every variable, observed or not.
+\item \textbf{MAR} (missing at random): missingness depends on observed variables but not on the missing value itself.
+\item \textbf{MNAR} (missing not at random): missingness depends on the value that is missing.
+\end{itemize}
+\end{definition}
+
+\begin{suppremark}[Imputation is not free]
+Mean imputation is the most common preprocessing default. It is unbiased only under MCAR; under MAR it biases coefficient estimates; under MNAR it both biases the estimates and discards the signal carried by the missingness pattern. The recommended default is to encode the missingness indicator before imputing (cf.\ \S\ref{sec:1.10}).
+\end{suppremark}
+
+The minimum diagnostic for any dataset is a per-column NA tally:
+
+<<ex-missing>>=
+airquality |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "column", values_to = "n_missing") |>
+  arrange(desc(n_missing))
+@
+
+\subsection{Outliers}\label{subsec:1.3.4}
+
+\begin{definition}\label{def:1.7}
+A point is a \textbf{statistical outlier} of a numeric column if it lies far from the bulk of the values (e.g.\ outside \(\bar x \pm 3 s\), or outside the Tukey range \(\big[Q_1 - 1.5\,\mathrm{IQR},\, Q_3 + 1.5\,\mathrm{IQR}\big]\)). A point is a \textbf{domain outlier} if its value is implausible given what the variable is supposed to represent.
+\end{definition}
+
+The two definitions diverge frequently. \texttt{age = 200} is statistically extreme and a domain error. \texttt{income = \$2{,}000{,}000} is statistically extreme yet legitimate; deletion would remove signal.
+
+\begin{suppremark}[Outlier protocol]
+Each outlier should be investigated and classified (legitimate, data error, or unusual but real) before any retain / transform / winsorize / remove decision. Routine deletion beyond \(3\sigma\) is identified as a pitfall in \S\ref{sec:1.10}.
+\end{suppremark}
+
+<<ex-outlier, fig.width=6, fig.height=2.0, fig.cap="Boxplot of diamond \\texttt{price}: the long upper whisker and dense outlier points reflect a real, heavy-tailed distribution, not data errors.">>=
+ggplot(diamonds, aes(price)) + geom_boxplot()
+@
+
+\subsection{A minimal EDA toolkit}\label{subsec:1.3.5}
+
+A reusable starting script for any new \texttt{df}:
+
+<<ex-toolkit, eval=FALSE>>=
+# 1. Structure: types and sample values for each column.
+glimpse(df)
+
+# 2. Per-column summary: range, central tendency, NAs.
+skimr::skim(df)
+
+# 3. Distributions of every numeric column.
+df |> select(where(is.numeric)) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(value)) + geom_histogram(bins = 40) +
+  facet_wrap(~ name, scales = "free")
+
+# 4. Distributions of every categorical column.
+df |> select(where(is.character) | where(is.factor)) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(value)) + geom_bar() +
+  facet_wrap(~ name, scales = "free") + coord_flip()
+
+# 5. Missingness pattern, sorted.
+df |> summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "column", values_to = "n_missing") |>
+  arrange(desc(n_missing))
+@
+
+Together, these five blocks answer \textbf{Q1} and \textbf{Q2} for any dataset in roughly a minute, and should be run before any modeling decision.
+
+\section{Data Provenance and Temporal Structure}\label{sec:1.4}
+
+Question \textbf{Q3} concerns how each column was generated and when it was written. Most leakage and time-series errors in this course trace back to incorrect answers here.
+
+\subsection{Three questions about every column}\label{subsec:1.4.1}
+
+Before treating any column as a feature, answer:
+
+\begin{enumerate}[leftmargin=2.5em,itemsep=4pt,topsep=2pt]
+\item \textbf{Who wrote it?} A human typist, an automated system, an upstream model's output, a manual override?
+\item \textbf{When was it written?} At the moment of the event, at end-of-day batch, at query time?
+\item \textbf{When does it become readable to a downstream system?} (Often \emph{not} the same as when it was written: there is usually a delay.)
+\end{enumerate}
+
+A column whose three answers are unknown is unusable as a feature; either the answers are obtained, or the column is excluded.
+
+\subsection{The three temporal axes}\label{subsec:1.4.2}
+
+\begin{definition}\label{def:1.8}
+For each row of a dataset, three time stamps are conceptually distinct:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=1pt]
+\item \textbf{Event time} \(t_\text{ev}\): when the underlying real-world event happened.
+\item \textbf{Record time} \(t_\text{rec}\): when the value was actually written to the system.
+\item \textbf{Prediction time} \(t_\star\): when the model is asked to make its prediction.
+\end{itemize}
+\end{definition}
+
+In an idealized source these timestamps coincide (a sensor that writes immediately and is queried instantly). In real systems they diverge:
+
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item A customer cancels at \(t_\text{ev}\); the cancellation is logged at \(t_\text{rec} = t_\text{ev} + 3\,\text{days}\) after manual review.
+\item A monthly aggregate (\(\mathtt{total\_purchases}\)) is written at end-of-month, but its \(t_\text{ev}\) covers the entire month; it is a \emph{summary} of past events, not an event.
+\end{itemize}
+
+\subsection{The freshness gap and joins}\label{subsec:1.4.3}
+
+\begin{definition}\label{def:1.9}
+The \textbf{freshness gap} at prediction time \(t_\star\) is \(t_\star - t_\text{rec}\): how stale the most recently available value is. Zero gap means instant writes; positive gap is the delay before a new value reaches the model.
+\end{definition}
+
+A common error is to ignore the gap and join a current-state snapshot onto historical events, attaching values that did not yet exist at \(t_\text{ev}\):
+
+<<ex-temporal-join, message=FALSE>>=
+events <- tibble(
+  customer_id = c(1, 1, 1, 2, 2),
+  event_time  = as.Date(c("2026-01-01","2026-02-01","2026-03-01",
+                          "2026-01-15","2026-03-10")),
+  amount      = c(120, 240, 360, 90, 180)
+)
+state_now <- tibble(
+  customer_id     = c(1, 2),
+  total_purchases = c(720, 270),  # cumulative as of "now" (post-2026-03-10)
+  segment         = c("VIP", "regular")  # current segment, not historical
+)
+events |> left_join(state_now, by = "customer_id")
+@
+
+Every row in the joined table now carries \(\mathtt{total\_purchases}\) and \(\mathtt{segment}\) values computed after its \(t_\text{ev}\). The January row for customer~\(1\) holds her March cumulative spend. A model trained on this table performs exceptionally on the historical data and fails in deployment.
+
+\begin{suppremark}[Join constraint]
+Every feature value joined onto an event must satisfy \(t_\text{rec} \leqslant t_\text{ev}\). When in doubt, annotate each column with its \(t_\text{rec}\) and reject any join that violates the constraint. Unit~4 generalizes the rule to cross-validation; Unit~7 revisits it for non-stationary segments.
+\end{suppremark}
+
+\section{Target Definition}\label{sec:1.5}
+
+Question \textbf{Q4} concerns \(y\) itself: its formal definition and the time at which it becomes observable. Imprecise answers propagate into every metric and report, yet target definition is the step most often skipped in practice.
+
+\subsection{What exactly is \(y\)?}\label{subsec:1.5.1}
+
+\begin{definition}\label{def:1.10}
+A \textbf{target definition} specifies, in writing:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=1pt]
+\item the value space \(\mathcal{Y}\) (binary, multiclass, count, real-valued, time-to-event, \dots);
+\item the unit of observation (per customer? per transaction? per session?);
+\item the operational rule that turns raw events into a single value of \(y\) for that unit.
+\end{itemize}
+\end{definition}
+
+A single business term can encompass incompatible target definitions. ``Churn'' may mean an explicit cancellation, the absence of a purchase in \(90\) days, or cancellation within \(30\) days of a renewal: three distinct \(y\)'s, datasets, and models. The choice must be documented before any modeling.
+
+<<ex-target-def, message=FALSE>>=
+events <- tibble(
+  customer_id = c(1, 1, 2, 2, 3),
+  event       = c("purchase","purchase","purchase","cancel","purchase"),
+  event_time  = as.Date(c("2026-01-15","2026-02-20","2025-08-10",
+                          "2026-01-05","2026-01-01"))
+)
+t_star <- as.Date("2026-04-25")
+
+# (a) Cancel-event churn.
+churn_a <- events |> group_by(customer_id) |>
+  summarise(churn = any(event == "cancel"), .groups = "drop")
+
+# (b) Inactivity churn: no purchase in the 90 days before t_star.
+churn_b <- events |> filter(event == "purchase") |>
+  group_by(customer_id) |>
+  summarise(churn = (t_star - max(event_time)) > 90, .groups = "drop")
+
+inner_join(churn_a, churn_b, by = "customer_id",
+           suffix = c("_a", "_b"))
+@
+
+The two definitions disagree on customer~\(3\): no cancellation event, yet no purchase in the past \(90\) days. Both rules are defensible; exactly one is the operative \(y\).
+
+\subsection{When can \(y\) be observed?}\label{subsec:1.5.2}
+
+\begin{definition}\label{def:1.11}
+The \textbf{observation lag} of \(y\) is the delay between the event of interest and the moment its \(y\) value is reliably known. A row is usable for training only if its \(y\) is already observed by the time we are training.
+\end{definition}
+
+Examples of substantial lag: a default is confirmed \(90\) days after a missed payment; a customer is labeled churned only after a \(90\)-day inactivity window; a marketing conversion is counted at the end of the attribution window.
+
+\begin{suppremark}[Training-row constraint]
+Each training row \((\mathbf{x}_i, y_i)\) must satisfy \(t_\text{rec}(y_i) \leqslant t_\star\): the label is observable at the simulated prediction time. Rows whose \(y\) is not yet known belong in a separate pending set, never in training.
+\end{suppremark}
+
+\subsection{Survivorship and selection on \(y\)}\label{subsec:1.5.3}
+
+\begin{suppremark}[Selection bias on the target]
+The dataset typically contains only rows for which \(y\) is observable. Mutual-fund histories exclude closed funds; satisfaction surveys exclude non-respondents; loan-repayment tables exclude rejected applicants. The fitted model is implicitly a model of conditional \(y\) given survival; if the deployment population includes non-survivors, predictions are biased.
+\end{suppremark}
+
+Diagnostic test: can the rows missing from the dataset due to unobservable \(y\) be described in one sentence? If not, the dataset is not ready for modeling.
+
+\section{Prediction or Explanation}\label{sec:1.6}
+
+Question \textbf{Q5} concerns the type of question being answered. \emph{Predicting} \(y\) and \emph{explaining} \(y\) are easily conflated in ordinary usage; they are distinct objectives, and confusing them yields models that are either confidently misleading or quietly inert.
+
+\begin{definition}\label{def:1.12}
+Two distinct problems:
+\begin{itemize}[leftmargin=2em,itemsep=3pt,topsep=2pt]
+\item A \textbf{prediction problem} asks: given \(\mathbf{x}\), what is the best estimate of \(y\)? Judged by error on unseen rows. Any predictive feature is welcome, even if its causal role is unknown.
+\item An \textbf{explanation problem} asks: which inputs \emph{cause} \(y\) to move, and by how much? Judged against the true causal mechanism. A feature that merely correlates with the cause is misleading.
+\end{itemize}
+\end{definition}
+
+\begin{example}\label{ex:1.1}
+Ice-cream sales predict drowning deaths well, both rising in summer. A prediction model accepts ice-cream sales as a useful regressor for drowning risk. An explanation model rejects the inference: banning ice cream prevents no drownings; the common cause is hot weather. Identical data, identical correlation, divergent verdicts.
+\end{example}
+
+\begin{suppremark}[Where this course stands]
+This course is \textbf{prediction-first}: algorithms are judged by out-of-sample prediction quality. The question ``why does this model predict well?'' is permitted as a debugging tool; ``what causes \(y\)?'' is not formally answered. Causal inference (do-calculus, instrumental variables, randomized experiments) is a separate course; genuinely causal questions such as ``will this discount increase sales?'' lie beyond prediction alone.
+\end{suppremark}
+
+\begin{suppremark}[AI tools and the distinction]
+A general-purpose AI assistant, asked which features matter for \(y\), will report whatever variables a regression flags as significant, as though that answered a causal question. It does not. A large coefficient is a property of the fit; causation requires assumptions the model cannot verify. AI-generated explanatory claims should be read with this distinction in mind.
+\end{suppremark}
+
+\section{Target Leakage}\label{sec:1.7}
+
+Question \textbf{Q6} is the central concern of this unit. Target leakage is the most common cause of strong validation followed by deployment failure, and the hardest to detect because its symptoms resemble success.
+
+\subsection{What is target leakage?}\label{subsec:1.7.1}
+
+\begin{definition}\label{def:1.13}
+A feature \(x_j\) \textbf{leaks the target} if its value at training time depends on information that, at the moment we are pretending to predict, would not yet have been available. The leak need not be the value of \(y\) itself: any quantity that is causally downstream of \(y\), or co-emitted with \(y\), qualifies.
+\end{definition}
+
+The characteristic warning sign is a single feature that nearly determines \(y\). Such a feature appears to be an excellent predictor and is, in most cases, \(y\) in disguise.
+
+\subsection{Three forms of leakage}\label{subsec:1.7.2}
+
+\begin{definition}\label{def:1.14}
+The three patterns to watch for:
+\begin{itemize}[leftmargin=2em,itemsep=3pt,topsep=2pt]
+\item \textbf{Post-event features}: a column whose value is written only after \(y\) occurs (e.g.\ ``support tickets in the cancellation week'' for a churn model).
+\item \textbf{Train--test contamination}: information from the test rows leaks into preprocessing applied to the training rows (standardising using the global mean, target-encoding using all rows, feature selection on the full table).
+\item \textbf{Group leakage}: the same entity appears in both the train and the test split, so the model memorizes entities rather than generalizing to new ones.
+\end{itemize}
+\end{definition}
+
+\subsection{Detecting leakage}\label{subsec:1.7.3}
+
+The diagnostic is primarily logical, with one numerical safeguard:
+
+\begin{enumerate}[leftmargin=2.5em,itemsep=3pt,topsep=2pt]
+\item For every feature column, can you certify \(t_\text{rec} \leqslant t_\star\) (\S\ref{sec:1.4})? If unsure, drop the column until proven safe.
+\item For every preprocessing step (centering, imputation, encoding, feature selection), confirm that it is computed using \emph{only} training rows, never on the full table before splitting.
+\item For every train/test split, verify that no entity (customer, patient, store) appears in both sides.
+\item Numeric tripwire: if any \emph{single} feature classifies near-perfectly, treat it as a leak suspect.
+\end{enumerate}
+
+A toy demonstration. \(\mathtt{x\_leak}\) is constructed as \(y\) plus a small perturbation; \(\mathtt{x\_real}\) is independent of \(y\):
+
+<<ex-leak-tripwire>>=
+set.seed(1)
+n <- 1000
+y       <- rbinom(n, 1, 0.5)
+x_leak  <- y + rnorm(n, 0, 0.1)   # almost equal to y
+x_real  <- rnorm(n)               # independent of y
+
+accuracy <- function(pred, true) mean(pred == true)
+c(leak = accuracy(x_leak > 0.5, y),
+  real = accuracy(x_real > 0,   y))
+@
+
+An accuracy of \(0.99\) from a single feature is the diagnostic signal. In a clean dataset, no individual column should classify that well; in a churn or default problem, such a column is almost certainly a transformation of \(y\).
+
+\subsection{Companion lab}\label{subsec:1.7.4}
+
+The companion lab supplies a churn dataset that initially reports \(99\%\) accuracy. The feature \(\mathtt{support\_tickets\_last\_30\_days}\) is populated only after cancellations are processed, a textbook post-event leak. The exercise is to identify this without prompting. The corrected pipeline reports approximately \(78\%\), the realistic figure.
+
+\begin{suppremark}[Pedagogical rationale]
+Reading about leakage is far less effective than mistaking a \(99\%\) score for genuine performance and then learning why it is not. As a working principle, no high-score result should be trusted until an attempt has been made to falsify it.
+\end{suppremark}
+
+\section{Evaluation Metrics: a First Look}\label{sec:1.8}
+
+Question \textbf{Q7} asks whether the headline number reflects the underlying objective. Accuracy is both the obvious starting point and the obvious failure case. ROC, PR curves, threshold tuning, and cost-sensitive scoring receive full treatment in Unit~3; this section installs only the minimum vocabulary.
+
+\subsection{Accuracy}\label{subsec:1.8.1}
+
+\begin{definition}\label{def:1.15}
+For a classifier producing predictions \(\hat y_i\) on \(n\) test rows, \textbf{accuracy} is
+\[
+\text{Acc} \;=\; \frac{1}{n} \sum_{i=1}^{n} \indc\{\hat y_i = y_i\},
+\]
+the fraction of predictions that match the truth.
+\end{definition}
+
+Accuracy is straightforward to compute and report, and equally straightforward to be misled by. Subsequent units return to its limitations.
+
+\subsection{The confusion matrix}\label{subsec:1.8.2}
+
+\begin{definition}\label{def:1.16}
+For a binary classifier with positive class ``\(1\)'' and negative class ``\(0\)'', the \textbf{confusion matrix} on a test set is the \(2 \times 2\) table
+
+\vspace{2mm}
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{c|cc}
+\hline
+ & \(\hat y = 1\) & \(\hat y = 0\) \\
+\hline
+\(y = 1\) & TP & FN \\
+\(y = 0\) & FP & TN \\
+\hline
+\end{tabular}
+\end{center}
+\vspace{2mm}
+
+where TP = true positives, FP = false positives, FN = false negatives, TN = true negatives. Note that \(\text{Acc} = (\text{TP} + \text{TN}) / n\).
+\end{definition}
+
+A single accuracy figure collapses these four counts into one, discarding information: two classifiers with markedly different TP/FP/FN/TN profiles can register identical accuracy.
+
+\subsection{Why accuracy fails on imbalance}\label{subsec:1.8.3}
+
+If \(99\%\) of test rows are negative, the trivial classifier that always predicts negative achieves \(99\%\) accuracy while detecting no positives. For business problems in which the rare class is the relevant one (fraud, default, churn, conversion), this is the dominant failure mode of accuracy:
+
+<<ex-acc-imbalance>>=
+set.seed(1)
+n      <- 1000
+y      <- rbinom(n, 1, 0.01)       # 1% positives
+y_hat  <- rep(0, n)                # trivial: always predict 0
+
+mean(y_hat == y)                   # accuracy
+table(predicted = y_hat, actual = y)
+@
+
+Accuracy is near \(0.99\), positive recall is zero, and the model is uninformative for the question of interest.
+
+\subsection{The cost view}\label{subsec:1.8.4}
+
+In nearly every business setting, the four corners of the confusion matrix carry distinct costs. A missed fraud (FN) may be \(50\times\) more costly than a falsely flagged clean transaction (FP). The appropriate scalar objective is a weighted combination of these counts, and the appropriate score-to-decision threshold depends on those weights.
+
+\begin{suppremark}[Unit 3 framework]
+Unit~3 introduces precision, recall, \(F_1\), ROC and PR curves, calibration, and threshold tuning, and integrates a business cost matrix directly into model selection. For Unit~1 the operative point is that accuracy is the default, the default fails on imbalance, and the Unit~3 machinery exists to remedy it.
+\end{suppremark}
+
+\section{Convex Analysis Prerequisites}\label{sec:1.9}
+
+This section is not a diagnostic question but the mathematical vocabulary on which the remainder of the course depends. Every supervised algorithm covered (linear regression, logistic regression, Ridge, Lasso, SVMs) is defined by a loss function minimized over a parameter set. Three terms are required: \emph{loss}, \emph{minimization}, and \emph{convex}.
+
+\subsection{Loss functions and empirical risk}\label{subsec:1.9.1}
+
+\begin{definition}\label{def:1.17}
+A \textbf{loss function} \(\ell : \mathcal{Y} \times \mathcal{Y} \to \mathbb{R}_{\geqslant 0}\) measures how wrong a single prediction \(\hat y\) is relative to the truth \(y\). For training data \(\{(\mathbf{x}_i, y_i)\}_{i=1}^n\) and a model family \(\{f_\theta\}\), the \textbf{empirical risk} (or \textbf{average training loss}) is
+\[
+L(\theta) \;=\; \frac{1}{n} \sum_{i=1}^{n} \ell\left(y_i,\, f_\theta(\mathbf{x}_i)\right).
+\]
+\end{definition}
+
+Three loss functions you will meet in the next three units:
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item \textbf{Squared loss} (Unit~2, regression): \(\ell(y, \hat y) = (y - \hat y)^2\).
+\item \textbf{Zero--one loss} (background): \(\ell(y, \hat y) = \indc\{y \ne \hat y\}\). Easy to interpret; intractable to optimize.
+\item \textbf{Logistic loss} (Unit~3, classification): \(\ell(y, \hat y) = -y \log \hat y - (1-y) \log(1-\hat y)\) for \(y \in \{0,1\}\), \(\hat y \in (0,1)\).
+\end{itemize}
+
+\subsection{The minimization problem}\label{subsec:1.9.2}
+
+\emph{Fitting a model} now has a precise meaning: choose \(\hat\theta\) that minimizes empirical risk over the allowed parameter set,
+\[
+\hat\theta \;=\; \arg\min_{\theta \in \Theta}\, L(\theta).
+\]
+Algorithms differ in their choice of \(\ell\), of \(\{f_\theta\}\), and of \(\Theta\) (e.g.\ \(\Theta = \mathbb{R}^p\) for OLS, \(\Theta = \{\theta : \|\theta\|_1 \leqslant t\}\) for Lasso). Tractability of the minimization depends almost entirely on a single property of \(L\): \emph{convexity}.
+
+\subsection{Convex functions}\label{subsec:1.9.3}
+
+\begin{definition}\label{def:1.18}
+A function \(f : \mathbb{R}^n \to \mathbb{R}\) is \textbf{convex} if its domain \(\dom f\) is a convex set and, for every \(\mathbf{x}, \mathbf{y} \in \dom f\) and every \(\theta \in [0,1]\),
+\[
+f\big(\theta \mathbf{x} + (1 - \theta)\mathbf{y}\big) \;\leqslant\; \theta f(\mathbf{x}) + (1 - \theta) f(\mathbf{y}).
+\]
+It is \textbf{strictly convex} if the inequality is strict whenever \(\mathbf{x} \ne \mathbf{y}\) and \(\theta \in (0,1)\); \textbf{concave} if \(-f\) is convex.
+\end{definition}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[scale=1.4,page=1]{fig/03.pdf}
+\caption{Convexity in one dimension: the chord between any two graph points lies on or above the graph itself.}\label{fig:chord}
+\end{figure}
+
+Figure~\ref{fig:chord} illustrates the inequality: the chord between any two points on the graph lies on or above the graph, with strict inequality except at the endpoints in the strictly convex case.
+
+\paragraph{Convex / concave functions on \(\mathbb{R}\).}
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item Convex: affine \(ax + b\); exponential \(e^{ax}\); power \(x^\alpha\) on \(x > 0\) for \(\alpha \geqslant 1\) or \(\alpha \leqslant 0\); \(|x|^\alpha\) for \(\alpha \geqslant 1\); positive part \(\max\{x, 0\}\) (the ReLU activation).
+\item Concave: affine; \(x^\alpha\) on \(x > 0\) for \(0 \leqslant \alpha \leqslant 1\); \(\log x\); entropy \(-x \log x\) on \(x > 0\).
+\end{itemize}
+
+\paragraph{Convex functions on \(\mathbb{R}^n\).}
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=2pt]
+\item affine: \(\mathbf{a}^\top \mathbf{x} + b\);
+\item every norm \(\|\cdot\|\) (any \(\ell_p\)-norm, \(\|\cdot\|_\infty\), spectral norm of a matrix, \dots);
+\item sum of squares \(\|\mathbf{x}\|_2^2 = \sum_i x_i^2\);
+\item \(\max(\mathbf{x}) = \max_i x_i\);
+\item log-sum-exp \(\log \sum_i e^{x_i}\) (a smooth convex relaxation of \(\max\); reappears in Unit~3 as the negative log-likelihood of multinomial logistic regression).
+\end{itemize}
+
+\begin{theorem}[Norms are convex]\label{thm:norm-convex}
+Every norm \(\|\cdot\|\) on \(\mathbb{R}^n\) is a convex function.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:norm-convex}]
+Recall that a norm satisfies the triangle inequality \(\|\mathbf{u} + \mathbf{v}\| \leqslant \|\mathbf{u}\| + \|\mathbf{v}\|\) and absolute homogeneity \(\|\alpha \mathbf{u}\| = |\alpha|\,\|\mathbf{u}\|\). Let \(\theta \in [0,1]\) and \(\mathbf{x}, \mathbf{y} \in \mathbb{R}^n\). Apply the triangle inequality to \(\mathbf{u} = \theta \mathbf{x}\), \(\mathbf{v} = (1-\theta)\mathbf{y}\) and use homogeneity:
+\[
+\|\theta \mathbf{x} + (1 - \theta)\mathbf{y}\| \;\leqslant\; \|\theta \mathbf{x}\| + \|(1-\theta)\mathbf{y}\| \;=\; \theta \|\mathbf{x}\| + (1-\theta)\|\mathbf{y}\|.
+\]
+That is exactly the convexity inequality applied to \(f(\mathbf{x}) = \|\mathbf{x}\|\). \(\blacksquare\)
+\end{derivation}
+
+This is the most-used convexity result in Unit~2: the Lasso penalty \(\|\boldsymbol{\beta}\|_1\) and the Ridge penalty \(\|\boldsymbol{\beta}\|_2^2\) are convex, and a nonnegative combination with a convex loss preserves convexity (Theorem~\ref{thm:ops-convex}).
+
+\subsection{Gradient, Hessian, PSD: a small toolkit}\label{subsec:1.9.4}
+
+The constructions below require a brief vocabulary from multivariate calculus and matrix analysis.
+
+\begin{definition}[Gradient and Hessian]\label{def:gradient}
+For a differentiable function \(f : \mathbb{R}^n \to \mathbb{R}\), the \textbf{gradient} at \(\mathbf{x}\) is the column vector of partial derivatives,
+\[
+\nabla f(\mathbf{x}) \;=\; \big(\partial f / \partial x_1,\; \dots,\; \partial f / \partial x_n\big)^\top \in \mathbb{R}^n.
+\]
+If \(f\) is twice differentiable, the \textbf{Hessian} at \(\mathbf{x}\) is the symmetric \(n \times n\) matrix of second partial derivatives,
+\[
+\big[\nabla^2 f(\mathbf{x})\big]_{ij} \;=\; \frac{\partial^2 f}{\partial x_i\,\partial x_j}(\mathbf{x}).
+\]
+\end{definition}
+
+\paragraph{Chain rule along a line.} For \(\mathbf{x} \in \dom f\), \(\mathbf{v} \in \mathbb{R}^n\), and the one-variable restriction \(g(t) = f(\mathbf{x} + t\mathbf{v})\), the multivariate chain rule gives
+\[
+g'(t) \;=\; \nabla f(\mathbf{x} + t\mathbf{v})^\top \mathbf{v}, \qquad g''(t) \;=\; \mathbf{v}^\top \nabla^2 f(\mathbf{x} + t\mathbf{v})\, \mathbf{v}.
+\]
+At \(t = 0\), \(g'(0) = \nabla f(\mathbf{x})^\top \mathbf{v}\) is the \textbf{directional derivative} of \(f\) at \(\mathbf{x}\) in direction \(\mathbf{v}\).
+
+\begin{definition}[Positive (semi-)definite]\label{def:psd}
+A symmetric matrix \(\mathbf{A} \in \mathbb{R}^{n \times n}\) is \textbf{positive semi-definite} (PSD), denoted \(\mathbf{A} \succcurlyeq 0\), if
+\[
+\mathbf{v}^\top \mathbf{A} \mathbf{v} \;\geqslant\; 0 \qquad \forall\, \mathbf{v} \in \mathbb{R}^n.
+\]
+It is \textbf{positive definite} (PD), denoted \(\mathbf{A} \succ 0\), if the inequality is strict for every \(\mathbf{v} \ne \mathbf{0}\). The notation \(\mathbf{A} \succcurlyeq \mathbf{B}\) (resp.\ \(\mathbf{A} \succ \mathbf{B}\)) means \(\mathbf{A} - \mathbf{B}\) is PSD (resp.\ PD); the relation \(\succcurlyeq\) is a partial order on the symmetric matrices, the \textbf{Loewner order}.
+\end{definition}
+
+\subsection{Restriction to a line}\label{subsec:1.9.5}
+
+\begin{theorem}[Restriction to a line]\label{thm:restriction-line}
+A function \(f : \mathbb{R}^n \to \mathbb{R}\) is convex if and only if, for every \(\mathbf{x} \in \dom f\) and every direction \(\mathbf{v} \in \mathbb{R}^n\), the one-variable function
+\[
+g(t) \;=\; f(\mathbf{x} + t \mathbf{v}), \qquad \dom g = \{t \in \mathbb{R} : \mathbf{x} + t\mathbf{v} \in \dom f\},
+\]
+is convex in \(t\).
+\end{theorem}
+
+This is the standard reduction: multivariate convexity is verified one direction at a time. The multivariate question becomes one-dimensional, where Taylor expansions and second-derivative tests apply directly.
+
+\begin{derivation}[Proof of Theorem~\ref{thm:restriction-line}]
+\((\Rightarrow)\) Assume \(f\) is convex. Fix \(\mathbf{x}, \mathbf{v}\). For \(t_1, t_2 \in \dom g\) and \(\theta \in [0,1]\),
+\[
+g\big((1-\theta) t_1 + \theta t_2\big) = f\big((1-\theta)(\mathbf{x} + t_1 \mathbf{v}) + \theta(\mathbf{x} + t_2 \mathbf{v})\big) \leqslant (1-\theta) g(t_1) + \theta g(t_2),
+\]
+where the inequality is the convexity of \(f\). Hence \(g\) is convex.
+
+\((\Leftarrow)\) Assume \(g\) is convex for every \((\mathbf{x}, \mathbf{v})\). Given any \(\mathbf{x}, \mathbf{y} \in \dom f\), set \(\mathbf{v} = \mathbf{y} - \mathbf{x}\), so \(g(0) = f(\mathbf{x})\) and \(g(1) = f(\mathbf{y})\). For \(\theta \in [0,1]\),
+\[
+f\big((1-\theta)\mathbf{x} + \theta \mathbf{y}\big) = g(\theta) \leqslant (1-\theta) g(0) + \theta g(1) = (1-\theta) f(\mathbf{x}) + \theta f(\mathbf{y}). \qquad \blacksquare
+\]
+\end{derivation}
+
+\begin{example}\label{ex:1.2}
+\textit{(Quadratic forms.)} Let \(f(\mathbf{x}) = \mathbf{x}^\top \mathbf{P} \mathbf{x}\) with \(\mathbf{P}\) symmetric. Restrict to the line \(\mathbf{x} + t\mathbf{v}\):
+\[
+g(t) = \mathbf{x}^\top \mathbf{P} \mathbf{x} \;+\; 2 t\, \mathbf{v}^\top \mathbf{P} \mathbf{x} \;+\; t^2\, \mathbf{v}^\top \mathbf{P} \mathbf{v}.
+\]
+This is a one-dimensional quadratic in \(t\) with leading coefficient \(\mathbf{v}^\top \mathbf{P} \mathbf{v}\). It is convex in \(t\) for every \(\mathbf{v}\) iff \(\mathbf{v}^\top \mathbf{P} \mathbf{v} \geqslant 0\) for every \(\mathbf{v}\), i.e., iff \(\mathbf{P} \succcurlyeq 0\). By Theorem~\ref{thm:restriction-line}, \(f\) is convex on \(\mathbb{R}^n\) iff \(\mathbf{P} \succcurlyeq 0\).
+\end{example}
+
+\begin{example}\label{ex:rss}
+\textit{(Sum of squares.)} For \(\mathbf{X} \in \mathbb{R}^{n \times p}\) and \(\mathbf{y} \in \mathbb{R}^n\), the residual sum of squares
+\[
+f(\boldsymbol{\beta}) \;=\; \|\mathbf{y} - \mathbf{X}\boldsymbol{\beta}\|_2^2
+\]
+is convex in \(\boldsymbol{\beta}\). Restricting to the line \(\boldsymbol{\beta} + t\mathbf{v}\),
+\[
+g(t) \;=\; \|\mathbf{y} - \mathbf{X}\boldsymbol{\beta}\|_2^2 \;-\; 2t\, \mathbf{v}^\top \mathbf{X}^\top (\mathbf{y} - \mathbf{X}\boldsymbol{\beta}) \;+\; t^2\, \|\mathbf{X}\mathbf{v}\|_2^2,
+\]
+a 1-D quadratic with leading coefficient \(\|\mathbf{X}\mathbf{v}\|^2 \geqslant 0\). Convexity holds for every \(\mathbf{v}\), so by Theorem~\ref{thm:restriction-line}, \(f\) is convex on \(\mathbb{R}^p\) regardless of \(\mathbf{X}\); this is the Unit~2 OLS objective, established without computing a \(p \times p\) Hessian.
+\end{example}
+
+\begin{example}\label{ex:logdet}
+\textit{(Negative log-determinant on the positive-definite cone.)} Let \(f(\mathbf{X}) = -\log\det \mathbf{X}\) with \(\dom f = \mathsf{S}^n_{++}\) (symmetric positive-definite matrices). Pick \(\mathbf{X} \succ 0\) and a symmetric direction \(\mathbf{V}\). Restricting to \(\mathbf{X} + t\mathbf{V}\), let \(\lambda_1, \dots, \lambda_n\) be the eigenvalues of \(\mathbf{X}^{-1/2} \mathbf{V} \mathbf{X}^{-1/2}\). Using \(\mathbf{X} + t\mathbf{V} = \mathbf{X}^{1/2}(\mathbf{I} + t \mathbf{X}^{-1/2}\mathbf{V}\mathbf{X}^{-1/2})\mathbf{X}^{1/2}\),
+\[
+g(t) \;=\; -\log\det(\mathbf{X} + t\mathbf{V}) \;=\; -\log\det \mathbf{X} \;-\; \sum_{i=1}^n \log(1 + t \lambda_i).
+\]
+Each summand \(t \mapsto -\log(1 + t \lambda_i)\) has second derivative \(\lambda_i^2 / (1 + t\lambda_i)^2 \geqslant 0\) wherever defined, hence is convex; \(g\) is a sum of convex functions, hence convex. By Theorem~\ref{thm:restriction-line}, \(f\) is convex on \(\mathsf{S}^n_{++}\). This is exactly the negative Gaussian log-likelihood for the precision matrix; the same argument is the convexity backbone of the graphical Lasso.
+\end{example}
+
+\begin{suppremark}[Use in statistics]
+Restriction to a line is the standard proof tool when the multivariate Hessian is opaque, typical of Gaussian likelihoods, the graphical Lasso, and covariance estimation. The convexity question reduces to a one-dimensional second derivative.
+\end{suppremark}
+
+\subsection{First-order condition}\label{subsec:1.9.6}
+
+\begin{theorem}[First-order condition]\label{thm:first-order}
+Let \(f\) be differentiable on the open convex set \(\dom f\). Then \(f\) is convex if and only if
+\[
+f(\mathbf{y}) \;\geqslant\; f(\mathbf{x}) + \nabla f(\mathbf{x})^\top (\mathbf{y} - \mathbf{x}), \qquad \forall\, \mathbf{x}, \mathbf{y} \in \dom f.
+\]
+The first-order Taylor approximation of \(f\) at any point is therefore a \textbf{global underestimator} of \(f\); see Figure~\ref{fig:first-order}.
+\end{theorem}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[scale=1.4,page=2]{fig/03.pdf}
+\caption{First-order Taylor approximation (dashed line) as a global underestimator of a convex function.}\label{fig:first-order}
+\end{figure}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:first-order}]
+\((\Rightarrow)\) Assume \(f\) is convex. Fix \(\mathbf{x}, \mathbf{y}\) and let \(g(t) = f(\mathbf{x} + t(\mathbf{y} - \mathbf{x}))\). By Theorem~\ref{thm:restriction-line}, \(g\) is convex on \([0,1]\), with \(g(0) = f(\mathbf{x})\), \(g(1) = f(\mathbf{y})\), and \(g'(0) = \nabla f(\mathbf{x})^\top (\mathbf{y} - \mathbf{x})\).
+For \(t \in (0,1]\), convexity of \(g\) gives \(g(t) \leqslant (1-t)g(0) + t\,g(1)\), i.e.\ \(\frac{g(t) - g(0)}{t} \leqslant g(1) - g(0)\). Letting \(t \to 0^+\) yields \(g'(0) \leqslant g(1) - g(0)\), which substitutes back to \(\nabla f(\mathbf{x})^\top (\mathbf{y}-\mathbf{x}) \leqslant f(\mathbf{y}) - f(\mathbf{x})\).
+
+\((\Leftarrow)\) Assume the inequality. Given \(\mathbf{x}, \mathbf{y}\) and \(\theta \in [0,1]\), set \(\mathbf{z} = \theta \mathbf{x} + (1-\theta)\mathbf{y}\). Apply the assumed inequality at \((\mathbf{z}, \mathbf{x})\) and \((\mathbf{z}, \mathbf{y})\):
+\[
+f(\mathbf{x}) \geqslant f(\mathbf{z}) + \nabla f(\mathbf{z})^\top (\mathbf{x} - \mathbf{z}), \qquad f(\mathbf{y}) \geqslant f(\mathbf{z}) + \nabla f(\mathbf{z})^\top (\mathbf{y} - \mathbf{z}).
+\]
+Multiply the first by \(\theta\), the second by \(1-\theta\), and add. The gradient terms collapse to \(\nabla f(\mathbf{z})^\top (\theta \mathbf{x} + (1-\theta)\mathbf{y} - \mathbf{z}) = 0\), leaving
+\(\theta f(\mathbf{x}) + (1-\theta) f(\mathbf{y}) \geqslant f(\mathbf{z})\). \(\blacksquare\)
+\end{derivation}
+
+\begin{suppremark}[Optimality corollary]
+If \(\mathbf{x}^\star\) is interior to \(\dom f\) and \(\nabla f(\mathbf{x}^\star) = \mathbf{0}\), then \(f(\mathbf{y}) \geqslant f(\mathbf{x}^\star)\) for every \(\mathbf{y}\): a stationary point is automatically a global minimum. This justifies the ``set gradient to zero, solve'' procedure used in Unit~2 (Ridge, Lasso) and Unit~3 (logistic regression). For non-differentiable cases such as the Lasso penalty \(\|\boldsymbol{\beta}\|_1\), the subgradient extension below replaces \(\nabla f(\mathbf{x})\) with a subgradient \(\mathbf{g} \in \partial f(\mathbf{x})\).
+\end{suppremark}
+
+\begin{definition}[Subgradient and subdifferential]\label{def:subgradient}
+For a convex \(f : \mathbb{R}^n \to \mathbb{R}\) and \(\mathbf{x} \in \dom f\), a vector \(\mathbf{g} \in \mathbb{R}^n\) is a \textbf{subgradient} of \(f\) at \(\mathbf{x}\) if
+\[
+f(\mathbf{y}) \;\geqslant\; f(\mathbf{x}) + \mathbf{g}^\top (\mathbf{y} - \mathbf{x}), \qquad \forall\, \mathbf{y} \in \dom f.
+\]
+The set of all such \(\mathbf{g}\) is the \textbf{subdifferential} \(\partial f(\mathbf{x})\). Existence of subgradients at interior points is established in Theorem~\ref{thm:subgrad-exists}.
+\end{definition}
+
+When \(f\) is differentiable at \(\mathbf{x}\), \(\partial f(\mathbf{x}) = \{\nabla f(\mathbf{x})\}\) and the subgradient inequality reduces to Theorem~\ref{thm:first-order}. At a non-differentiable point the subdifferential is a non-trivial closed convex set: for example, \(\partial |x|\) at \(x = 0\) equals the interval \([-1, 1]\). Unit~2 develops the subdifferential of \(\|\boldsymbol{\beta}\|_1\) and applies Definition~\ref{def:subgradient} in place of Theorem~\ref{thm:first-order} to derive the soft-thresholding update for the Lasso.
+
+\subsection{Epigraph and sublevel sets}\label{subsec:1.9.7}
+
+\begin{definition}\label{def:1.epi}
+For a function \(f : \mathbb{R}^n \to \mathbb{R}\):
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=1pt]
+\item the \textbf{epigraph} is \(\epi f = \big\{(\mathbf{x}, t) \in \mathbb{R}^{n+1} : \mathbf{x} \in \dom f,\ f(\mathbf{x}) \leqslant t\big\}\), the region on or above the graph;
+\item the \(\boldsymbol{\alpha}\)-\textbf{sublevel set} is \(C_\alpha = \{\mathbf{x} \in \dom f : f(\mathbf{x}) \leqslant \alpha\}\).
+\end{itemize}
+\end{definition}
+
+\begin{theorem}[Epigraph characterization]\label{thm:epi}
+\(f\) is convex \(\iff\) \(\epi f\) is a convex set in \(\mathbb{R}^{n+1}\). If \(f\) is convex, every sublevel set \(C_\alpha\) is convex (the converse is false). See Figure~\ref{fig:epigraph}.
+\end{theorem}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.6\linewidth,page=5]{fig/03.pdf}
+\caption{Epigraph of \(f\): the shaded region on or above the graph.}\label{fig:epigraph}
+\end{figure}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:epi}]
+\((\Rightarrow)\) Let \(f\) be convex and take \((\mathbf{x}_1, t_1), (\mathbf{x}_2, t_2) \in \epi f\), so \(f(\mathbf{x}_i) \leqslant t_i\). For \(\theta \in [0,1]\),
+\[
+f(\theta \mathbf{x}_1 + (1-\theta)\mathbf{x}_2) \;\leqslant\; \theta f(\mathbf{x}_1) + (1-\theta) f(\mathbf{x}_2) \;\leqslant\; \theta t_1 + (1-\theta) t_2.
+\]
+Hence \(\big(\theta \mathbf{x}_1 + (1-\theta)\mathbf{x}_2,\, \theta t_1 + (1-\theta) t_2\big) \in \epi f\), so \(\epi f\) is convex.
+
+\((\Leftarrow)\) Let \(\epi f\) be convex. Take \((\mathbf{x}_1, f(\mathbf{x}_1))\) and \((\mathbf{x}_2, f(\mathbf{x}_2))\) in \(\epi f\). By convexity of \(\epi f\), \(\big(\theta \mathbf{x}_1 + (1-\theta)\mathbf{x}_2,\, \theta f(\mathbf{x}_1) + (1-\theta) f(\mathbf{x}_2)\big) \in \epi f\), so \(f(\theta \mathbf{x}_1 + (1-\theta)\mathbf{x}_2) \leqslant \theta f(\mathbf{x}_1) + (1-\theta) f(\mathbf{x}_2)\). \(\blacksquare\)
+\end{derivation}
+
+\begin{suppremark}[Functions and sets]
+Theorem~\ref{thm:epi} is the formal correspondence between convex functions and convex sets: every theorem on convex sets yields a theorem on convex functions, and conversely. Unit~6 builds the maximum-margin SVM directly on this correspondence: the SVM primal is a constrained convex problem whose feasible region is an intersection of halfspaces.
+\end{suppremark}
+
+\subsection{Supporting hyperplane and subgradient existence}\label{subsec:1.9.8}
+
+The non-emptiness asserted in Definition~\ref{def:subgradient} is the geometric fact that a convex set has a tangent hyperplane at every boundary point. We prove this and derive subgradient existence as a corollary. The projection step in the proof rests on one algebraic identity for the squared Euclidean norm:
+
+\begin{lemma}[Strict convexity of \(\|\cdot\|^2\)]\label{lem:sq-norm-strict-convex}
+For every \(\mathbf{u}, \mathbf{v} \in \mathbb{R}^n\) and \(\theta \in [0, 1]\),
+\[
+\|(1-\theta)\mathbf{u} + \theta\mathbf{v}\|^2 \;=\; (1-\theta)\|\mathbf{u}\|^2 \;+\; \theta\|\mathbf{v}\|^2 \;-\; \theta(1-\theta)\|\mathbf{u} - \mathbf{v}\|^2.
+\]
+In particular, \(\|\cdot\|^2\) is \emph{strictly} convex on \(\mathbb{R}^n\): the value of \(\|(1-\theta)\mathbf{u} + \theta\mathbf{v}\|^2\) lies strictly below the chord \((1-\theta)\|\mathbf{u}\|^2 + \theta\|\mathbf{v}\|^2\) whenever \(\theta \in (0, 1)\) and \(\mathbf{u} \ne \mathbf{v}\).
+\end{lemma}
+
+\begin{derivation}[Proof of Lemma~\ref{lem:sq-norm-strict-convex}]
+Expanding \(\|\mathbf{w}\|^2 = \mathbf{w}^\top \mathbf{w}\) gives
+\[
+\|(1-\theta)\mathbf{u} + \theta\mathbf{v}\|^2 \;=\; (1-\theta)^2\|\mathbf{u}\|^2 \;+\; 2\theta(1-\theta)\, \mathbf{u}^\top \mathbf{v} \;+\; \theta^2\|\mathbf{v}\|^2.
+\]
+Subtracting from the chord and using \((1-\theta) - (1-\theta)^2 = \theta(1-\theta) = \theta - \theta^2\),
+\begin{align*}
+& (1-\theta)\|\mathbf{u}\|^2 + \theta\|\mathbf{v}\|^2 \;-\; \|(1-\theta)\mathbf{u} + \theta\mathbf{v}\|^2 \\
+&\qquad =\; \theta(1-\theta)\big[\|\mathbf{u}\|^2 - 2\mathbf{u}^\top \mathbf{v} + \|\mathbf{v}\|^2\big] \;=\; \theta(1-\theta)\,\|\mathbf{u} - \mathbf{v}\|^2,
+\end{align*}
+which rearranges to the stated identity. The right-hand side is non-negative and vanishes only when \(\theta(1-\theta) = 0\) (i.e.\ \(\theta \in \{0, 1\}\)) or \(\mathbf{u} = \mathbf{v}\), so the chord lies strictly above otherwise. \(\blacksquare\)
+\end{derivation}
+
+\begin{theorem}[Supporting hyperplane]\label{thm:supporting}
+Let \(C \subseteq \mathbb{R}^n\) be a non-empty convex set and \(\mathbf{x}_0\) a boundary point of \(C\). There exists \(\mathbf{a} \in \mathbb{R}^n \setminus \{\mathbf{0}\}\) such that
+\[
+\mathbf{a}^\top \mathbf{x} \;\leqslant\; \mathbf{a}^\top \mathbf{x}_0, \qquad \forall\, \mathbf{x} \in C.
+\]
+The hyperplane \(\{\mathbf{x} : \mathbf{a}^\top \mathbf{x} = \mathbf{a}^\top \mathbf{x}_0\}\) is a \textbf{supporting hyperplane} to \(C\) at \(\mathbf{x}_0\).
+\end{theorem}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.4\linewidth,page=21]{fig/02.pdf}
+\caption{Supporting hyperplane to a convex set \(C\) at the boundary point \(\mathbf{x}_0\): the hyperplane passes through \(\mathbf{x}_0\) and \(C\) lies on one side.}\label{fig:supporting}
+\end{figure}
+
+The proof goes through three steps: a projection lemma, strict separation of a point from a closed convex set, and a boundary limit.
+
+\begin{derivation}[Proof of Theorem~\ref{thm:supporting}]
+\textbf{Step 1: Projection lemma.} If \(K \subseteq \mathbb{R}^n\) is closed convex and \(\mathbf{z} \notin K\), there exists a unique \(\mathbf{x}^\star \in K\) minimizing \(\|\mathbf{z} - \mathbf{x}\|\), and
+\[
+(\mathbf{z} - \mathbf{x}^\star)^\top (\mathbf{x} - \mathbf{x}^\star) \;\leqslant\; 0, \qquad \forall\, \mathbf{x} \in K.
+\]
+
+The map \(\mathbf{x} \mapsto \|\mathbf{z} - \mathbf{x}\|^2\) is continuous and tends to infinity, so its restriction to \(K \cap \{\|\mathbf{x}\| \leqslant R\}\) for large \(R\) attains a minimum on this compact set; let \(\mathbf{x}^\star \in K\) be a minimizer with minimum value \(d^2 = \|\mathbf{z} - \mathbf{x}^\star\|^2\). For uniqueness, suppose \(\tilde{\mathbf{x}} \in K\) satisfies \(\|\mathbf{z} - \tilde{\mathbf{x}}\|^2 = d^2\) with \(\tilde{\mathbf{x}} \ne \mathbf{x}^\star\). Apply Lemma~\ref{lem:sq-norm-strict-convex} with \(\mathbf{u} = \mathbf{z} - \mathbf{x}^\star\), \(\mathbf{v} = \mathbf{z} - \tilde{\mathbf{x}}\), \(\theta = 1/2\):
+\[
+\big\|\mathbf{z} - \tfrac{1}{2}(\mathbf{x}^\star + \tilde{\mathbf{x}})\big\|^2 \;=\; \tfrac{1}{2} d^2 + \tfrac{1}{2} d^2 - \tfrac{1}{4}\|\mathbf{x}^\star - \tilde{\mathbf{x}}\|^2 \;<\; d^2.
+\]
+The midpoint \(\tfrac{1}{2}(\mathbf{x}^\star + \tilde{\mathbf{x}}) \in K\) by convexity, contradicting the minimality of \(d^2\); hence \(\mathbf{x}^\star\) is unique.
+
+For the variational inequality, fix any \(\mathbf{x} \in K\); for \(t \in [0,1]\), the segment \(\mathbf{x}^\star + t(\mathbf{x} - \mathbf{x}^\star)\) lies in \(K\) by convexity, so
+\[
+\|\mathbf{z} - \mathbf{x}^\star - t(\mathbf{x} - \mathbf{x}^\star)\|^2 \;\geqslant\; \|\mathbf{z} - \mathbf{x}^\star\|^2.
+\]
+Expanding and differentiating in \(t\) at \(t = 0^+\) gives \(-2(\mathbf{z} - \mathbf{x}^\star)^\top (\mathbf{x} - \mathbf{x}^\star) \geqslant 0\), the claimed inequality.
+
+\textbf{Step 2: Strict separation when \(\mathbf{d} \notin \overline{C}\).} Apply Step~1 with \(K = \overline{C}\) and \(\mathbf{z} = \mathbf{d}\). Set \(\mathbf{a} = \mathbf{d} - \mathbf{x}^\star \ne \mathbf{0}\) and \(b = \mathbf{a}^\top \mathbf{x}^\star\). For every \(\mathbf{x} \in \overline{C}\), \(\mathbf{a}^\top (\mathbf{x} - \mathbf{x}^\star) \leqslant 0\), i.e.\ \(\mathbf{a}^\top \mathbf{x} \leqslant b\); meanwhile \(\mathbf{a}^\top \mathbf{d} = b + \|\mathbf{a}\|^2 > b\).
+
+\textbf{Step 3: Boundary limit.} Let \(\mathbf{x}_0\) be a boundary point of \(C\). Choose \(\mathbf{d}_n \notin \overline{C}\) with \(\mathbf{d}_n \to \mathbf{x}_0\); for each \(n\), Step~2 yields \(\mathbf{a}_n \ne \mathbf{0}\) with \(\mathbf{a}_n^\top \mathbf{x} \leqslant \mathbf{a}_n^\top \mathbf{d}_n\) for all \(\mathbf{x} \in C\). Normalize so \(\|\mathbf{a}_n\| = 1\). The unit sphere is compact, so a subsequence \(\mathbf{a}_{n_k}\) converges to some \(\mathbf{a}\) with \(\|\mathbf{a}\| = 1\). Passing to the limit in \(\mathbf{a}_{n_k}^\top \mathbf{x} \leqslant \mathbf{a}_{n_k}^\top \mathbf{d}_{n_k}\) gives \(\mathbf{a}^\top \mathbf{x} \leqslant \mathbf{a}^\top \mathbf{x}_0\) for all \(\mathbf{x} \in C\). \(\blacksquare\)
+\end{derivation}
+
+\begin{theorem}[Existence of subgradients]\label{thm:subgrad-exists}
+For convex \(f : \mathbb{R}^n \to \mathbb{R}\) and any \(\mathbf{x}_0\) in the interior of \(\dom f\), \(\partial f(\mathbf{x}_0)\) is non-empty.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:subgrad-exists}]
+The epigraph \(\epi f = \{(\mathbf{x}, t) : f(\mathbf{x}) \leqslant t\} \subseteq \mathbb{R}^{n+1}\) is convex (Theorem~\ref{thm:epi}), and \((\mathbf{x}_0, f(\mathbf{x}_0))\) is a boundary point: any neighbourhood contains points \((\mathbf{x}_0, f(\mathbf{x}_0) - \varepsilon) \notin \epi f\). Apply Theorem~\ref{thm:supporting} at this boundary point: there exists \((\mathbf{a}, \beta) \in \mathbb{R}^{n+1} \setminus \{\mathbf{0}\}\) with
+\[
+\mathbf{a}^\top \mathbf{x} + \beta\, t \;\leqslant\; \mathbf{a}^\top \mathbf{x}_0 + \beta\, f(\mathbf{x}_0), \qquad \forall\, (\mathbf{x}, t) \in \epi f.
+\]
+For any \(\mathbf{x} \in \dom f\), letting \(t \to +\infty\) on the left forces \(\beta \leqslant 0\). If \(\beta = 0\), the inequality reduces to \(\mathbf{a}^\top \mathbf{x} \leqslant \mathbf{a}^\top \mathbf{x}_0\) for every \(\mathbf{x} \in \dom f\); but \(\mathbf{x}_0\) is interior, so taking \(\mathbf{x} = \mathbf{x}_0 \pm \varepsilon \mathbf{a}\) for small \(\varepsilon > 0\) gives \(\pm \varepsilon\|\mathbf{a}\|^2 \leqslant 0\), i.e.\ \(\mathbf{a} = \mathbf{0}\), contradicting \((\mathbf{a}, \beta) \ne \mathbf{0}\). Hence \(\beta < 0\); rescale by \(1/|\beta|\) so that \(\beta = -1\). Setting \(t = f(\mathbf{x})\),
+\[
+\mathbf{a}^\top \mathbf{x} - f(\mathbf{x}) \;\leqslant\; \mathbf{a}^\top \mathbf{x}_0 - f(\mathbf{x}_0) \quad\Longleftrightarrow\quad f(\mathbf{x}) \;\geqslant\; f(\mathbf{x}_0) + \mathbf{a}^\top (\mathbf{x} - \mathbf{x}_0),
+\]
+so \(\mathbf{a} \in \partial f(\mathbf{x}_0)\). \(\blacksquare\)
+\end{derivation}
+
+\begin{suppremark}[Use in this course]
+Theorem~\ref{thm:subgrad-exists} is invoked twice: once in Unit~2, where the subdifferential of \(\|\boldsymbol{\beta}\|_1\) drives the soft-thresholding update for Lasso, and once in the proof of Jensen's inequality (Theorem~\ref{thm:jensen}) below. Theorem~\ref{thm:supporting} itself reappears in Unit~6 (SVM), where the maximum-margin classifier is constructed by separating two convex sets of points by a hyperplane.
+\end{suppremark}
+
+\subsection{Second-order condition and examples}\label{subsec:1.9.9}
+
+\begin{theorem}[Second-order condition]\label{thm:second-order}
+Let \(f\) be twice continuously differentiable on the open convex set \(\dom f\). Then
+\begin{itemize}[leftmargin=2em,itemsep=2pt,topsep=1pt]
+\item \(f\) is convex \(\iff\) \(\nabla^2 f(\mathbf{x}) \succcurlyeq 0\) for every \(\mathbf{x} \in \dom f\);
+\item \(\nabla^2 f(\mathbf{x}) \succ 0\) for every \(\mathbf{x}\) \(\Rightarrow\) \(f\) is strictly convex.
+\end{itemize}
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:second-order}]
+By Theorem~\ref{thm:restriction-line}, \(f\) is convex iff \(g(t) = f(\mathbf{x} + t\mathbf{v})\) is convex in \(t\) for every \(\mathbf{x}\in \dom f\), \(\mathbf{v}\in\mathbb{R}^n\). Twice differentiability gives
+\[
+g''(t) \;=\; \mathbf{v}^\top \nabla^2 f(\mathbf{x} + t\mathbf{v})\, \mathbf{v}.
+\]
+The multivariate question reduces to a one-dimensional fact: \emph{a twice-differentiable \(g\) on an interval is convex iff \(g''(t) \geqslant 0\) throughout}.
+
+For the 1-D fact: by Taylor's theorem with Lagrange remainder, for any \(a, b\) in the interval, \(\theta \in [0,1]\), and \(z = \theta a + (1-\theta) b\) there exist \(\xi_a, \xi_b\) such that
+\[
+g(a) = g(z) + g'(z)(a-z) + \tfrac12\, g''(\xi_a)(a-z)^2, \quad g(b) = g(z) + g'(z)(b-z) + \tfrac12\, g''(\xi_b)(b-z)^2.
+\]
+Form \(\theta g(a) + (1-\theta) g(b)\) and use \(\theta(a-z) + (1-\theta)(b-z) = 0\) to cancel the linear term:
+\[
+\theta g(a) + (1-\theta) g(b) \;=\; g(z) \;+\; \tfrac12 \big[\theta\, g''(\xi_a)(a-z)^2 + (1-\theta)\, g''(\xi_b)(b-z)^2\big].
+\]
+The bracket is \(\geqslant 0\) iff \(g'' \geqslant 0\) wherever evaluated, giving \(g(z) \leqslant \theta g(a) + (1-\theta) g(b)\) iff \(g\) is convex.
+
+Translating back: \(g''(t) \geqslant 0\) for every \(\mathbf{v}\) and every admissible \(t\) is exactly \(\mathbf{v}^\top \nabla^2 f(\mathbf{y}) \mathbf{v} \geqslant 0\) for every \(\mathbf{v}\) and every \(\mathbf{y} \in \dom f\), i.e.\ \(\nabla^2 f \succcurlyeq 0\) on \(\dom f\). The strict version replaces \(\geqslant\) with \(>\) and convex with strictly convex throughout. \(\blacksquare\)
+\end{derivation}
+
+\paragraph{Examples.}
+\begin{itemize}[leftmargin=2em,itemsep=3pt,topsep=2pt]
+\item \textbf{Quadratic} \(f(\mathbf{x}) = \tfrac12 \mathbf{x}^\top \mathbf{P} \mathbf{x} + \mathbf{q}^\top \mathbf{x} + r\): \(\nabla^2 f = \mathbf{P}\). Convex \(\iff\) \(\mathbf{P} \succcurlyeq 0\); concave \(\iff\) \(\mathbf{P} \preccurlyeq 0\).
+\item \textbf{Least-squares} \(f(\boldsymbol{\beta}) = \|\mathbf{X}\boldsymbol{\beta} - \mathbf{y}\|_2^2\): \(\nabla^2 f = 2 \mathbf{X}^\top \mathbf{X} \succcurlyeq 0\), so \(f\) is convex for \emph{every} \(\mathbf{X}\); strictly convex iff \(\mathbf{X}\) has full column rank. (Unit~2 OLS lives here.)
+\item \textbf{Quadratic-over-linear} \(f(x, y) = x^2/y\) on \(\{y > 0\}\):
+\[
+\nabla^2 f(x, y) \;=\; \frac{2}{y^3}\begin{pmatrix} y^2 & -xy \\ -xy & x^2 \end{pmatrix} \;=\; \frac{2}{y^3}\begin{pmatrix} y \\ -x \end{pmatrix}\begin{pmatrix} y \\ -x \end{pmatrix}^\top \succcurlyeq 0,
+\]
+since the right factor is rank-one PSD. Hence \(f\) is convex on the open half-plane (Figure~\ref{fig:quad-over-linear}).
+
+\item \textbf{Log-sum-exp} \(f(\mathbf{x}) = \log \sum_{k=1}^n e^{x_k}\). Writing \(z_k = e^{x_k} > 0\) and \(\mathbf{1} = (1, \dots, 1)^\top\), a direct computation gives
+\[
+\nabla^2 f(\mathbf{x}) \;=\; \frac{1}{\mathbf{1}^\top \mathbf{z}}\, \diag(\mathbf{z}) \;-\; \frac{1}{(\mathbf{1}^\top \mathbf{z})^2}\, \mathbf{z}\mathbf{z}^\top.
+\]
+For any \(\mathbf{v} \in \mathbb{R}^n\),
+\[
+\mathbf{v}^\top \nabla^2 f(\mathbf{x})\, \mathbf{v} \;=\; \frac{\big(\sum_k z_k v_k^2\big)\big(\sum_k z_k\big) \;-\; \big(\sum_k z_k v_k\big)^2}{\big(\sum_k z_k\big)^2}.
+\]
+Apply Cauchy--Schwarz to the vectors with components \(a_k = \sqrt{z_k}\, v_k\) and \(b_k = \sqrt{z_k}\):
+\[
+\Big(\sum_k a_k b_k\Big)^{\!2} \;\leqslant\; \Big(\sum_k a_k^2\Big) \Big(\sum_k b_k^2\Big) \quad\Longleftrightarrow\quad \Big(\sum_k z_k v_k\Big)^{\!2} \;\leqslant\; \Big(\sum_k z_k v_k^2\Big)\Big(\sum_k z_k\Big).
+\]
+The numerator above is therefore \(\geqslant 0\), so \(\mathbf{v}^\top \nabla^2 f(\mathbf{x})\, \mathbf{v} \geqslant 0\) for every \(\mathbf{v}\): \(\nabla^2 f \succcurlyeq 0\). The same proof reappears in Unit~3 to certify the convexity of the multinomial logistic loss.
+\end{itemize}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.6\linewidth,page=3]{fig/03.pdf}
+\caption{Graph of the quadratic-over-linear function \(f(x, y) = x^2 / y\) on the half-plane \(y > 0\).}\label{fig:quad-over-linear}
+\end{figure}
+
+\subsection{Operations that preserve convexity}\label{subsec:1.9.10}
+
+The most efficient route to convexity for a complicated \(L(\theta)\) is rarely Hessian computation; more often, \(L\) is written as a composition of operations known to preserve convexity.
+
+\begin{theorem}[Preservation of convexity]\label{thm:ops-convex}
+Let \(f, g, f_1, \dots, f_m\) be convex functions on \(\mathbb{R}^n\).
+\begin{enumerate}[leftmargin=2.5em,itemsep=3pt,topsep=2pt]
+\item \textbf{Nonnegative combination.} For \(\alpha_1, \dots, \alpha_m \geqslant 0\), the function \(\alpha_1 f_1 + \cdots + \alpha_m f_m\) is convex.
+\item \textbf{Pointwise maximum / supremum.} \(\max\{f_1, \dots, f_m\}\) is convex; for any index set \(\mathcal{A}\) with each \(f_a\) convex, \(\sup_{a \in \mathcal{A}} f_a(\mathbf{x})\) is convex.
+\item \textbf{Affine composition.} If \(f\) is convex, so is \(\mathbf{x} \mapsto f(\mathbf{A}\mathbf{x} + \mathbf{b})\) for any matrix \(\mathbf{A}\) and vector \(\mathbf{b}\).
+\end{enumerate}
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:ops-convex}]
+Throughout, let \(\mathbf{x}, \mathbf{y}\) be in the relevant domain and \(\theta \in [0,1]\).
+
+\textbf{(1) Nonnegative combination.} Let \(F = \sum_i \alpha_i f_i\) with \(\alpha_i \geqslant 0\). Then
+\begin{align*}
+F\big(\theta \mathbf{x} + (1-\theta)\mathbf{y}\big)
+  &= \sum_i \alpha_i\, f_i\big(\theta \mathbf{x} + (1-\theta)\mathbf{y}\big) \\
+  &\leqslant \sum_i \alpha_i \big[\theta f_i(\mathbf{x}) + (1-\theta) f_i(\mathbf{y})\big] \\
+  &= \theta \sum_i \alpha_i f_i(\mathbf{x}) + (1-\theta) \sum_i \alpha_i f_i(\mathbf{y}) \;=\; \theta F(\mathbf{x}) + (1-\theta) F(\mathbf{y}),
+\end{align*}
+where the inequality is convexity of each \(f_i\) multiplied by \(\alpha_i \geqslant 0\) and summed.
+
+\textbf{(2) Pointwise maximum / supremum.} Set \(F(\mathbf{x}) = \sup_{a \in \mathcal{A}} f_a(\mathbf{x})\). For each fixed \(a\),
+\[
+f_a\big(\theta \mathbf{x} + (1-\theta) \mathbf{y}\big) \;\leqslant\; \theta f_a(\mathbf{x}) + (1-\theta) f_a(\mathbf{y}) \;\leqslant\; \theta F(\mathbf{x}) + (1-\theta) F(\mathbf{y}),
+\]
+where the first step is convexity of \(f_a\) and the second uses \(f_a(\mathbf{x}) \leqslant F(\mathbf{x})\) and \(f_a(\mathbf{y}) \leqslant F(\mathbf{y})\) with \(\theta, 1-\theta \geqslant 0\). The right-hand side does not depend on \(a\); taking the supremum over \(a\) on the left gives \(F(\theta \mathbf{x} + (1-\theta) \mathbf{y}) \leqslant \theta F(\mathbf{x}) + (1-\theta) F(\mathbf{y})\). The pointwise maximum is the special case \(\mathcal{A} = \{1, \dots, m\}\).
+
+\textbf{(3) Affine composition.} Let \(h(\mathbf{x}) = f(\mathbf{A}\mathbf{x} + \mathbf{b})\). Linearity of the affine map gives
+\[
+\mathbf{A}\big(\theta \mathbf{x} + (1-\theta) \mathbf{y}\big) + \mathbf{b} \;=\; \theta(\mathbf{A}\mathbf{x} + \mathbf{b}) + (1-\theta)(\mathbf{A}\mathbf{y} + \mathbf{b}),
+\]
+so
+\begin{align*}
+h\big(\theta \mathbf{x} + (1-\theta) \mathbf{y}\big)
+  &= f\big(\theta(\mathbf{A}\mathbf{x}+\mathbf{b}) + (1-\theta)(\mathbf{A}\mathbf{y}+\mathbf{b})\big) \\
+  &\leqslant \theta f(\mathbf{A}\mathbf{x}+\mathbf{b}) + (1-\theta) f(\mathbf{A}\mathbf{y}+\mathbf{b}) \;=\; \theta h(\mathbf{x}) + (1-\theta) h(\mathbf{y}).
+\end{align*}
+The inequality is convexity of \(f\). The domain \(\dom h = \{\mathbf{x} : \mathbf{A}\mathbf{x} + \mathbf{b} \in \dom f\}\) is the inverse image of a convex set under an affine map and is therefore convex. \(\blacksquare\)
+\end{derivation}
+
+\begin{example}\label{ex:1.3}
+\textit{(Why the Lasso objective is convex.)} The Lasso loss is
+\[
+L(\boldsymbol{\beta}) \;=\; \tfrac{1}{n}\|\mathbf{y} - \mathbf{X}\boldsymbol{\beta}\|_2^2 \;+\; \lambda \|\boldsymbol{\beta}\|_1, \qquad \lambda \geqslant 0.
+\]
+The first term is least-squares (convex by Theorem~\ref{thm:second-order}); the second is a norm (convex by Theorem~\ref{thm:norm-convex}); their nonnegative combination is convex by Theorem~\ref{thm:ops-convex}(1).
+\end{example}
+
+\begin{suppremark}[Further operations]
+Three additional convexity-preserving operations appear less frequently: \emph{partial minimization} (\(\inf_{\mathbf{y}} h(\mathbf{x}, \mathbf{y})\) is convex when \(h\) is jointly convex), \emph{perspective} (\((\mathbf{x}, t) \mapsto t f(\mathbf{x}/t)\) for \(t > 0\)), and \emph{scalar composition with a convex non-decreasing outer function}. The complete catalogue is in Boyd \& Vandenberghe, Ch.~3.2.
+\end{suppremark}
+
+\subsection{Jensen's inequality}\label{subsec:1.9.11}
+
+\begin{theorem}[Jensen]\label{thm:jensen}
+Let \(f\) be convex and \(\mathbf{Z}\) a random vector with \(\prb\{\mathbf{Z} \in \dom f\} = 1\) and \(\expc[\mathbf{Z}]\) finite. Then
+\[
+f\big(\expc[\mathbf{Z}]\big) \;\leqslant\; \expc\big[f(\mathbf{Z})\big].
+\]
+\end{theorem}
+
+The basic chord inequality \(f(\theta \mathbf{x} + (1-\theta)\mathbf{y}) \leqslant \theta f(\mathbf{x}) + (1-\theta) f(\mathbf{y})\) is the special case where \(\mathbf{Z}\) takes only two values \((\mathbf{x}, \mathbf{y})\) with probabilities \((\theta, 1-\theta)\). Jensen extends this to arbitrary distributions. The proof uses one preliminary fact: the expectation operator is linear on affine functions, i.e.\ \(\expc[\mathbf{a}^\top \mathbf{Z} + b] = \mathbf{a}^\top \expc[\mathbf{Z}] + b\) for any deterministic \(\mathbf{a} \in \mathbb{R}^n\) and \(b \in \mathbb{R}\).
+
+\begin{derivation}[Proof of Theorem~\ref{thm:jensen}]
+Set \(\mathbf{x}_0 = \expc[\mathbf{Z}]\). We assume \(\mathbf{x}_0\) lies in the interior of \(\dom f\), which holds provided the distribution of \(\mathbf{Z}\) is not concentrated entirely on the boundary of \(\dom f\); the boundary case requires the relative-interior subgradient theory of Rockafellar and is not pursued here. By Theorem~\ref{thm:subgrad-exists}, \(\partial f(\mathbf{x}_0)\) is non-empty; choose any \(\mathbf{g} \in \partial f(\mathbf{x}_0)\). (For differentiable \(f\) one may take \(\mathbf{g} = \nabla f(\mathbf{x}_0)\).) The subgradient inequality (Definition~\ref{def:subgradient}) gives
+\[
+f(\mathbf{z}) \;\geqslant\; f(\mathbf{x}_0) + \mathbf{g}^\top (\mathbf{z} - \mathbf{x}_0), \qquad \forall\, \mathbf{z} \in \dom f.
+\]
+Substitute \(\mathbf{z} = \mathbf{Z}\) (which lies in \(\dom f\) almost surely by hypothesis) and take expectations on both sides; by linearity of \(\expc[\cdot]\) on the affine right-hand side,
+\[
+\expc[f(\mathbf{Z})] \;\geqslant\; f(\mathbf{x}_0) \;+\; \mathbf{g}^\top \expc[\mathbf{Z} - \mathbf{x}_0] \;=\; f(\expc[\mathbf{Z}]),
+\]
+since \(\expc[\mathbf{Z} - \expc[\mathbf{Z}]] = \mathbf{0}\). \(\blacksquare\)
+\end{derivation}
+
+\paragraph{Two applications.}
+\begin{itemize}[leftmargin=2em,itemsep=3pt,topsep=2pt]
+\item \textbf{Moment-generating function bound.} For \(Z \sim \mathsf{N}(\mu, \sigma^2)\) and the convex \(f(z) = e^z\), Jensen gives \(\expc[e^Z] \geqslant e^{\mu}\). The exact value \(\expc[e^Z] = e^{\mu + \sigma^2/2}\) shows the inequality is strict when \(\sigma > 0\).
+\item \textbf{Information-theoretic decomposition.} In Unit~3, Jensen's inequality decomposes cross-entropy loss into the entropy of the true class distribution and the KL divergence between predicted and true distributions, demonstrating equivalence between cross-entropy minimization and KL minimization.
+\end{itemize}
+
+\subsection{Why convexity matters}\label{subsec:1.9.12}
+
+\begin{theorem}\label{thm:local-global}
+Let \(f\) be convex on a convex set \(C\). Then every local minimizer of \(f\) on \(C\) is a global minimizer. If \(f\) is strictly convex, the minimizer, when it exists, is unique.
+\end{theorem}
+
+\begin{derivation}[Proof of Theorem~\ref{thm:local-global}]
+Suppose \(\mathbf{x}^\star \in C\) is a local but not global minimizer, so there exists \(\mathbf{y} \in C\) with \(f(\mathbf{y}) < f(\mathbf{x}^\star)\). For \(\theta \in (0,1]\), set \(\mathbf{z}_\theta = (1-\theta)\mathbf{x}^\star + \theta \mathbf{y} \in C\) (using convexity of \(C\)). By convexity of \(f\),
+\[
+f(\mathbf{z}_\theta) \;\leqslant\; (1-\theta) f(\mathbf{x}^\star) + \theta\, f(\mathbf{y}) \;<\; f(\mathbf{x}^\star),
+\]
+since \(f(\mathbf{y}) < f(\mathbf{x}^\star)\) and \(\theta > 0\). As \(\theta \to 0^+\), \(\mathbf{z}_\theta \to \mathbf{x}^\star\), so every neighbourhood of \(\mathbf{x}^\star\) contains a point with strictly lower \(f\), contradicting that \(\mathbf{x}^\star\) is a local minimizer. Hence every local minimizer is global.
+
+For uniqueness under strict convexity, suppose \(\mathbf{x}^\star \ne \mathbf{y}^\star\) are both global minimizers with \(f(\mathbf{x}^\star) = f(\mathbf{y}^\star) = f^\star\). The midpoint \(\mathbf{z} = \tfrac12 \mathbf{x}^\star + \tfrac12 \mathbf{y}^\star \in C\) satisfies \(f(\mathbf{z}) < \tfrac12 f(\mathbf{x}^\star) + \tfrac12 f(\mathbf{y}^\star) = f^\star\) by strict convexity, contradicting minimality of \(f^\star\). \(\blacksquare\)
+\end{derivation}
+
+Practical consequence: when \(L(\theta)\) is convex, gradient descent, coordinate descent, and Newton's method converge to the unique optimum, with no risk of being trapped at a suboptimal local minimum. This is why most algorithms in the first half of the course are formulated as convex problems.
+
+\begin{suppremark}[Forward links]
+Unit~2 (Ridge, Lasso, Elastic Net) and Unit~3 (logistic regression) operate entirely within Theorem~\ref{thm:local-global}. Unit~6 (SVM) is convex quadratic and uses Lagrangian duality. Tree-based methods (Unit~5) and K-means (Unit~7) depart from this setting: tree fitting is a greedy combinatorial procedure with no convex objective, and K-means alternates between two convex sub-problems while the joint problem is non-convex. These features are addressed in their respective units.
+\end{suppremark}
+
+\section{Pitfalls and Misapplications}\label{sec:1.10}
+
+The failure modes of \S\S\,1.1--1.9, each accompanied by a short R demonstration. These pitfalls form the trap-question pool for the final project.
+
+\subsection{Pitfall 1: Modeling without EDA}\label{subsec:1.10.1}
+
+The proximate cause of most other pitfalls on this list. A brief \texttt{glimpse()} catches column-type and scale errors and obvious leakage candidates that no model can subsequently recover. The remedy is procedural: a structured EDA pass precedes every \texttt{fit()} call (\S\ref{subsec:1.3.5}).
+
+\subsection{Pitfall 2: Identifier columns as numeric features}\label{subsec:1.10.2}
+
+R imposes no type constraint on input columns. A linear model fits a coefficient on \(\mathtt{customer\_id}\); a tree splits on it. Both report training scores that lack predictive content in deployment, where the identifier values are entirely different.
+
+<<ex-pitfall-id, message=FALSE>>=
+set.seed(1); n <- 200
+df <- tibble(
+  customer_id = 1001:(1000 + n),
+  age         = rnorm(n, 40, 10),
+  churned     = rbinom(n, 1, plogis(-0.05 * (rnorm(n, 40, 10) - 40)))
+)
+fit <- glm(churned ~ customer_id + age, data = df, family = binomial)
+round(coef(fit), 6)
+@
+
+The non-zero coefficient on \(\mathtt{customer\_id}\) indicates the model is treating identifier values as signal. The column should be dropped before fitting, or removed at recipe level via \texttt{step\_rm(customer\_id)} in Unit~2.
+
+\subsection{Pitfall 3: Post-event features}\label{subsec:1.10.3}
+
+A column populated only after \(y\) is observed is unavailable at prediction time. \S\ref{subsec:1.7.3} provides a runnable demonstration; the standing remedy is the timing constraint \(t_\text{rec} \leqslant t_\star\) for every feature, enforced as a column-by-column audit (\S\ref{subsec:1.4.1}).
+
+\subsection{Pitfall 4: Accuracy on imbalanced data}\label{subsec:1.10.4}
+
+On a \(99/1\) split, the majority-class predictor achieves \(99\%\) accuracy with zero recall. \S\ref{subsec:1.8.3} provides the runnable demonstration; Unit~3 introduces precision, recall, and threshold tools that align the metric with the actual cost of error.
+
+\subsection{Pitfall 5: Mean imputation as a default}\label{subsec:1.10.5}
+
+Mean imputation is unbiased only under MCAR. Under MAR it biases coefficient estimates; under MNAR it both biases the estimates and discards the signal carried by the missingness pattern. The recommended default is to encode the missingness indicator before imputing values.
+
+<<ex-pitfall-impute>>=
+set.seed(1); n <- 500
+x         <- rnorm(n)
+miss      <- rbinom(n, 1, 0.3)
+y         <- ifelse(miss == 1, 1, 0)        # MNAR: y *is* the missingness pattern
+x_obs     <- ifelse(miss == 1, NA, x)
+
+# (a) Naive mean-impute: signal lost.
+x_mean    <- ifelse(is.na(x_obs), mean(x_obs, na.rm = TRUE), x_obs)
+cor(x_mean, y)
+
+# (b) Encode missingness as a feature, then impute: signal recovered.
+miss_flag <- as.integer(is.na(x_obs))
+cor(miss_flag, y)
+@
+
+The naive correlation is near zero; the missingness indicator carries the full signal in \(y\).
+
+\subsection{Pitfall 6: Random split on time-series data}\label{subsec:1.10.6}
+
+Data with a temporal axis must be split chronologically: training on the past, validation on the future. A random split places future rows in the training set and requires the model to predict past rows, inverting the deployment direction. Unit~4 replaces random K-fold with rolling-origin and grouped variants for this reason.
+
+\end{document}
